@@ -1268,7 +1268,7 @@ async function cleanStorage(
       const existing = await readJsonIfExists<BridgeResponse>(responsePath);
       if (!existing && !isActiveNow(candidate.path)) {
         const requestBytes = await fs.readFile(candidate.path).catch(() => null);
-        if (requestBytes) {
+        if (requestBytes && !isActiveNow(candidate.path)) {
           const requestHash = createHash('sha256').update(requestBytes).digest('hex');
           await commitResponse(
             paths.responses,
@@ -1287,6 +1287,7 @@ async function cleanStorage(
       if (isProtected(candidate.path) || isActiveNow(candidate.path)) continue;
       const stat = await fs.lstat(candidate.path);
       if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      if (isProtected(candidate.path) || isActiveNow(candidate.path)) continue;
       await fs.unlink(candidate.path);
       totalBytes -= candidate.size;
       deleted++;
