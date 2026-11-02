@@ -492,6 +492,16 @@ class ResourceLocks {
 
 const resourceLocks = new ResourceLocks();
 
+function commandLockMode(command: BridgeCommand): 'read' | 'write' {
+  return [
+    'read_file',
+    'read_multiple_files',
+    'get_file_info',
+    'list_directory',
+    'start_search',
+  ].includes(command.tool) ? 'read' : 'write';
+}
+
 function commandResourceKeys(command: BridgeCommand): string[] {
   const keys: string[] = [];
   const visited = new Set<object>();
@@ -721,7 +731,7 @@ async function exportToolArtifacts(
   let imageIndex = 0;
 
   for (const rawItem of result.content || []) {
-    const item = rawItem as Record<string, unknown>;
+    const item = rawItem as unknown as Record<string, unknown>;
     const inlineData = item.type === 'image' && typeof item.data === 'string'
       ? item.data
       : item.type === 'resource' && isRecord(item.resource) && typeof item.resource.blob === 'string'
@@ -1031,26 +1041,15 @@ async function processRequestFile(
       if (commandState.state === 'completed' || commandState.state === 'failed') {
         if (commandState.result) results.push(commandState.result);
         if (commandState.state === 'failed') {
-          appendSkippedCommands(
-            ledger,
-            request,
-            i + 1,
-            results,
-            'Skipped because an earlier command failed.',
-          );
-          break;
-        }
-        if (commandState.state === 'skipped') {
-          appendSkippedCommands(
-            ledger,
-            request,
-            i + 1,
-            results,
-            'Skipped because an earlier command failed or the previous run was interrupted.',
-          );
+          appendSkippedCommands(ledger, request, i + 1, results, 'Skipped because an earlier command failed.');
           break;
         }
         continue;
+      }
+      if (commandState.state === 'skipped') {
+        if (commandState.result) results.push(commandState.result);
+        appendSkippedCommands(ledger, request, i + 1, results, 'Skipped because an earlier command failed or the previous run was interrupted.');
+        break;
       }
 
       if (commandNeedsOfficeSupport(command)) {
@@ -1099,7 +1098,7 @@ async function processRequestFile(
               return { executed, artifacts };
             } catch (error) {
               const fallbackContent = (executed.content || []).filter((item) => {
-                const candidate = item as { type?: unknown; data?: unknown };
+                const candidate = item as unknown as Record<string, unknown>;
                 const resource = candidate.resource as { blob?: unknown } | undefined;
                 return !(candidate.type === 'image' && typeof candidate.data === 'string')
                   && !(candidate.type === 'resource' && resource && typeof resource.blob === 'string');
