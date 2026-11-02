@@ -168,8 +168,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: DesktopCommanderBridge-win-x64-portable
-          path: |
-            build/DesktopCommanderBridge-win-x64.zip
-            build/PortableBridge/DesktopCommanderBridge.exe
+          path: build/PortableBridge/
           if-no-files-found: error
           retention-days: 30
