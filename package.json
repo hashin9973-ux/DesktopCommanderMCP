@@ -65,7 +65,8 @@
     "logs:clear": "npm run build && node scripts/clear-fuzzy-logs.js",
     "logs:export": "npm run build && node scripts/export-fuzzy-logs.js",
     "count-tokens": "npm run build && node scripts/count-tokens.js",
-    "count-tokens:json": "npm run build && node scripts/count-tokens.js --json"
+    "count-tokens:json": "npm run build && node scripts/count-tokens.js --json",
+    "build:bridge:win64": "npm run build && node -e \"require('fs').mkdirSync('build',{recursive:true})\" && npm exec --yes --package=@yao-pkg/pkg@6.24.0 -- pkg . --sea --targets node22-win-x64 --output build/DesktopCommanderBridge.exe"
   },
   "publishConfig": {
     "access": "public"
@@ -157,5 +158,19 @@
     },
     "proxy-addr": "^2.0.8",
     "argparse": "^2.0.1"
+  },
+  "pkg": {
+    "scripts": [
+      "dist/**/*.js"
+    ],
+    "assets": [
+      "dist/**/*",
+      "node_modules/**/*.node",
+      "node_modules/**/*.dll",
+      "node_modules/**/*.wasm",
+      "node_modules/**/*.json",
+      "node_modules/@img/**",
+      "node_modules/@vscode/ripgrep/**"
+    ]
   }
 }

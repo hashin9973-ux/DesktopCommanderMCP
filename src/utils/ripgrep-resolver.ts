@@ -1,9 +1,47 @@
-import { existsSync, chmodSync } from 'fs';
+import { existsSync, chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'fs';
+import { createHash } from 'crypto';
 import path from 'path';
 import os from 'os';
 import { resolveShellPath } from './shell.js';
 
 let cachedRgPath: string | null = null;
+
+/**
+ * pkg stores packaged files in a read-only snapshot. ripgrep is an external
+ * process, so Windows cannot spawn it from that virtual path. Materialize the
+ * binary once into the per-user app-data cache, then reuse the real file.
+ */
+function materializePackagedBinary(sourcePath: string): string {
+  const packaged = Boolean((process as NodeJS.Process & { pkg?: unknown }).pkg)
+    || /(?:^|[\\/])snapshot[\\/]/i.test(sourcePath);
+  if (!packaged) return sourcePath;
+
+  const appData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  const cacheDirectory = path.join(appData, 'DesktopCommanderBridge', 'runtime');
+  const destination = path.join(cacheDirectory, process.platform === 'win32' ? 'rg.exe' : 'rg');
+  const hashPath = destination + '.sha256';
+  mkdirSync(cacheDirectory, { recursive: true });
+
+  const sourceHash = createHash('sha256').update(readFileSync(sourcePath)).digest('hex');
+  const cachedHash = existsSync(hashPath) ? readFileSync(hashPath, 'utf8').trim() : '';
+  if (!existsSync(destination) || cachedHash !== sourceHash) {
+    const temporary = destination + '.' + process.pid + '.tmp';
+    copyFileSync(sourcePath, temporary);
+    try {
+      if (existsSync(destination)) unlinkSync(destination);
+      renameSync(temporary, destination);
+      writeFileSync(hashPath, sourceHash, 'utf8');
+    } catch (error) {
+      try { unlinkSync(temporary); } catch {}
+      throw error;
+    }
+  }
+
+  if (process.platform !== 'win32') {
+    try { chmodSync(destination, 0o755); } catch {}
+  }
+  return destination;
+}
 
 /**
  * Resolve ripgrep binary path with multiple fallback strategies
@@ -26,8 +64,8 @@ export async function getRipgrepPath(): Promise<string> {
           // Ignore chmod errors - might not have write access
         }
       }
-      cachedRgPath = rgPath;
-      return rgPath;
+      cachedRgPath = materializePackagedBinary(rgPath);
+      return cachedRgPath;
     }
   } catch (e) {
     // @vscode/ripgrep import or binary resolution failed, continue to fallbacks
