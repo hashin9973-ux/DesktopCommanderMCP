@@ -383,7 +383,7 @@ async function createGuideIfMissing(directory: string): Promise<void> {
     '',
     '## Storage cleanup',
     '',
-    'The default limit is 3,000,000,000 bytes (3 decimal GB). When the bridge folder exceeds the limit, the oldest files by last-modified time are deleted first. Pending requests and old responses are eligible. Newly modified files are protected for 60 seconds so cloud-sync uploads can finish; the README and active request/response/artifact writes are always protected. Symlinks and reparse points are not followed. Deletion may remain in the cloud provider trash/version history.',
+    'The default limit is 3,000,000,000 bytes (3 decimal GB). When the bridge folder exceeds the limit, the oldest files by last-modified time are deleted first. Pending requests and old responses are eligible. Newly modified files are protected for 60 seconds so cloud-sync uploads can finish; the README and active request/response/artifact writes are always protected. Symlinks and reparse points are not followed. Deletion may remain in the cloud provider trash/version history. If protected files alone exceed the limit, the bridge warns and does not delete them.',
     '',
     '## Local security',
     '',
@@ -952,15 +952,20 @@ async function processRequestFile(
 
   const knownHash = doneRequests.get(id);
   if (knownHash) {
-    if (knownHash !== requestHash) console.error('Request id conflict: ' + filename + ' was changed after it was processed.');
+    if (knownHash !== requestHash) {
+      console.error('Request id conflict: ' + filename + ' was changed after it was processed.');
+      doneRequests.set(id, requestHash);
+    }
     return;
   }
 
   const responsePath = path.join(paths.responses, 'response-' + id + '.json');
   const existingResponse = await readJsonIfExists<BridgeResponse>(responsePath);
   if (existingResponse) {
-    if (existingResponse.request_hash === requestHash) doneRequests.set(id, requestHash);
-    else console.error('Request id conflict: a different response already exists for ' + id + '.');
+    if (existingResponse.request_hash !== requestHash) {
+      console.error('Request id conflict: a different response already exists for ' + id + '.');
+    }
+    doneRequests.set(id, requestHash);
     return;
   }
 
@@ -1199,13 +1204,19 @@ async function cleanStorage(
   if (totalBytes <= maxStorageBytes) return;
 
   const protectedPaths = new Set<string>([path.join(paths.root, 'README.md'), ...activeFiles, ...activeResponseFiles]);
+  const normalizeForComparison = (filePath: string): string => {
+    const normalized = path.resolve(filePath);
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+  };
+  const normalizedProtectedPaths = [...protectedPaths].map(normalizeForComparison);
   for (const file of activeFiles) {
     const id = requestIdFromFilename(path.basename(file));
     if (id) protectedPaths.add(path.join(paths.artifacts, id));
   }
   const isProtected = (filePath: string): boolean => {
-    for (const protectedPath of protectedPaths) {
-      if (filePath === protectedPath || filePath.startsWith(protectedPath + path.sep) || filePath.startsWith(protectedPath + '.')) return true;
+    const normalized = normalizeForComparison(filePath);
+    for (const protectedPath of normalizedProtectedPaths) {
+      if (normalized === protectedPath || normalized.startsWith(protectedPath + path.sep) || normalized.startsWith(protectedPath + '.')) return true;
     }
     return false;
   };
