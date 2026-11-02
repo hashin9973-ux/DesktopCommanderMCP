@@ -43,7 +43,7 @@ jobs:
       - name: Verify executable CLI
         shell: pwsh
         run: |
-          & build\DesktopCommanderBridge.exe bridge --help
+          & build\PortableBridge\DesktopCommanderBridge.exe bridge --help
           if ($LASTEXITCODE -ne 0) { throw "Bridge executable help command failed." }
 
       - name: Smoke-test file bridge and image artifact export
@@ -99,7 +99,7 @@ jobs:
             [System.Text.UTF8Encoding]::new($false)
           )
 
-          $exe = (Resolve-Path "build\DesktopCommanderBridge.exe").Path
+          $exe = (Resolve-Path "build\PortableBridge\DesktopCommanderBridge.exe").Path
           $processArgs = 'bridge --directory "' + $cloudDir + '" --max-parallel 0'
           $stdout = Join-Path $env:TEMP "dc-bridge-smoke-out.txt"
           $stderr = Join-Path $env:TEMP "dc-bridge-smoke-err.txt"
@@ -150,7 +150,9 @@ jobs:
       - name: Upload portable executable
         uses: actions/upload-artifact@v7
         with:
-          name: DesktopCommanderBridge-win-x64
-          path: build/DesktopCommanderBridge.exe
+          name: DesktopCommanderBridge-win-x64-portable
+          path: |
+            build/DesktopCommanderBridge-win-x64.zip
+            build/PortableBridge/DesktopCommanderBridge.exe
           if-no-files-found: error
           retention-days: 30
