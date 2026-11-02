@@ -1182,8 +1182,8 @@ async function processRequestFile(
   await cleanup();
 }
 
-async function collectRegularFiles(directory: string): Promise<Array<{ path: string; size: number; mtimeMs: number }>> {
-  const files: Array<{ path: string; size: number; mtimeMs: number }> = [];
+async function collectRegularFiles(directory: string): Promise<Array<{ path: string; size: number; mtimeMs: number; ctimeMs: number; birthtimeMs: number }>> {
+  const files: Array<{ path: string; size: number; mtimeMs: number; ctimeMs: number; birthtimeMs: number }> = [];
   const visit = async (current: string): Promise<void> => {
     let entries;
     try {
@@ -1199,7 +1199,7 @@ async function collectRegularFiles(directory: string): Promise<Array<{ path: str
         await visit(fullPath);
       } else if (entry.isFile()) {
         const stat = await fs.stat(fullPath).catch(() => null);
-        if (stat?.isFile()) files.push({ path: fullPath, size: stat.size, mtimeMs: stat.mtimeMs });
+        if (stat?.isFile()) files.push({ path: fullPath, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, birthtimeMs: stat.birthtimeMs });
       }
     }
   };
@@ -1227,6 +1227,23 @@ async function cleanStorage(
     if (id) protectedPaths.add(path.join(paths.artifacts, id));
   }
   const normalizedProtectedPaths = [...protectedPaths].map(normalizeForComparison);
+  const isActiveNow = (filePath: string): boolean => {
+    const normalized = normalizeForComparison(filePath);
+    for (const activeRequest of activeFiles) {
+      const requestPath = normalizeForComparison(activeRequest);
+      if (normalized === requestPath || normalized.startsWith(requestPath + '.')) return true;
+      const activeId = requestIdFromFilename(path.basename(activeRequest));
+      if (activeId) {
+        const artifactPath = normalizeForComparison(path.join(paths.artifacts, activeId));
+        if (normalized === artifactPath || normalized.startsWith(artifactPath + path.sep)) return true;
+      }
+    }
+    for (const activeResponse of activeResponseFiles) {
+      const responsePath = normalizeForComparison(activeResponse);
+      if (normalized === responsePath || normalized.startsWith(responsePath + '.')) return true;
+    }
+    return false;
+  };
   const isProtected = (filePath: string): boolean => {
     const normalized = normalizeForComparison(filePath);
     for (const protectedPath of normalizedProtectedPaths) {
@@ -1236,17 +1253,20 @@ async function cleanStorage(
   };
 
   const cleanupCutoff = Date.now() - RECENT_FILE_CLEANUP_GRACE_MS;
-  const candidates = files.filter((file) => !isProtected(file.path) && file.mtimeMs <= cleanupCutoff)
+  const candidates = files.filter((file) => !isProtected(file.path)
+      && !isActiveNow(file.path)
+      && Math.max(file.mtimeMs, file.ctimeMs, file.birthtimeMs || 0) <= cleanupCutoff)
     .sort((a, b) => a.mtimeMs - b.mtimeMs || a.path.localeCompare(b.path));
   let deleted = 0;
   for (const candidate of candidates) {
     if (totalBytes <= maxStorageBytes) break;
+    if (isProtected(candidate.path) || isActiveNow(candidate.path)) continue;
     const filename = path.basename(candidate.path);
     const id = requestIdFromFilename(filename);
     if (id && path.dirname(candidate.path) === paths.requests) {
       const responsePath = path.join(paths.responses, 'response-' + id + '.json');
       const existing = await readJsonIfExists<BridgeResponse>(responsePath);
-      if (!existing) {
+      if (!existing && !isActiveNow(candidate.path)) {
         const requestBytes = await fs.readFile(candidate.path).catch(() => null);
         if (requestBytes) {
           const requestHash = createHash('sha256').update(requestBytes).digest('hex');
@@ -1264,6 +1284,7 @@ async function cleanStorage(
     }
 
     try {
+      if (isProtected(candidate.path) || isActiveNow(candidate.path)) continue;
       const stat = await fs.lstat(candidate.path);
       if (!stat.isFile() || stat.isSymbolicLink()) continue;
       await fs.unlink(candidate.path);
