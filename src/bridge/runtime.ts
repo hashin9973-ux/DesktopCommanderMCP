@@ -1222,16 +1222,11 @@ async function cleanStorage(
     const normalized = path.resolve(filePath);
     return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
   };
-  const normalizedProtectedPaths = [...protectedPaths].map(normalizeForComparison);
-  const normalizeForComparison = (filePath: string): string => {
-    const normalized = path.resolve(filePath);
-    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-  };
-  const normalizedProtectedPaths = [...protectedPaths].map(normalizeForComparison);
   for (const file of activeFiles) {
     const id = requestIdFromFilename(path.basename(file));
     if (id) protectedPaths.add(path.join(paths.artifacts, id));
   }
+  const normalizedProtectedPaths = [...protectedPaths].map(normalizeForComparison);
   const isProtected = (filePath: string): boolean => {
     const normalized = normalizeForComparison(filePath);
     for (const protectedPath of normalizedProtectedPaths) {
