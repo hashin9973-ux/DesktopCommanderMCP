@@ -16,7 +16,8 @@ for (const requiredPath of [runtimePath, entryPoint]) {
   }
 }
 
-const forwardedArgs = process.argv.slice(1);
+// SEA exposes the executable path in argv[0] and argv[1]. Skip both.
+const forwardedArgs = process.argv.slice(2);
 if (forwardedArgs[0] !== 'bridge') {
   forwardedArgs.unshift('bridge');
 }
