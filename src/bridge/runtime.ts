@@ -494,6 +494,7 @@ const resourceLocks = new ResourceLocks();
 
 function commandLockMode(command: BridgeCommand): 'read' | 'write' {
   return [
+    'get_config',
     'read_file',
     'read_multiple_files',
     'get_file_info',
@@ -546,6 +547,9 @@ function commandResourceKeys(command: BridgeCommand): string[] {
     'get_more_search_results', 'stop_search',
   ].includes(command.tool)) {
     keys.push('search:' + args.sessionId);
+  }
+  if (command.tool === 'get_config' || command.tool === 'set_config_value') {
+    keys.push('config:global');
   }
   if (command.tool === 'set_config_value' && typeof args.key === 'string') {
     keys.push('config:' + args.key);
@@ -620,6 +624,11 @@ async function exportOriginalBinaryFile(
 ): Promise<ArtifactRecord | undefined> {
   const absolutePath = await validateBridgeArtifactPath(filePath);
   if (/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(absolutePath)) return undefined;
+  const stat = await fs.stat(absolutePath);
+  if (!stat.isFile()) return undefined;
+  if (stat.size > MAX_ARTIFACT_BYTES) {
+    throw new Error('Binary source exceeds the bridge artifact export limit of ' + MAX_ARTIFACT_BYTES + ' bytes (' + stat.size + ' bytes).');
+  }
   if (!await isBinaryFile(absolutePath).catch(() => false)) return undefined;
   const bytes = await fs.readFile(absolutePath);
   const baseName = path.basename(absolutePath).replace(/[^A-Za-z0-9._-]/g, '_');
@@ -775,6 +784,11 @@ async function exportToolArtifacts(
     if (pathArg) {
       try {
         const sourcePath = await validateBridgeArtifactPath(pathArg);
+        const stat = await fs.stat(sourcePath);
+        if (!stat.isFile()) throw new Error('PDF output path is not a regular file.');
+        if (stat.size > MAX_ARTIFACT_BYTES) {
+          throw new Error('PDF output exceeds the bridge artifact export limit of ' + MAX_ARTIFACT_BYTES + ' bytes (' + stat.size + ' bytes).');
+        }
         const bytes = await fs.readFile(sourcePath);
         const baseName = path.basename(sourcePath);
         artifacts.push(await writeArtifact(root, requestId, 'command-' + String(commandIndex + 1).padStart(3, '0') + '-' + baseName, 'application/pdf', bytes));
@@ -1204,6 +1218,11 @@ async function cleanStorage(
   if (totalBytes <= maxStorageBytes) return;
 
   const protectedPaths = new Set<string>([path.join(paths.root, 'README.md'), ...activeFiles, ...activeResponseFiles]);
+  const normalizeForComparison = (filePath: string): string => {
+    const normalized = path.resolve(filePath);
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+  };
+  const normalizedProtectedPaths = [...protectedPaths].map(normalizeForComparison);
   const normalizeForComparison = (filePath: string): string => {
     const normalized = path.resolve(filePath);
     return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
