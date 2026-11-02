@@ -3,8 +3,6 @@ name: Windows x64 bridge executable
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [feat/cloud-folder-bridge]
   workflow_dispatch:
 
 permissions:
@@ -16,10 +14,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22.23.4
           cache: npm
@@ -141,7 +139,7 @@ jobs:
           }
 
       - name: Upload portable executable
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: DesktopCommanderBridge-win-x64
           path: build/DesktopCommanderBridge.exe
