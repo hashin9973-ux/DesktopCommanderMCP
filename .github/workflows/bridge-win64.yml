@@ -74,7 +74,7 @@ jobs:
           $imageRequest = @{
             protocol_version = 1
             id = "smoke-image"
-            command_delay_ms = 0
+            command_delay_ms = 5000
             commands = @(
               @{ tool = "read_file"; arguments = @{ path = $imagePath } },
               @{ tool = "get_file_info"; arguments = @{ path = $imagePath } }
@@ -106,17 +106,34 @@ jobs:
           $process = Start-Process -FilePath $exe -ArgumentList $processArgs -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
 
           try {
-            $deadline = (Get-Date).AddSeconds(60)
             $imageResponsePath = Join-Path $cloudDir "responses\response-smoke-image.json"
             $configResponsePath = Join-Path $cloudDir "responses\response-smoke-config.json"
-            while ((Get-Date) -lt $deadline -and (!(Test-Path $imageResponsePath) -or !(Test-Path $configResponsePath))) {
+
+            # The first request pauses for five seconds between its two commands.
+            # The independent request must complete during that pause.
+            $parallelDeadline = (Get-Date).AddSeconds(3)
+            while ((Get-Date) -lt $parallelDeadline -and !(Test-Path $configResponsePath)) {
               if ($process.HasExited) {
-                throw "Bridge exited before producing responses. stdout: $(Get-Content $stdout -Raw -ErrorAction SilentlyContinue) stderr: $(Get-Content $stderr -Raw -ErrorAction SilentlyContinue)"
+                throw "Bridge exited before the independent request completed. stdout: $(Get-Content $stdout -Raw -ErrorAction SilentlyContinue) stderr: $(Get-Content $stderr -Raw -ErrorAction SilentlyContinue)"
+              }
+              Start-Sleep -Milliseconds 100
+            }
+            if (!(Test-Path $configResponsePath)) {
+              throw "A separate request file did not complete while the first request was in its configured 5-second command delay."
+            }
+            if (Test-Path $imageResponsePath) {
+              throw "The two commands in one request did not respect the configured sequential command delay."
+            }
+
+            $deadline = (Get-Date).AddSeconds(60)
+            while ((Get-Date) -lt $deadline -and !(Test-Path $imageResponsePath)) {
+              if ($process.HasExited) {
+                throw "Bridge exited before producing the image response. stdout: $(Get-Content $stdout -Raw -ErrorAction SilentlyContinue) stderr: $(Get-Content $stderr -Raw -ErrorAction SilentlyContinue)"
               }
               Start-Sleep -Milliseconds 200
             }
-            if (!(Test-Path $imageResponsePath) -or !(Test-Path $configResponsePath)) {
-              throw "Bridge did not finish both independent request files within 60 seconds."
+            if (!(Test-Path $imageResponsePath)) {
+              throw "Bridge did not finish the sequential image request within 60 seconds."
             }
 
             $imageResponse = Get-Content $imageResponsePath -Raw | ConvertFrom-Json
