@@ -152,7 +152,7 @@ jobs:
               throw "Mailbox registration did not execute successfully through the portable bridge: $($configResponse.results[1] | ConvertTo-Json -Depth 10)"
             }
             $mailboxRegistration = $configResponse.results[1].content[0].text | ConvertFrom-Json
-            if ($mailboxRegistration.status -ne "registered" -or $mailboxRegistration.username -ne $mailboxSmokeUser -or [string]::IsNullOrWhiteSpace($mailboxRegistration.mailbox_user_id)) {
+            if ($mailboxRegistration.status -ne "registered" -or $mailboxRegistration.username -ne $mailboxSmokeUser -or [string]::IsNullOrEmpty($mailboxRegistration.mailbox_user_id)) {
               throw "Portable bridge mailbox registration returned an invalid identity: $($mailboxRegistration | ConvertTo-Json -Depth 5)"
             }
             if ($imageResponse.artifacts.Count -lt 1) {
@@ -169,32 +169,16 @@ jobs:
               throw "Bridge did not generate README.md in the configured cloud folder."
             }
             $guideContent = Get-Content $guidePath -Raw
-            if ($guideContent -notmatch [regex]::Escape("## Optional local mailbox (direct MCP and cloud-folder bridge)")) {
+            if (!$guideContent.Contains("## Optional local mailbox (direct MCP and cloud-folder bridge)")) {
               throw "Generated bridge README is missing the shared local-mailbox section."
             }
-            if ($guideContent -notmatch '(?m)^### mailbox
-          }
-          finally {
-            if (!$process.HasExited) {
-              Stop-Process -Id $process.Id -Force
-              $process.WaitForExit()
-            }
-          }
-
-      - name: Upload portable executable
-        uses: actions/upload-artifact@v7
-        with:
-          name: DesktopCommanderBridge-win-x64-portable
-          path: build/PortableBridge/
-          if-no-files-found: error
-          retention-days: 30
-) {
+            if (!$guideContent.Contains("### mailbox")) {
               throw "Generated bridge README is missing the mailbox tool from its tool catalog."
             }
-            if ($guideContent -notmatch 'message text, usernames, and mailbox IDs included in a bridge request or returned in a response') {
+            if (!$guideContent.Contains("message text, usernames, and mailbox IDs included in a bridge request or returned in a response")) {
               throw "Generated bridge README is missing the mailbox queue-transport privacy note."
             }
-            if ($guideContent -match 'bridge request parser intentionally rejects the') {
+            if ($guideContent.Contains("bridge request parser intentionally rejects the")) {
               throw "Generated bridge README still describes mailbox as bridge-inaccessible."
             }
           }
