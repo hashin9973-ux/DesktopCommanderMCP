@@ -48,12 +48,10 @@ export async function appendMailboxGuideSection(guidePath: string): Promise<Mail
     return 'not_bridge_guide';
   }
 
-  const newline = existing.includes('\\r\\n') ? '\\r\\n' : '\\n';
-  const section = MAILBOX_GUIDE_SECTION.replace(/\\n/g, newline);
-  const separator = existing.endsWith(newline + newline) ? '' : existing.endsWith(newline) ? newline : newline + newline;
+  const separator = existing.endsWith('\n\n') ? '' : existing.endsWith('\n') ? '\n' : '\n\n';
   const handle = await fs.open(guidePath, 'a');
   try {
-    await handle.writeFile(separator + section + newline, 'utf8');
+    await handle.writeFile(separator + MAILBOX_GUIDE_SECTION + '\n', 'utf8');
     await handle.sync();
   } finally {
     await handle.close();
