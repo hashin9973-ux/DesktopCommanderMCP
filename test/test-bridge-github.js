@@ -7,9 +7,14 @@ import { GitHubRepositoryClient } from '../dist/bridge/github.js';
 import { GitHubBridgeSync } from '../dist/bridge/github-sync.js';
 
 // Test double for GitHub's Contents and Repositories REST APIs. No network calls are made.
+function gitBlobSha(bytes) {
+  return crypto.createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
+}
+
 function createGitHubApiDouble() {
   const files = new Map();
   const commits = [];
+  const rawReads = new Map();
   let createdRepositoryPayload;
 
   const jsonResponse = (value, status = 200) => new Response(JSON.stringify(value), {
@@ -103,6 +108,7 @@ function createGitHubApiDouble() {
       const value = files.get(repoPath);
       if (!value) return notFound();
       if ((headers.get('accept') || '').includes('raw')) {
+        rawReads.set(repoPath, (rawReads.get(repoPath) || 0) + 1);
         return new Response(Buffer.from(value.bytes));
       }
       return jsonResponse({
@@ -120,7 +126,7 @@ function createGitHubApiDouble() {
       if (files.has(repoPath)) return jsonResponse({ message: 'already exists' }, 422);
       const payload = JSON.parse(String(init.body));
       const bytes = Buffer.from(payload.content, 'base64');
-      const sha = crypto.createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
+      const sha = gitBlobSha(bytes);
       files.set(repoPath, { bytes, sha });
       commits.push({ path: repoPath, branch: payload.branch, message: payload.message });
       return jsonResponse({ content: { path: repoPath, sha } }, 201);
@@ -150,6 +156,7 @@ function createGitHubApiDouble() {
     fetcher,
     files,
     commits,
+    getRawReadCount: (filePath) => rawReads.get(filePath) || 0,
     getCreatedRepositoryPayload: () => createdRepositoryPayload,
   };
 }
@@ -207,7 +214,7 @@ try {
     commands: [{ tool: 'get_config', arguments: {} }],
   }), 'utf8');
   const requestPath = 'requests/request-sample-01.json';
-  api.files.set(requestPath, { bytes: requestBytes, sha: 'remote-request' });
+  api.files.set(requestPath, { bytes: requestBytes, sha: gitBlobSha(requestBytes) });
 
   await sync.syncOnce();
   assert.deepEqual(
@@ -215,6 +222,11 @@ try {
     requestBytes,
     'new GitHub requests should be staged in the local worker queue',
   );
+  assert.equal(api.getRawReadCount(requestPath), 1);
+
+  await sync.syncOnce();
+  assert.equal(api.getRawReadCount(requestPath), 1,
+    'unchanged staged requests should not be downloaded again on every poll');
 
   const artifactPath = 'artifacts/sample-01/output.bin';
   const artifactBytes = Buffer.from([0, 1, 2, 3, 255]);
@@ -260,6 +272,10 @@ try {
     /ENOENT/,
     'published request staging files should be removed locally',
   );
+  await sync.syncOnce();
+  assert.equal(api.getRawReadCount(requestPath), 1,
+    'unchanged completed requests should be skipped without downloading the request or response again');
+  assert.equal(api.getRawReadCount('responses/response-sample-01.json'), 0);
 
   const restartRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-github-bridge-restart-'));
   try {
@@ -277,6 +293,15 @@ try {
       /ENOENT/,
       'a request with an existing remote response must not be staged again after restart',
     );
+    assert.equal(api.getRawReadCount(requestPath), 2,
+      'a restarted bridge should verify an existing request once');
+    assert.equal(api.getRawReadCount('responses/response-sample-01.json'), 1,
+      'a restarted bridge should verify an existing response once');
+    await restartedSync.syncOnce();
+    assert.equal(api.getRawReadCount(requestPath), 2,
+      'the restarted bridge should cache the completed request blob SHA');
+    assert.equal(api.getRawReadCount('responses/response-sample-01.json'), 1,
+      'the restarted bridge should cache the completed response blob SHA');
   } finally {
     await fs.rm(restartRoot, { recursive: true, force: true });
   }
