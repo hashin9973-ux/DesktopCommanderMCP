@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { watch, type FSWatcher } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -295,14 +296,18 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
   const releaseLock = await acquireBridgeLock(stateDir);
   let child: ChildProcess | undefined;
   let pollTimer: NodeJS.Timeout | undefined;
+  let responseWatcher: FSWatcher | undefined;
   let webhookServer: GitHubWebhookServer | undefined;
   let quickTunnel: QuickTunnel | undefined;
   let stopping = false;
+  let quickTunnelExited = false;
+  let switchToFallbackPolling: (() => void) | undefined;
 
   const stopWorker = () => {
     if (stopping) return;
     stopping = true;
     if (pollTimer) clearInterval(pollTimer);
+    responseWatcher?.close();
     if (child && child.exitCode === null && !child.killed) {
       child.kill('SIGTERM');
     }
@@ -408,6 +413,8 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
         quickTunnel = await startCloudflareQuickTunnel(webhookServer.originUrl, {
           onExit: (code, signal) => {
             if (!stopping) {
+              quickTunnelExited = true;
+              switchToFallbackPolling?.();
               console.warn(
                 'Cloudflare Quick Tunnel exited unexpectedly' +
                 (signal ? ' (signal ' + signal + ')' : ' (exit code ' + code + ')') +
@@ -467,7 +474,35 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       ?? (Number.isInteger(legacyInterval) && legacyInterval >= 1_000 && legacyInterval <= 60_000
         ? legacyInterval
         : 5_000);
-    const activePollIntervalMs = webhookActive ? pollIntervalMs : fallbackPollIntervalMs;
+    const syncPoll = async () => {
+      try {
+        await sync.syncOnce();
+      } catch (error) {
+        console.error('GitHub queue synchronization failed; it will retry: ' + errorMessage(error));
+      }
+    };
+    switchToFallbackPolling = () => {
+      if (!pollTimer) return;
+      clearInterval(pollTimer);
+      pollTimer = setInterval(() => { void syncPoll(); }, fallbackPollIntervalMs);
+    };
+
+    let responseWatcherHealthy = false;
+    try {
+      responseWatcher = watch(paths.responses, { persistent: true }, () => { void syncPoll(); });
+      responseWatcherHealthy = true;
+      responseWatcher.on('error', (error) => {
+        responseWatcherHealthy = false;
+        console.warn('Local GitHub response-folder watcher failed; switching to polling: ' + error.message);
+        switchToFallbackPolling?.();
+      });
+    } catch (error) {
+      console.warn('Could not watch local GitHub responses; polling will also upload completed responses: ' + errorMessage(error));
+    }
+
+    const activePollIntervalMs = webhookActive && responseWatcherHealthy && !quickTunnelExited
+      ? pollIntervalMs
+      : fallbackPollIntervalMs;
 
     console.log('');
     console.log('Desktop Commander GitHub Repository Bridge is connected.');
@@ -488,13 +523,6 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       console.error('Could not start the local Desktop Commander worker: ' + error.message);
     });
 
-    const syncPoll = async () => {
-      try {
-        await sync.syncOnce();
-      } catch (error) {
-        console.error('GitHub queue synchronization failed; it will retry: ' + errorMessage(error));
-      }
-    };
     pollTimer = setInterval(() => { void syncPoll(); }, activePollIntervalMs);
 
     const childExitCode = await new Promise<number>((resolve, reject) => {
