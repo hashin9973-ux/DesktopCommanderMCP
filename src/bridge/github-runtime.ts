@@ -257,7 +257,7 @@ async function startWorker(
   };
 
   const child = spawn(process.execPath, [entryPoint, 'bridge', '--directory', cacheRoot], {
-    cwd: path.dirname(entryPoint),
+    cwd: process.cwd(),
     env: environment,
     stdio: 'inherit',
     windowsHide: false,
