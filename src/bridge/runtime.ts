@@ -426,7 +426,7 @@ async function createGuideIfMissing(directory: string): Promise<void> {
     '',
     'Desktop Commander also supports an optional local mailbox for messages between registered AI and user identities. Mail is stored on the app device and is not synchronized through this cloud-folder bridge.',
     '',
-    'The cloud-folder bridge does not expose mailbox operations. The mailbox tool is intentionally excluded from bridge requests, and mailbox_user_id is not an accepted bridge request argument. Do not put mailbox messages or mailbox IDs in requests/ or expect them in responses/. Use a direct local Desktop Commander MCP connection for mailbox operations.',
+    '**The cloud-folder bridge does not expose mailbox operations.** The `mailbox` tool is excluded from bridge requests, and `mailbox_user_id` is not an accepted bridge request argument. Do not put mailbox messages or mailbox IDs in `requests/` or expect them in `responses/`. Use a direct local Desktop Commander MCP connection for mailbox operations.',
     '',
     'With a direct local MCP connection:',
     '',
