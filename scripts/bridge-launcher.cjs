@@ -3,6 +3,7 @@
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
+const { createInterface } = require('node:readline/promises');
 
 const distributionRoot = path.dirname(process.execPath);
 const runtimePath = path.join(distributionRoot, 'runtime', 'node.exe');
@@ -16,28 +17,53 @@ for (const requiredPath of [runtimePath, entryPoint]) {
   }
 }
 
-// SEA exposes the executable path in argv[0] and argv[1]. Skip both.
-const forwardedArgs = process.argv.slice(2);
-if (forwardedArgs[0] !== 'bridge') {
-  forwardedArgs.unshift('bridge');
+async function selectMode() {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return [];
+
+  const readline = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    process.stdout.write('\nDesktop Commander — choose a mode\n');
+    process.stdout.write('  1. MCP server (standard MCP stdio)\n');
+    process.stdout.write('  2. Cloud-folder bridge\n');
+    process.stdout.write('  3. GitHub repository bridge\n\n');
+    const choice = (await readline.question('Select 1, 2, or 3 [default 1]: ')).trim();
+    if (!choice || choice === '1') return [];
+    if (choice === '2') return ['bridge', '--provider', 'cloud'];
+    if (choice === '3') return ['bridge', '--provider', 'github'];
+    throw new Error('Invalid mode selection. Choose 1, 2, or 3.');
+  } finally {
+    readline.close();
+  }
 }
 
-const child = spawn(runtimePath, [entryPoint, ...forwardedArgs], {
-  cwd: appRoot,
-  env: process.env,
-  stdio: 'inherit',
-  windowsHide: false,
-});
+async function main() {
+  const suppliedArgs = process.argv.slice(2);
+  const forwardedArgs = suppliedArgs.length === 0
+    ? await selectMode()
+    : suppliedArgs;
 
-child.once('error', (error) => {
-  process.stderr.write('Could not start the bundled Node runtime: ' + error.message + '\n');
+  const child = spawn(runtimePath, [entryPoint, ...forwardedArgs], {
+    cwd: appRoot,
+    env: process.env,
+    stdio: 'inherit',
+    windowsHide: false,
+  });
+
+  child.once('error', (error) => {
+    process.stderr.write('Could not start the bundled Node runtime: ' + error.message + '\n');
+    process.exitCode = 1;
+  });
+
+  child.once('exit', (code, signal) => {
+    if (signal) {
+      process.kill(process.pid, signal);
+      return;
+    }
+    process.exitCode = code === null ? 1 : code;
+  });
+}
+
+main().catch((error) => {
+  process.stderr.write('Desktop Commander startup failed: ' + error.message + '\n');
   process.exitCode = 1;
-});
-
-child.once('exit', (code, signal) => {
-  if (signal) {
-    process.kill(process.pid, signal);
-    return;
-  }
-  process.exitCode = code === null ? 1 : code;
 });
