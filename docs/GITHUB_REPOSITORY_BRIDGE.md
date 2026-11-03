@@ -4,13 +4,15 @@ The GitHub Repository Bridge uses a GitHub repository as a request/response mail
 
 ## Connect an account
 
-Install GitHub CLI and authenticate once:
+The Windows x64 portable build includes the official GitHub CLI as its browser sign-in helper. On the first GitHub connection, if no existing GitHub CLI session or `GITHUB_TOKEN`/`GH_TOKEN` is available, the bridge automatically starts:
 
 ```powershell
-gh auth login
+gh auth login --web --hostname github.com --git-protocol https
 ```
 
-On startup, the bridge reads the token from the local GitHub CLI credential store using `gh auth token --hostname github.com`. It does not write the token into the repository or Desktop Commander settings.
+GitHub CLI opens the browser-based device sign-in flow and shows any required one-time verification steps in the bridge window. Complete that approval in the browser; after sign-in, the bridge continues to repository selection without requiring a restart. The GitHub CLI manages the saved credential using the credential store available on the computer. The bridge does not write the token into the repository or Desktop Commander settings.
+
+When running from source or an npm installation rather than the Windows portable build, install GitHub CLI from https://cli.github.com/. If the browser cannot open automatically, run `gh auth login --web --hostname github.com` in a terminal and then restart the bridge.
 
 For headless deployments, set `GITHUB_TOKEN` or `GH_TOKEN` in the process environment instead. Never put a token in a request file or commit it to the repository. The first connection still requires interactive local security consent (type `YES`; and, for a public repository, separately type `PUBLIC`). After the repository-specific consent is saved locally, later starts can run non-interactively.
 
