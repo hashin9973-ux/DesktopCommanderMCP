@@ -97,7 +97,10 @@ function createGitHubApiDouble() {
       ]);
     }
 
-    if (url.pathname === '/repos/owner/repo/contents' && method === 'GET') {\n      return directoryListing('');\n    }\n    if (url.pathname === '/repos/owner/repo/contents/requests' && method === 'GET') {
+    if (url.pathname === '/repos/owner/repo/contents' && method === 'GET') {
+      return directoryListing('');
+    }
+    if (url.pathname === '/repos/owner/repo/contents/requests' && method === 'GET') {
       return directoryListing('requests');
     }
     if (url.pathname === '/repos/owner/repo/contents/responses' && method === 'GET') {
@@ -222,8 +225,8 @@ const paths = {
 try {
   // Simulate a repository that already has both GitHub's initial README and
   // the legacy bridge-specific guide; initialization must leave only the AI README.
-  const existingReadme = Buffer.from('# Existing repository README\\n', 'utf8');
-  const legacyGuide = Buffer.from('# Old bridge guide\\n', 'utf8');
+  const existingReadme = Buffer.from('# Existing repository README\n', 'utf8');
+  const legacyGuide = Buffer.from('# Old bridge guide\n', 'utf8');
   api.files.set('README.md', { bytes: existingReadme, sha: gitBlobSha(existingReadme) });
   api.files.set('DESKTOP_COMMANDER_BRIDGE.md', { bytes: legacyGuide, sha: gitBlobSha(legacyGuide) });
 
@@ -236,7 +239,7 @@ try {
   assert.ok(!api.files.has('DESKTOP_COMMANDER_BRIDGE.md'),
     'initialization must remove the obsolete separate bridge guide');
   const generatedReadme = api.files.get('README.md').bytes.toString('utf8');
-  assert.ok(generatedReadme.startsWith('# Desktop Commander Bridge\\n'));
+  assert.ok(generatedReadme.startsWith('# Desktop Commander Bridge\n'));
   assert.ok(generatedReadme.includes('## AI Quick Start'));
   assert.ok(generatedReadme.includes('## Tool catalog'));
   assert.ok(generatedReadme.includes('### read_file'));
