@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 import { writeFileAtomic } from '../utils/atomic-write.js';
 
-export const MAILBOX_GUIDE_HEADING = '## Optional local mailbox (direct MCP and cloud-folder bridge)';
+export const MAILBOX_GUIDE_HEADING = '## Optional local mailbox (direct MCP and both bridge transports)';
 
-const BRIDGE_GUIDE_TITLE = '# Desktop Commander Cloud-Folder Bridge';
+const BRIDGE_GUIDE_TITLE = '# Desktop Commander Bridge';
+const LEGACY_BRIDGE_GUIDE_TITLE = '# Desktop Commander Cloud-Folder Bridge';
 const MAILBOX_GUIDE_MARKER = '<!-- desktop-commander:local-mailbox-guide:v2 -->';
 const LEGACY_MAILBOX_GUIDE_HEADING = '## Optional local mailbox (direct MCP only)';
 const LEGACY_MAILBOX_SUPPLEMENT = /\n### Additional mailbox privacy boundary\n\n<!-- desktop-commander:local-mailbox-guide-supplement:v1 -->[\s\S]*$/;
@@ -13,11 +14,11 @@ const MAILBOX_GUIDE_SECTION = [
   '',
   MAILBOX_GUIDE_MARKER,
   '',
-  'Desktop Commander provides one local mailbox shared by direct MCP clients and the cloud-folder bridge. The mailbox database is stored on this device in the Desktop Commander configuration directory; the database itself is not synchronized through the bridge.',
+  'Desktop Commander provides one local mailbox shared by direct MCP clients and both file-queue bridge transports. The mailbox database is stored on this device in the Desktop Commander configuration directory; the database itself is not synchronized through the bridge.',
   '',
   'The bridge exposes the same `mailbox` tool and actions as direct MCP: `register`, `list_users`, `send`, `inbox_unread`, and `read`. Use `mailbox_user_id` to identify the sender or inbox. The optional common `mailbox_user_id` argument is also accepted on ordinary bridge tool calls and prepends an unread-message notice when messages are waiting.',
   '',
-  'Important transport detail: bridge request and response files are cloud-synchronized. Mailbox message text, usernames, and mailbox IDs included in a bridge request or returned in a response therefore pass through the synchronized folder, even though the permanent mailbox database remains local. Use a trusted bridge folder and do not send content through it when that content must never transit cloud storage.',
+  'Important transport detail: bridge request and response files pass through the connected storage provider (a cloud folder or GitHub repository). Mailbox message text, usernames, and mailbox IDs included in a bridge request or returned in a response therefore pass through that storage, even though the permanent mailbox database remains local. Use trusted bridge storage and do not send content through it when that content must never leave this device.',
   '',
   'Typical bridge actions:',
   '',
@@ -43,7 +44,7 @@ export async function appendMailboxGuideSection(guidePath: string): Promise<Mail
   }
 
   if (existing.includes(MAILBOX_GUIDE_MARKER)) return 'already_present';
-  if (!existing.startsWith(BRIDGE_GUIDE_TITLE)) return 'not_bridge_guide';
+  if (!existing.startsWith(BRIDGE_GUIDE_TITLE) && !existing.startsWith(LEGACY_BRIDGE_GUIDE_TITLE)) return 'not_bridge_guide';
 
   // Upgrade old generated guides in place so stale "MCP only" documentation
   // cannot contradict the now-supported bridge mailbox tool.
