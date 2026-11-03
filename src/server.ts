@@ -30,7 +30,7 @@ const SERVER_INSTRUCTIONS = `Desktop Commander provides tools for working with t
 - Terminal process tools support shell commands, REPLs, and long-running processes. start_process creates a process session; interact_with_process sends input; read_process_output reads later output; force_terminate ends a session.
 - Search tools are session-based. start_search creates a search session; get_more_search_results reads its results; stop_search ends it early.
 - Absolute paths are generally the most reliable because relative paths depend on the active working directory.
-- allowedDirectories and each tool's schema, annotations, and documented constraints define the operational boundaries.`;
+- allowedDirectories and each tool's schema, annotations, and documented constraints define the operational boundaries.\n- Optional local mailbox identities can be registered with the mailbox tool; include mailbox_user_id in tool calls to receive unread-message notices. Mail stays on this device.`;
 
 import {
     StartProcessArgsSchema,
@@ -1294,8 +1294,10 @@ export async function validateBridgeArtifactPath(filePath: string): Promise<stri
 }
 
 async function addMailboxNotice(result: ServerResult, toolName: string, args: unknown): Promise<ServerResult> {
-    if (toolName === 'mailbox' || toolName === 'track_ui_event' || !args || typeof args !== 'object') return result;
-    const identity = (args as Record<string, unknown>).mailbox_user_id;
+    if (toolName === 'track_ui_event' || !args || typeof args !== 'object') return result;
+    const callArgs = args as Record<string, unknown>;
+    if (toolName === 'mailbox' && callArgs.action === 'inbox_unread') return result;
+    const identity = callArgs.mailbox_user_id;
     if (typeof identity !== 'string' || !identity.trim()) return result;
     try {
         const unread = await mailboxStore.unreadCount(identity);
@@ -1311,6 +1313,9 @@ async function addMailboxNotice(result: ServerResult, toolName: string, args: un
 
 async function handleCallToolRequest(request: CallToolRequest): Promise<ServerResult> {
     const { name, arguments: args } = request.params;
+    const persistedArgs = args && typeof args === 'object' && !Array.isArray(args)
+        ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'mailbox_user_id'))
+        : args;
     const startTime = Date.now();
     // Hoisted above the try so the finally block can read them when emitting the
     // server_call_tool completion event (duration + status), even on the crash path.
@@ -1355,7 +1360,7 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
 
 
         // Track tool call
-        trackToolCall(name, args);
+        trackToolCall(name, persistedArgs);
 
         // Using a more structured approach with dedicated handlers
         // (result is declared above so the finally block can read execution status)
@@ -1592,7 +1597,7 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         ];
 
         if (!EXCLUDED_TOOLS.includes(name)) {
-            toolHistory.addCall(name, args, result, duration);
+            toolHistory.addCall(name, persistedArgs, result, duration);
         }
 
         // Track success or failure based on result
