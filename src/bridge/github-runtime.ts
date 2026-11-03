@@ -382,7 +382,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
 
     settings.githubRepository = repository;
     settings.provider = 'github';
-    settings.githubPollIntervalMs = pollIntervalMs;
+    // Keep the legacy poll setting intact for the faster fallback path.
     settings.githubReconcilePollIntervalMs = pollIntervalMs;
     settings.maxParallelRequests = maxParallelRequests;
     await writeJsonAtomic(settingsPath, settings);
