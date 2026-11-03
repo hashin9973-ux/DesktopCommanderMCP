@@ -86,7 +86,7 @@ async function readOptional(filePath: string): Promise<Buffer | null> {
 
 function isSafeArtifactPath(value: string, requestId: string): boolean {
   const prefix = 'artifacts/' + requestId + '/';
-  if (!value.startsWith(prefix) || value.includes('\\\\')) return false;
+  if (!value.startsWith(prefix) || value.includes('\\')) return false;
   const segments = value.split('/');
   return segments.length === 3
     && segments[0] === 'artifacts'
