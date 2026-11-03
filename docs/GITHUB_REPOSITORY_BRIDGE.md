@@ -18,7 +18,7 @@ For headless deployments, set `GITHUB_TOKEN` or `GH_TOKEN` in the process enviro
 
 Start the portable executable and choose **GitHub repository bridge**. The first connection offers two choices:
 
-1. Select an existing, non-archived repository where the authenticated account has write permission.
+1. Select an existing, non-archived **private** repository where the authenticated account has write permission.
 2. Create a new repository under the authenticated personal account. The bridge requests that GitHub create it as **private**, initializes it, and then creates the queue folders.
 
 The created repository is a dedicated mailbox; it is not a clone of your application source repository. To create a private repository through the GitHub API, the credential must have repository-creation permissions. For a fine-grained personal access token, GitHub documents the Administration repository permission as required for this endpoint; classic tokens need the `repo` scope. See [GitHub's create-a-repository endpoint](https://docs.github.com/en/rest/repos/repos#create-a-repository-for-the-authenticated-user).
@@ -45,7 +45,7 @@ Artifacts are uploaded before the response file. The response file is the durabl
 
 ## Requirements and limitations
 
-- The selected repository must allow direct writes to its default branch. A branch rule that requires pull requests is incompatible with this no-branches design.
+- The selected repository must be private and allow direct writes to its default branch. A branch rule that requires pull requests is incompatible with this no-branches design.
 - Use one running bridge worker per repository. GitHub commits are not a distributed worker lock.
 - Anyone with write access to the repository can submit commands for local execution on the bridge computer. Use a private repository and share write access only with trusted collaborators. The local tool restrictions are guardrails, not an operating-system sandbox.
 - This implementation sets a 50 MiB per-file transport limit for request, response, and artifact files.
