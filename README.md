@@ -71,7 +71,7 @@ Execute long-running terminal commands on your computer and manage processes thr
   - Multiple file support
   - Pattern-based replacements
   - vscode-ripgrep based recursive code or text search in folders
-- Local tool-call history and audit logs:
+- **Optional local AI mailbox** - Register named AI/user identities, send messages between agents, read unread mail, and receive unread-message notices in ordinary tool results. Mail stays on the app device and is not synchronized through the cloud-folder bridge.\n- Local tool-call history and audit logs:
   - Tool calls and arguments are recorded locally on the machine running Desktop Commander
   - Recent call history with bounded output previews is available through `get_recent_tool_calls`
   - Size-based rotation/trimming keeps the active history files bounded
@@ -616,7 +616,7 @@ Run these commands in a terminal on the machine running Desktop Commander:
 
 ```sh
 # List users and their last activity
-npx @wonderwhy-er/desktop-commander mailbox users
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox users
 
 # Read all mail, or filter by user/sender/recipient/unread state
 npx @wonderwhy-er/desktop-commander mailbox read
