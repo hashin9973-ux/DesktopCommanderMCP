@@ -266,6 +266,23 @@ try {
   } finally {
     await fs.rm(restartRoot, { recursive: true, force: true });
   }
+
+  // Backslashes are path separators on Windows and must not allow a remote
+  // response to escape the artifact cache root.
+  await fs.mkdir(paths.responses, { recursive: true });
+  await fs.writeFile(path.join(paths.responses, 'response-sample-01.json'), JSON.stringify({
+    ...response,
+    artifacts: [{
+      path: 'artifacts/sample-01/..\\\\outside.bin',
+      bytes: 1,
+      sha256: 'not-used',
+    }],
+  }));
+  await assert.rejects(
+    () => sync.syncOnce(),
+    /unsafe artifact path/,
+    'artifact paths containing Windows traversal separators must be rejected',
+  );
 } finally {
   await fs.rm(temporaryRoot, { recursive: true, force: true });
 }
