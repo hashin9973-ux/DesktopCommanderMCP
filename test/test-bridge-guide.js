@@ -22,7 +22,7 @@ try {
     '',
     'Existing argument schema.',
     '',
-  ].join('\\n');
+  ].join('\n');
 
   await fs.writeFile(guidePath, original, 'utf8');
   assert.equal(await appendMailboxGuideSection(guidePath), 'appended');
@@ -37,13 +37,13 @@ try {
   assert.equal(await fs.readFile(guidePath, 'utf8'), appended, 'a second run must not change the guide');
 
   const existingSectionPath = path.join(tempDir, 'README-with-existing-section.md');
-  const existingSection = original + '\\n' + MAILBOX_GUIDE_HEADING + '\\n\\nAlready documented.\\n';
+  const existingSection = original + '\n' + MAILBOX_GUIDE_HEADING + '\n\nAlready documented.\n';
   await fs.writeFile(existingSectionPath, existingSection, 'utf8');
   assert.equal(await appendMailboxGuideSection(existingSectionPath), 'already_present');
   assert.equal(await fs.readFile(existingSectionPath, 'utf8'), existingSection);
 
   const customPath = path.join(tempDir, 'custom-readme.md');
-  const customReadme = '# My own bridge notes\\n\\nKeep this file unchanged.\\n';
+  const customReadme = '# My own bridge notes\n\nKeep this file unchanged.\n';
   await fs.writeFile(customPath, customReadme, 'utf8');
   assert.equal(await appendMailboxGuideSection(customPath), 'not_bridge_guide');
   assert.equal(await fs.readFile(customPath, 'utf8'), customReadme);
