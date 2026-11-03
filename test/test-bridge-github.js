@@ -54,6 +54,16 @@ function createGitHubApiDouble() {
       });
     }
 
+    if (url.pathname === '/repos/public/repo' && method === 'GET') {
+      return jsonResponse({
+        full_name: 'public/repo',
+        default_branch: 'main',
+        archived: false,
+        private: false,
+        permissions: { push: true },
+      });
+    }
+
     if (url.pathname === '/user/repos' && method === 'POST') {
       createdRepositoryPayload = JSON.parse(String(init.body));
       return jsonResponse({
@@ -169,6 +179,10 @@ await assert.rejects(
 await assert.rejects(
   () => GitHubRepositoryClient.connect('read-only/repo', token, api.fetcher),
   /write access/,
+);
+await assert.rejects(
+  () => GitHubRepositoryClient.connect('public/repo', token, api.fetcher),
+  /only connects to private repositories/,
 );
 
 const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-github-bridge-'));
