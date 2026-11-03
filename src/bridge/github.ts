@@ -22,6 +22,13 @@ export interface GitHubContentEntry {
   type: 'file' | 'dir' | string;
 }
 
+export interface GitHubAccountRepository {
+  full_name: string;
+  private: boolean;
+  archived: boolean;
+  push: boolean;
+}
+
 export async function getGitHubAccessToken(): Promise<string> {
   const environmentToken = process.env.GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim();
   if (environmentToken) return environmentToken;
@@ -42,10 +49,6 @@ export async function getGitHubAccessToken(): Promise<string> {
     'GitHub mode needs an authenticated GitHub CLI session or GITHUB_TOKEN. ' +
     'Install GitHub CLI from https://cli.github.com/, run "gh auth login", then restart Desktop Commander.',
   );
-}
-
-function encodeRepositoryPath(value: string): string {
-  return value.split('/').map((segment) => encodeURIComponent(segment)).join('/');
 }
 
 function parseErrorMessage(body: string, status: number): string {
@@ -104,6 +107,45 @@ export class GitHubRepositoryClient {
     return new GitHubRepositoryClient(repository, metadata.default_branch, token, fetcher);
   }
 
+  static async getAccount(
+    token: string,
+    fetcher: typeof fetch = fetch,
+  ): Promise<{ login: string }> {
+    const client = new GitHubRepositoryClient('', '', token, fetcher);
+    const value = await client.requestJson('/user') as { login?: unknown };
+    if (typeof value.login !== 'string' || !value.login) {
+      throw new Error('GitHub did not return the authenticated account name.');
+    }
+    return { login: value.login };
+  }
+
+  static async listAccessibleRepositories(
+    token: string,
+    fetcher: typeof fetch = fetch,
+  ): Promise<GitHubAccountRepository[]> {
+    const client = new GitHubRepositoryClient('', '', token, fetcher);
+    const repositories: GitHubAccountRepository[] = [];
+    for (let page = 1; page <= 10; page++) {
+      const value = await client.requestJson(
+        '/user/repos?visibility=all&affiliation=owner,collaborator,organization_member&sort=updated&per_page=100&page=' + page,
+      );
+      if (!Array.isArray(value)) throw new Error('GitHub repository listing returned an unexpected response.');
+      const current = value.filter((item): item is Record<string, unknown> =>
+        typeof item === 'object' && item !== null
+        && typeof item.full_name === 'string')
+        .map((item) => ({
+          full_name: String(item.full_name),
+          private: item.private === true,
+          archived: item.archived === true,
+          push: typeof item.permissions === 'object' && item.permissions !== null
+            && (item.permissions as Record<string, unknown>).push === true,
+        }));
+      repositories.push(...current);
+      if (value.length < 100) break;
+    }
+    return repositories;
+  }
+
   static async createPrivateRepository(
     name: string,
     token: string,
@@ -138,38 +180,15 @@ export class GitHubRepositoryClient {
   }
 
   async getAuthenticatedUser(): Promise<{ login: string }> {
-    const value = await this.requestJson('/user') as { login?: unknown };
-    if (typeof value.login !== 'string' || !value.login) {
-      throw new Error('GitHub did not return the authenticated account name.');
-    }
-    return { login: value.login };
+    return GitHubRepositoryClient.getAccount(this.token, this.fetcher);
   }
 
-  async listRepositories(): Promise<Array<{ full_name: string; private: boolean; archived: boolean; push: boolean }>> {
-    const repositories: Array<{ full_name: string; private: boolean; archived: boolean; push: boolean }> = [];
-    for (let page = 1; page <= 10; page++) {
-      const value = await this.requestJson(
-        '/user/repos?visibility=all&affiliation=owner,collaborator,organization_member&sort=updated&per_page=100&page=' + page,
-      );
-      if (!Array.isArray(value)) throw new Error('GitHub repository listing returned an unexpected response.');
-      const current = value.filter((item): item is Record<string, unknown> =>
-        typeof item === 'object' && item !== null
-        && typeof item.full_name === 'string')
-        .map((item) => ({
-          full_name: String(item.full_name),
-          private: item.private === true,
-          archived: item.archived === true,
-          push: typeof item.permissions === 'object' && item.permissions !== null
-            && (item.permissions as Record<string, unknown>).push === true,
-        }));
-      repositories.push(...current);
-      if (value.length < 100) break;
-    }
-    return repositories;
+  async listRepositories(): Promise<GitHubAccountRepository[]> {
+    return GitHubRepositoryClient.listAccessibleRepositories(this.token, this.fetcher);
   }
 
   async listDirectory(directory: string): Promise<GitHubContentEntry[]> {
-    const suffix = directory ? '/' + encodeRepositoryPath(directory) : '';
+    const suffix = directory ? '/' + directory.split('/').map(encodeURIComponent).join('/') : '';
     try {
       const value = await this.requestJson(
         '/repos/' + this.repository + '/contents' + suffix + '?ref=' + encodeURIComponent(this.defaultBranch),
@@ -197,8 +216,9 @@ export class GitHubRepositoryClient {
   }
 
   async readFile(filePath: string): Promise<Buffer> {
+    const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
     const response = await this.request(
-      '/repos/' + this.repository + '/contents/' + encodeRepositoryPath(filePath) +
+      '/repos/' + this.repository + '/contents/' + encodedPath +
       '?ref=' + encodeURIComponent(this.defaultBranch),
       { accept: 'application/vnd.github.raw+json' },
     );
@@ -212,7 +232,8 @@ export class GitHubRepositoryClient {
         ' bytes (50 MiB); ' + filePath + ' is ' + bytes.length + ' bytes.',
       );
     }
-    const url = '/repos/' + this.repository + '/contents/' + encodeRepositoryPath(filePath);
+    const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+    const url = '/repos/' + this.repository + '/contents/' + encodedPath;
     const responseBody = {
       message,
       content: bytes.toString('base64'),
