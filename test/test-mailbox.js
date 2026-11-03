@@ -9,7 +9,8 @@ try {
   await withEnv({ HOME: home, USERPROFILE: home }, async () => {
     const { mailboxStore } = await import('../dist/mailbox.js');
     const { BRIDGE_TOOL_NAMES } = await import('../dist/bridge/protocol.js');
-    assert.equal(BRIDGE_TOOL_NAMES.includes('mailbox'), false, 'mailbox messages must not enter the cloud-folder bridge');
+    assert.equal(BRIDGE_TOOL_NAMES.includes('mailbox'), true, 'mailbox must be exposed as a normal cloud-folder bridge tool');
+    const { executeToolForBridge } = await import('../dist/server.js');
     const alice = await mailboxStore.register('Alice');
     const bob = await mailboxStore.register('Bob');
     assert.equal(alice.existing, false);
@@ -48,7 +49,41 @@ try {
     const result = await mailboxStore.deleteUser('Alice');
     assert.equal(result.deletedMessages, 1, 'deleting a user removes the remaining messages they sent or received');
     assert.equal((await mailboxStore.listUsers()).some(user => user.username === 'Alice'), false);
-    console.log('✓ mailbox registration, local persistence, send/read, unread tracking, user management, and message management');
+
+    // Exercise the same dispatcher used by cloud-folder bridge requests.
+    const bridgeSenderResult = await executeToolForBridge('mailbox', {
+      action: 'register', username: 'Bridge Sender',
+    });
+    assert.equal(bridgeSenderResult.isError, undefined);
+    const bridgeSender = JSON.parse(bridgeSenderResult.content[0].text);
+    const bridgeRecipientResult = await executeToolForBridge('mailbox', {
+      action: 'register', username: 'Bridge Recipient',
+    });
+    const bridgeRecipient = JSON.parse(bridgeRecipientResult.content[0].text);
+
+    const bridgeSend = await executeToolForBridge('mailbox', {
+      action: 'send',
+      mailbox_user_id: bridgeSender.mailbox_user_id,
+      to: 'Bridge Recipient',
+      message: 'Message sent through the cloud-folder bridge.',
+    });
+    assert.equal(bridgeSend.isError, undefined);
+
+    const bridgeNotice = await executeToolForBridge('get_config', {
+      mailbox_user_id: bridgeRecipient.mailbox_user_id,
+    });
+    assert.match(bridgeNotice.content[0].text, /1 new message/,
+      'ordinary bridge tool calls must preserve mailbox unread notices');
+
+    const bridgeInbox = await executeToolForBridge('mailbox', {
+      action: 'inbox_unread',
+      mailbox_user_id: bridgeRecipient.mailbox_user_id,
+    });
+    assert.equal(bridgeInbox.isError, undefined);
+    assert.match(bridgeInbox.content[0].text, /Message sent through the cloud-folder bridge\./);
+    assert.equal(await mailboxStore.unreadCount(bridgeRecipient.mailbox_user_id), 0);
+
+    console.log('✓ mailbox registration, local persistence, direct MCP and bridge dispatch, send/read, unread tracking, and user/message management');
   });
 } finally {
   await fs.rm(home, { recursive: true, force: true });
