@@ -1354,6 +1354,15 @@ async function cleanStorage(
   }
 }
 
+/**
+ * Request polling is the durable fallback when filesystem notifications fail.
+ * Do not unref this timer: the watcher may close, and this timer must keep the
+ * bridge alive so it can continue discovering synchronized request files.
+ */
+export function createBridgePollingTimer(scanRequests: () => void, intervalMs: number): NodeJS.Timeout {
+  return setInterval(scanRequests, intervalMs);
+}
+
 async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): Promise<void> {
   const activeFiles = new Set<string>();
   const activeResponseFiles = new Set<string>();
@@ -1458,9 +1467,11 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
     console.warn('Filesystem notifications unavailable; fallback polling remains active: ' + errorMessage(error));
   }
 
-  const pollTimer = setInterval(() => { void scanRequests(); }, settings.pollIntervalMs);
+  // Keep request polling referenced so it survives a failed or closed fs.watch handle.
+  // This is the recovery path for cloud-synced folders whose filesystem notifications
+  // are unreliable or unavailable.
+  const pollTimer = createBridgePollingTimer(() => { void scanRequests(); }, settings.pollIntervalMs);
   const cleanupTimer = setInterval(() => { void cleanup(); }, 60_000);
-  pollTimer.unref();
   cleanupTimer.unref();
 
   let resolveStop!: () => void;
