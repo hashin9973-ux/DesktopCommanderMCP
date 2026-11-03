@@ -112,6 +112,11 @@ assert.equal(
   extractQuickTunnelUrl('Tunnel ready https://quiet-marble-otter.trycloudflare.com'),
   'https://quiet-marble-otter.trycloudflare.com',
 );
+assert.equal(
+  extractQuickTunnelUrl('Tunnel ready https://quiet-marble-otter.trycloudflare.com\r\n'),
+  'https://quiet-marble-otter.trycloudflare.com',
+  'the URL parser must recognize the hostname when cloudflared terminates its log line',
+);
 assert.equal(extractQuickTunnelUrl('not a URL https://example.com'), undefined);
 assert.equal(
   extractQuickTunnelUrl('https://quiet-marble-otter.trycloudflare.com.attacker.example'),
@@ -137,7 +142,7 @@ const tunnel = await startCloudflareQuickTunnel('http://127.0.0.1:43210', {
   spawnProcess: (executable, args, options) => {
     tunnelSpawnCall = { executable, args, options };
     setImmediate(() => {
-      fakeTunnelChild.stderr.write('Your quick Tunnel has been created! Visit it at: https://quiet-marble-otter.trycloudflare.com');
+      fakeTunnelChild.stderr.write('Your quick Tunnel has been created! Visit it at: https://quiet-marble-otter.trycloudflare.com\\r\\n');
     });
     return fakeTunnelChild;
   },
