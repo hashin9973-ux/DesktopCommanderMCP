@@ -1241,7 +1241,7 @@ function pathArguments(args: unknown): unknown[] {
 
 export async function executeToolForBridge(name: string, args: unknown): Promise<ServerResult> {
     const schema = toolArgSchemas[name];
-    if (!schema || name === 'track_ui_event') {
+    if (!schema || name === 'track_ui_event' || name === 'mailbox') {
         return { content: [{ type: 'text', text: `Error: Unknown or unavailable tool: ${name}` }], isError: true };
     }
 
