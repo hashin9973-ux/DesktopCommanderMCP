@@ -66,7 +66,7 @@ async function runGitHubCliLogin(cliPath: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(
       cliPath,
-      ['auth', 'login', '--web', '--hostname', 'github.com', '--git-protocol', 'https'],
+      ['auth', 'login', '--web', '--hostname', 'github.com', '--git-protocol', 'https', '--scopes', 'admin:repo_hook'],
       { stdio: 'inherit', windowsHide: false },
     );
     child.once('error', reject);
@@ -106,7 +106,7 @@ export async function getGitHubAccessToken(
   if (!interactive) {
     throw new Error(
       'No GitHub session is configured. Start the GitHub bridge in an interactive terminal to sign in through the browser, ' +
-      'or set GITHUB_TOKEN/GH_TOKEN for a headless session. For manual setup, run "gh auth login --web --hostname github.com".',
+      'or set GITHUB_TOKEN/GH_TOKEN for a headless session. For manual setup, run "gh auth login --web --hostname github.com --scopes admin:repo_hook".',
     );
   }
 
@@ -148,6 +148,69 @@ function parseErrorMessage(body: string, status: number): string {
     // Fall through to a safe status-only error.
   }
   return 'GitHub API request failed with HTTP ' + status + '.';
+}
+
+
+export interface GitHubWebhookScopeDependencies {
+  env?: NodeJS.ProcessEnv;
+  interactive?: boolean;
+  cliPath?: string;
+  refresh?: (cliPath: string) => Promise<void>;
+  readToken?: (cliPath: string) => Promise<string>;
+}
+
+async function runGitHubCliWebhookScopeRefresh(cliPath: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(
+      cliPath,
+      ['auth', 'refresh', '--hostname', 'github.com', '--scopes', 'admin:repo_hook'],
+      { stdio: 'inherit', windowsHide: false },
+    );
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (code === 0 && signal === null) resolve();
+      else reject(new Error(
+        'GitHub CLI could not add the admin:repo_hook permission' +
+        (signal ? ' (signal ' + signal + ').' : ' (exit code ' + code + ').'),
+      ));
+    });
+  });
+}
+
+export async function refreshGitHubAccessTokenForWebhooks(
+  dependencies: GitHubWebhookScopeDependencies = {},
+): Promise<string> {
+  const environment = dependencies.env || process.env;
+  if (environment.GITHUB_TOKEN?.trim() || environment.GH_TOKEN?.trim()) {
+    throw new Error(
+      'The configured GITHUB_TOKEN/GH_TOKEN needs repository Webhooks: write permission for a fine-grained personal access token, or the admin:repo_hook scope for a classic token. ' +
+      'Update the token permissions and restart the bridge.',
+    );
+  }
+
+  const interactive = dependencies.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  if (!interactive) {
+    throw new Error(
+      'GitHub webhook registration needs repository Webhooks: write permission. ' +
+      'Run the bridge interactively to authorize admin:repo_hook, or configure a fine-grained token with Webhooks: write.',
+    );
+  }
+
+  const cliPath = dependencies.cliPath || resolveGitHubCliPath();
+  const refresh = dependencies.refresh || runGitHubCliWebhookScopeRefresh;
+  const readToken = dependencies.readToken || readGitHubCliToken;
+  try {
+    await refresh(cliPath);
+    const token = await readToken(cliPath);
+    if (!token.trim()) throw new Error('GitHub CLI returned an empty token after permission refresh.');
+    return token.trim();
+  } catch (error) {
+    throw new Error(
+      'Could not authorize GitHub webhook management. Approve the GitHub CLI request for admin:repo_hook, ' +
+      'or use a fine-grained personal access token with Webhooks: write. ' +
+      (error instanceof Error ? error.message : String(error)),
+    );
+  }
 }
 
 export class GitHubRepositoryClient {
@@ -290,6 +353,81 @@ export class GitHubRepositoryClient {
 
   async listRepositories(): Promise<GitHubAccountRepository[]> {
     return GitHubRepositoryClient.listAccessibleRepositories(this.token, this.fetcher);
+  }
+
+  async upsertPushWebhook(
+    existingHookId: number | undefined,
+    targetUrl: string,
+    secret: string,
+  ): Promise<number> {
+    const parsedUrl = new URL(targetUrl);
+    if (parsedUrl.protocol !== 'https:' || !parsedUrl.hostname.endsWith('.trycloudflare.com')) {
+      throw new Error('GitHub push webhook URL must be an HTTPS Cloudflare Quick Tunnel URL.');
+    }
+    if (!secret || secret.length < 32) {
+      throw new Error('GitHub webhook secret must contain at least 32 characters.');
+    }
+
+    const payload = {
+      name: 'web',
+      active: true,
+      events: ['push'],
+      config: {
+        url: parsedUrl.origin + parsedUrl.pathname,
+        content_type: 'json',
+        secret,
+        insecure_ssl: '0',
+      },
+    };
+
+    const create = async (): Promise<number> => {
+      try {
+        const created = await this.requestJson('/repos/' + this.repository + '/hooks', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        }) as { id?: unknown };
+        if (!Number.isSafeInteger(created.id) || Number(created.id) <= 0) {
+          throw new Error('GitHub created a webhook without returning a valid hook ID.');
+        }
+        return Number(created.id);
+      } catch (error) {
+        if (error instanceof GitHubApiError && (error.status === 403 || error.status === 404)) {
+          throw new GitHubApiError(
+            error.status,
+            'GitHub denied repository webhook creation. Your account must own or have admin access to this repository. ' +
+            'The credential needs Webhooks: write (fine-grained token) or admin:repo_hook (GitHub CLI OAuth). ' +
+            'GitHub said: ' + error.message,
+          );
+        }
+        throw error;
+      }
+    };
+
+    if (!Number.isSafeInteger(existingHookId) || Number(existingHookId) <= 0) {
+      return create();
+    }
+
+    try {
+      const updated = await this.requestJson(
+        '/repos/' + this.repository + '/hooks/' + existingHookId,
+        { method: 'PATCH', body: JSON.stringify(payload) },
+      ) as { id?: unknown };
+      if (!Number.isSafeInteger(updated.id) || Number(updated.id) <= 0) {
+        throw new Error('GitHub updated a webhook without returning a valid hook ID.');
+      }
+      return Number(updated.id);
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) return create();
+      if (error instanceof GitHubApiError && error.status === 403) {
+        throw new GitHubApiError(
+          error.status,
+          'GitHub denied repository webhook updates. Your account must own or have admin access to this repository. ' +
+          'The credential needs Webhooks: write (fine-grained token) or admin:repo_hook (GitHub CLI OAuth). ' +
+          'GitHub said: ' + error.message,
+        );
+      }
+      throw error;
+    }
   }
 
   async listDirectory(directory: string): Promise<GitHubContentEntry[]> {

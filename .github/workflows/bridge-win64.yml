@@ -40,6 +40,7 @@ jobs:
           test-bridge-protocol.js
           test-bridge-guide.js
           test-bridge-github.js
+          test-bridge-github-webhook.js
           test-bridge-github-auth.js
           test-atomic-write.js
           test-file-handlers.js
@@ -87,6 +88,30 @@ jobs:
           & (Join-Path $targetDir "gh.exe") --version
           if ($LASTEXITCODE -ne 0) {
             throw "The bundled GitHub CLI failed its version check."
+          }
+
+
+      - name: Bundle verified Cloudflare Quick Tunnel client
+        shell: pwsh
+        run: |
+          $version = "2026.10.7"
+          $targetDir = Join-Path $PWD "build\PortableBridge\tools"
+          New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+          $cloudflaredPath = Join-Path $targetDir "cloudflared.exe"
+          $downloadUrl = "https://github.com/cloudflare/cloudflared/releases/download/$version/cloudflared-windows-amd64.exe"
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $cloudflaredPath
+
+          $expectedSha256 = "2493dbc168923bb3e59e5e7716f71deced92992eea9acd6e9d74f84ac7751343"
+          $actualSha256 = (Get-FileHash -Path $cloudflaredPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "cloudflared SHA-256 mismatch. Expected $expectedSha256; got $actualSha256."
+          }
+
+          $licensePath = Join-Path $targetDir "cloudflared-LICENSE"
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/cloudflare/cloudflared/$version/LICENSE" -OutFile $licensePath
+          $versionOutput = (& $cloudflaredPath --version 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch [regex]::Escape($version)) {
+            throw "The bundled cloudflared executable failed its version check. Expected $version; got $versionOutput."
           }
 
       - name: Verify executable CLI
