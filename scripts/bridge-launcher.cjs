@@ -25,12 +25,14 @@ async function selectMode() {
     process.stdout.write('\nDesktop Commander — choose a mode\n');
     process.stdout.write('  1. MCP server (standard MCP stdio)\n');
     process.stdout.write('  2. Cloud-folder bridge\n');
-    process.stdout.write('  3. GitHub repository bridge\n\n');
-    const choice = (await readline.question('Select 1, 2, or 3 [default 1]: ')).trim();
+    process.stdout.write('  3. GitHub repository bridge\n');
+    process.stdout.write('  4. Local OpenAI-compatible API (KoboldCpp)\n\n');
+    const choice = (await readline.question('Select 1, 2, 3, or 4 [default 1]: ')).trim();
     if (!choice || choice === '1') return [];
     if (choice === '2') return ['bridge', '--provider', 'cloud'];
     if (choice === '3') return ['bridge', '--provider', 'github'];
-    throw new Error('Invalid mode selection. Choose 1, 2, or 3.');
+    if (choice === '4') return ['local-api'];
+    throw new Error('Invalid mode selection. Choose 1, 2, 3, or 4.');
   } finally {
     readline.close();
   }
