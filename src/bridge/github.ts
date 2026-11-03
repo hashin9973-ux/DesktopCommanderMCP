@@ -45,7 +45,7 @@ function resolveGitHubCliPath(): string {
   // Resolve it relative to app/dist/bridge/github.js in that layout.
   const bundledCli = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
-    '../../../tools/gh/bin/gh.exe',
+    '../../../tools/gh.exe',
   );
   if (process.platform === 'win32' && existsSync(bundledCli)) return bundledCli;
   return process.platform === 'win32' ? 'gh.exe' : 'gh';
