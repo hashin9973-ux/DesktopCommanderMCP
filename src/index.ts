@@ -43,6 +43,13 @@ async function runServer() {
       return;
     }
 
+    // Run the cloud-folder bridge as a separate, non-MCP operating mode.
+    if (process.argv[2] === 'bridge') {
+      const { runBridge } = await import('./bridge/index.js');
+      await runBridge(process.argv.slice(3));
+      return;
+    }
+
     // Parse command line arguments for onboarding control
     const DISABLE_ONBOARDING = process.argv.includes('--no-onboarding');
     if (DISABLE_ONBOARDING) {

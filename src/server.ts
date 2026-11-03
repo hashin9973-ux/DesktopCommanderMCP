@@ -1,4 +1,5 @@
 import path from 'path';
+import { AsyncLocalStorage } from 'async_hooks';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
     CallToolRequestSchema,
@@ -59,6 +60,7 @@ import {
     WritePdfArgsSchema,
     toolArgSchemas,
 } from './tools/schemas.js';
+import { validatePath } from './tools/filesystem.js';
 import {
     detectUnsupportedParams,
     getSupportedParams,
@@ -142,6 +144,9 @@ server.setRequestHandler(ListPromptsRequestSchema, async () => {
 
 // Store current client info (simple variable)
 let currentClient = { name: 'uninitialized', version: 'uninitialized' };
+
+// Bridge calls are local tool executions, but they must not inherit client-only onboarding/feedback behavior.
+const bridgeExecutionContext = new AsyncLocalStorage<boolean>();
 
 // Tracks whether the in-flight tool call originated from a remote device.
 // Mirrors the module-level `currentClient` pattern so that telemetry events
@@ -1202,6 +1207,51 @@ function pathArguments(args: unknown): unknown[] {
         .map(([, value]) => value);
 }
 
+export async function executeToolForBridge(name: string, args: unknown): Promise<ServerResult> {
+    const schema = toolArgSchemas[name];
+    if (!schema || name === 'track_ui_event') {
+        return { content: [{ type: 'text', text: `Error: Unknown or unavailable tool: ${name}` }], isError: true };
+    }
+
+    const rawArgs = args === undefined || args === null ? {} : args;
+    if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs) && (rawArgs as Record<string, unknown>).origin === 'ui') {
+        return { content: [{ type: 'text', text: 'Error: Bridge requests cannot use origin "ui".' }], isError: true };
+    }
+    const unsupported = detectUnsupportedParams(rawArgs, schema);
+    if (unsupported.length > 0) {
+        return {
+            content: [{
+                type: 'text',
+                text: `Error: Unsupported argument(s) for ${name}: ${unsupported.join(', ')}. Request rejected before execution.`,
+            }],
+            isError: true,
+        };
+    }
+
+    const parsed = schema.safeParse(rawArgs);
+    if (!parsed.success || !parsed.data || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) {
+        const details = parsed.success
+            ? 'Arguments must resolve to a JSON object.'
+            : parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ');
+        return { content: [{ type: 'text', text: `Error: Invalid arguments for ${name}: ${details}` }], isError: true };
+    }
+
+    return bridgeExecutionContext.run(true, () => runWithToolCallPaths(() => {
+        addToolCallPaths(...pathArguments(parsed.data));
+        return handleCallToolRequest({
+            method: 'tools/call',
+            params: { name, arguments: parsed.data },
+        } as CallToolRequest);
+    }));
+}
+
+export async function validateBridgeArtifactPath(filePath: string): Promise<string> {
+    return runWithToolCallPaths(() => {
+        addToolCallPaths(filePath);
+        return validatePath(filePath);
+    });
+}
+
 async function handleCallToolRequest(request: CallToolRequest): Promise<ServerResult> {
     const { name, arguments: args } = request.params;
     const startTime = Date.now();
@@ -1452,7 +1502,7 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
             console.log(`[FEEDBACK DEBUG] Tool ${name} succeeded, checking feedback...`);
 
             // Check if should prompt for feedback (only on successful operations)
-            const shouldPrompt = await usageTracker.shouldPromptForFeedback();
+            const shouldPrompt = !bridgeExecutionContext.getStore() && await usageTracker.shouldPromptForFeedback();
             console.log(`[FEEDBACK DEBUG] Should prompt for feedback: ${shouldPrompt}`);
 
             if (shouldPrompt) {
@@ -1490,8 +1540,10 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
                 await usageTracker.markFeedbackPrompted();
             }
 
-            // Check if should prompt about Docker environment
-            result = await processDockerPrompt(result, name);
+            // MCP-only environment guidance must not be injected into bridge file responses.
+            if (!bridgeExecutionContext.getStore()) {
+                result = await processDockerPrompt(result, name);
+            }
         }
 
         // If the caller sent parameters this tool does not support, Zod silently

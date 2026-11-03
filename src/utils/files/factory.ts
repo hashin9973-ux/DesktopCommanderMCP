@@ -137,12 +137,10 @@ export type FileAction = 'read' | 'write' | 'edit';
  * loaded in the background one at a time, smaller first, so each pause of the
  * main thread is one package.
  */
-export function preloadFileSupport(): void {
-    void (async () => {
-        for (const pkg of [pizzipPackage, pdfLibPackage, pdf2mdPackage, unpdfPackage, exceljsPackage, mdToPdfPackage]) {
-            await pkg.preload();
-        }
-    })();
+export async function preloadFileSupport(): Promise<void> {
+    for (const pkg of [pizzipPackage, pdfLibPackage, pdf2mdPackage, unpdfPackage, exceljsPackage, mdToPdfPackage]) {
+        await pkg.preload();
+    }
 }
 
 /** The packages a file needs for `action`, by the handlers' canHandle() (its name, no disk access) */

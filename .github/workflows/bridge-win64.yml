@@ -1,0 +1,173 @@
+name: Windows x64 bridge executable
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke-test:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.23.4
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and run bridge and security regression tests
+        run: >-
+          npm test --
+          test-bridge-protocol.js
+          test-atomic-write.js
+          test-file-handlers.js
+          test-read-multiple-files.js
+          test-allowed-directories.js
+          test-blocked-commands.js
+          test-startup-imports.js
+          test-image-write-file-append.js
+
+      - name: Build standalone Windows x64 executable
+        run: npm run build:bridge:win64
+
+      - name: Verify executable CLI
+        shell: pwsh
+        run: |
+          & build\PortableBridge\DesktopCommanderBridge.exe bridge --help
+          if ($LASTEXITCODE -ne 0) { throw "Bridge executable help command failed." }
+
+      - name: Smoke-test file bridge and image artifact export
+        shell: pwsh
+        run: |
+          $cloudDir = Join-Path $env:TEMP "DesktopCommanderBridgeSmoke"
+          $stateDir = Join-Path $env:LOCALAPPDATA "DesktopCommanderBridge"
+          New-Item -ItemType Directory -Force -Path $cloudDir, (Join-Path $cloudDir 'requests'), $stateDir | Out-Null
+
+          $settings = @{
+            directory = $cloudDir
+            pollIntervalMs = 1000
+            commandDelayMs = 0
+            maxParallelRequests = 0
+            maxStorageBytes = 3000000000
+            consentAccepted = $true
+          } | ConvertTo-Json
+          [System.IO.File]::WriteAllText(
+            (Join-Path $stateDir "settings.json"),
+            $settings,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+          $imagePath = Join-Path $cloudDir "pixel.png"
+          $png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/pWQAAAAASUVORK5CYII="
+          [System.IO.File]::WriteAllBytes($imagePath, [Convert]::FromBase64String($png))
+
+          $imageRequest = @{
+            protocol_version = 1
+            id = "smoke-image"
+            command_delay_ms = 5000
+            commands = @(
+              @{ tool = "read_file"; arguments = @{ path = $imagePath } },
+              @{ tool = "get_file_info"; arguments = @{ path = $imagePath } }
+            )
+          } | ConvertTo-Json -Depth 20
+          $configRequest = @{
+            protocol_version = 1
+            id = "smoke-config"
+            commands = @(
+              @{ tool = "get_config"; arguments = @{} }
+            )
+          } | ConvertTo-Json -Depth 20
+
+          [System.IO.File]::WriteAllText(
+            (Join-Path $cloudDir "requests\request-smoke-image.json"),
+            $imageRequest,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          [System.IO.File]::WriteAllText(
+            (Join-Path $cloudDir "requests\request-smoke-config.json"),
+            $configRequest,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+          $exe = (Resolve-Path "build\PortableBridge\DesktopCommanderBridge.exe").Path
+          $processArgs = 'bridge --directory "' + $cloudDir + '" --max-parallel 0'
+          $stdout = Join-Path $env:TEMP "dc-bridge-smoke-out.txt"
+          $stderr = Join-Path $env:TEMP "dc-bridge-smoke-err.txt"
+          $process = Start-Process -FilePath $exe -ArgumentList $processArgs -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+
+          try {
+            $imageResponsePath = Join-Path $cloudDir "responses\response-smoke-image.json"
+            $configResponsePath = Join-Path $cloudDir "responses\response-smoke-config.json"
+
+            # The first request pauses for five seconds between its two commands.
+            # The independent request must complete during that pause.
+            $parallelDeadline = (Get-Date).AddSeconds(3)
+            while ((Get-Date) -lt $parallelDeadline -and !(Test-Path $configResponsePath)) {
+              if ($process.HasExited) {
+                throw "Bridge exited before the independent request completed. stdout: $(Get-Content $stdout -Raw -ErrorAction SilentlyContinue) stderr: $(Get-Content $stderr -Raw -ErrorAction SilentlyContinue)"
+              }
+              Start-Sleep -Milliseconds 100
+            }
+            if (!(Test-Path $configResponsePath)) {
+              throw "A separate request file did not complete while the first request was in its configured 5-second command delay."
+            }
+            if (Test-Path $imageResponsePath) {
+              throw "The two commands in one request did not respect the configured sequential command delay."
+            }
+
+            $deadline = (Get-Date).AddSeconds(60)
+            while ((Get-Date) -lt $deadline -and !(Test-Path $imageResponsePath)) {
+              if ($process.HasExited) {
+                throw "Bridge exited before producing the image response. stdout: $(Get-Content $stdout -Raw -ErrorAction SilentlyContinue) stderr: $(Get-Content $stderr -Raw -ErrorAction SilentlyContinue)"
+              }
+              Start-Sleep -Milliseconds 200
+            }
+            if (!(Test-Path $imageResponsePath)) {
+              throw "Bridge did not finish the sequential image request within 60 seconds."
+            }
+
+            $imageResponse = Get-Content $imageResponsePath -Raw | ConvertFrom-Json
+            $configResponse = Get-Content $configResponsePath -Raw | ConvertFrom-Json
+            if ($imageResponse.status -ne "completed" -or $imageResponse.results.Count -ne 2) {
+              throw "Sequential multi-command image request failed: $($imageResponse | ConvertTo-Json -Depth 10)"
+            }
+            if ($configResponse.status -ne "completed") {
+              throw "Independent config request failed: $($configResponse | ConvertTo-Json -Depth 10)"
+            }
+            if ($imageResponse.artifacts.Count -lt 1) {
+              throw "Image read did not produce an artifact reference."
+            }
+
+            $relativeArtifact = $imageResponse.artifacts[0].path.Replace('/', '\')
+            $artifactPath = Join-Path $cloudDir $relativeArtifact
+            if (!(Test-Path $artifactPath)) {
+              throw "The image artifact referenced by the response was not materialized: $artifactPath"
+            }
+            if (!(Test-Path (Join-Path $cloudDir "README.md"))) {
+              throw "Bridge did not generate README.md in the configured cloud folder."
+            }
+          }
+          finally {
+            if (!$process.HasExited) {
+              Stop-Process -Id $process.Id -Force
+              $process.WaitForExit()
+            }
+          }
+
+      - name: Upload portable executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: DesktopCommanderBridge-win-x64-portable
+          path: build/PortableBridge/
+          if-no-files-found: error
+          retention-days: 30
