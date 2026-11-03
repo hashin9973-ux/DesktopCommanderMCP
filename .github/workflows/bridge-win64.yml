@@ -29,6 +29,7 @@ jobs:
         run: >-
           npm test --
           test-bridge-protocol.js
+          test-bridge-guide.js
           test-atomic-write.js
           test-file-handlers.js
           test-read-multiple-files.js
