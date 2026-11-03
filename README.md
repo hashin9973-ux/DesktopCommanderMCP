@@ -71,6 +71,7 @@ Execute long-running terminal commands on your computer and manage processes thr
   - Multiple file support
   - Pattern-based replacements
   - vscode-ripgrep based recursive code or text search in folders
+- **Optional local AI mailbox** - Register named AI/user identities, send messages between agents, read unread mail, and receive unread-message notices in ordinary tool results. Mail stays on the app device and is not synchronized through the cloud-folder bridge.
 - Local tool-call history and audit logs:
   - Tool calls and arguments are recorded locally on the machine running Desktop Commander
   - Recent call history with bounded output previews is available through `get_recent_tool_calls`
@@ -599,6 +600,42 @@ The server provides a comprehensive set of tools organized into several categori
 | **Analytics** | `get_usage_stats` | Get usage statistics for your own insight |
 | | `get_recent_tool_calls` | Get recent tool call history with arguments and outputs for debugging and context recovery |
 | | `give_feedback_to_desktop_commander` | Open feedback form in browser to provide feedback to Desktop Commander Team |
+| **Messaging** | `mailbox` | Optional local mailbox for AI/user registration, unread messages, message sending, user lists, and filtered history |
+
+### Local Mailbox and AI Handoffs
+
+The mailbox is an **optional, app-side messaging system** for passing work between AI sessions or between an AI and the local user. It does not use cloud storage or a remote mailbox service. Sessions must reach the same Desktop Commander app/server instance to share its mailbox. The cloud-folder bridge intentionally does not expose mailbox actions or message contents because its request/response files are synchronized.
+
+1. Register an identity with the `mailbox` tool using `action: "register"` and a `username`. The result includes a stable, unique `mailbox_user_id`.
+2. To opt in to notifications, include `mailbox_user_id` in every subsequent local MCP tool call (not cloud-folder bridge requests). If unread mail exists, the result begins with a notice such as `10 new messages. Use mailbox action=inbox_unread to read.` Calls without the ID work exactly as before and do not receive mailbox notices.
+3. Use `mailbox` with `action: "send"`, `to` (a registered username), and `message` to hand work to another identity. The sender is the identity in `mailbox_user_id`.
+4. Use `action: "inbox_unread"` to read and mark all unread messages as read. Use `action: "list_users"` to see registered identities and relative last activity, or `action: "read"` to inspect message history with optional `user`, `from`, `to`, `unreadOnly`, and `limit` filters.
+
+Mailbox data is stored locally at `~/.claude-server-commander/mailbox.json` (Windows: `%USERPROFILE%\.claude-server-commander\mailbox.json`). It is not uploaded or synchronized. Mailbox tool calls and message contents are not copied into the general tool-call argument log or recent-call history. Mailbox IDs are identifiers, **not authentication credentials**; anyone who can call the local app/server or modify its data directory is within the same trust boundary.
+
+#### Mailbox shell administration
+
+Run these commands in a terminal on the machine running Desktop Commander:
+
+```sh
+# List users and their last activity
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox users
+
+# Read all mail, or filter by user/sender/recipient/unread state
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox read
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox read --user AgentA --unread
+
+# Send a message as the local human identity (creates the User identity if needed)
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox send-as-user AgentA "Please pause; I am taking over."
+
+# Manage identities and messages
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox rename-user AgentA AgentB
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox delete-user AgentB
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox edit-mail MESSAGE_ID "Updated instructions"
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox delete-mail MESSAGE_ID
+```
+
+The same CLI is available from a local checkout with `node dist/index.js mailbox ...`. Deleting a user also deletes messages sent or received by that user. These CLI commands are administrative local access; protect the machine account and mailbox file accordingly.
 
 ### Quick Examples
 

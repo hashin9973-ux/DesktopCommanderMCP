@@ -14,7 +14,7 @@ export interface BridgeRequest {
 }
 
 const REQUEST_FILE_PATTERN = /^request-([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/i;
-const HIDDEN_TOOLS = new Set(['track_ui_event']);
+const HIDDEN_TOOLS = new Set(['track_ui_event', 'mailbox']);
 export const BRIDGE_TOOL_NAMES = Object.keys(toolArgSchemas)
   .filter((name) => !HIDDEN_TOOLS.has(name))
   .sort();

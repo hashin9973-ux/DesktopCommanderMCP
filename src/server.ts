@@ -30,7 +30,7 @@ const SERVER_INSTRUCTIONS = `Desktop Commander provides tools for working with t
 - Terminal process tools support shell commands, REPLs, and long-running processes. start_process creates a process session; interact_with_process sends input; read_process_output reads later output; force_terminate ends a session.
 - Search tools are session-based. start_search creates a search session; get_more_search_results reads its results; stop_search ends it early.
 - Absolute paths are generally the most reliable because relative paths depend on the active working directory.
-- allowedDirectories and each tool's schema, annotations, and documented constraints define the operational boundaries.`;
+- allowedDirectories and each tool's schema, annotations, and documented constraints define the operational boundaries.\n- Optional local mailbox identities can be registered with the mailbox tool; include mailbox_user_id in tool calls to receive unread-message notices. Mail stays on this device.`;
 
 import {
     StartProcessArgsSchema,
@@ -57,6 +57,7 @@ import {
     StopSearchArgsSchema,
     ListSearchesArgsSchema,
     GetRecentToolCallsArgsSchema,
+    MailboxArgsSchema,
     WritePdfArgsSchema,
     toolArgSchemas,
 } from './tools/schemas.js';
@@ -85,6 +86,7 @@ import {
 } from './ui/contracts.js';
 import { listUiResources, readUiResource } from './ui/resources.js';
 import { shouldShowMcpUiPreviews } from './utils/mcp-ui-ab-test.js';
+import { mailboxStore } from './mailbox.js';
 
 // Store startup messages to send after initialization
 const deferredMessages: Array<{ level: string, message: string }> = [];
@@ -1146,10 +1148,40 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                     destructiveHint: false,
                 },
             },
+            {
+                name: "mailbox",
+                description: `
+                        Local, app-side messaging between registered AI/user identities. Mail is stored on this device and is not synchronized through the cloud-folder bridge.
+                        Actions: register (username), inbox_unread (requires mailbox_user_id), send (requires mailbox_user_id, to username, message), list_users, read (optional user/from/to/unreadOnly/limit filters).
+                        Register once, then include the returned mailbox_user_id in every tool call to receive an unread-message notice appended to ordinary tool results. Identity is optional and never required for normal tool use.
+                        ${CMD_PREFIX_DESCRIPTION}`,
+                inputSchema: zodToJsonSchema(MailboxArgsSchema),
+                annotations: {
+                    title: "Mailbox",
+                    readOnlyHint: false,
+                    openWorldHint: false,
+                    destructiveHint: false,
+                },
+            },
         ];
 
-        // Filter tools based on current client
-        const filteredTools = allTools.filter(tool => shouldIncludeTool(tool.name));
+        // mailbox_user_id is an optional common argument. It is deliberately
+        // advertised on every tool so clients can opt into result notifications.
+        const filteredTools = allTools
+            .filter(tool => shouldIncludeTool(tool.name))
+            .map((tool: any) => ({
+                ...tool,
+                inputSchema: {
+                    ...tool.inputSchema,
+                    properties: {
+                        ...(tool.inputSchema?.properties ?? {}),
+                        mailbox_user_id: {
+                            type: "string",
+                            description: "Optional local mailbox identity. Include this on each tool call to receive unread-message notices in results.",
+                        },
+                    },
+                },
+            }));
 
         // logToStderr('debug', `Returning ${filteredTools.length} tools (filtered from ${allTools.length} total) for client: ${currentClient?.name || 'unknown'}`);
 
@@ -1192,10 +1224,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
     // so telemetry can replace them whole in any error text the call produces
     return runWithToolCallPaths(() => {
         addToolCallPaths(...pathArguments(args));
-        if (isUiOriginCall) {
-            return runInUiOriginCallContext(() => handleCallToolRequest(request));
-        }
-        return handleCallToolRequest(request);
+        const call = isUiOriginCall
+            ? runInUiOriginCallContext(() => handleCallToolRequest(request))
+            : handleCallToolRequest(request);
+        return call.then(result => addMailboxNotice(result, request.params.name, args));
     });
 });
 
@@ -1209,7 +1241,7 @@ function pathArguments(args: unknown): unknown[] {
 
 export async function executeToolForBridge(name: string, args: unknown): Promise<ServerResult> {
     const schema = toolArgSchemas[name];
-    if (!schema || name === 'track_ui_event') {
+    if (!schema || name === 'track_ui_event' || name === 'mailbox') {
         return { content: [{ type: 'text', text: `Error: Unknown or unavailable tool: ${name}` }], isError: true };
     }
 
@@ -1252,8 +1284,29 @@ export async function validateBridgeArtifactPath(filePath: string): Promise<stri
     });
 }
 
+async function addMailboxNotice(result: ServerResult, toolName: string, args: unknown): Promise<ServerResult> {
+    if (toolName === 'track_ui_event' || !args || typeof args !== 'object') return result;
+    const callArgs = args as Record<string, unknown>;
+    if (toolName === 'mailbox' && callArgs.action === 'inbox_unread') return result;
+    const identity = callArgs.mailbox_user_id;
+    if (typeof identity !== 'string' || !identity.trim()) return result;
+    try {
+        const unread = await mailboxStore.unreadCount(identity);
+        if (unread > 0) {
+            const notice = `${unread} new message${unread === 1 ? '' : 's'}. Use mailbox with action="inbox_unread" and mailbox_user_id="${identity}" to read.`;
+            result.content = [{ type: 'text', text: notice }, ...(result.content ?? [])];
+        }
+    } catch {
+        // Mailbox is optional: an unavailable mailbox must never break other tools.
+    }
+    return result;
+}
+
 async function handleCallToolRequest(request: CallToolRequest): Promise<ServerResult> {
     const { name, arguments: args } = request.params;
+    const persistedArgs = args && typeof args === 'object' && !Array.isArray(args)
+        ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'mailbox_user_id'))
+        : args;
     const startTime = Date.now();
     // Hoisted above the try so the finally block can read them when emitting the
     // server_call_tool completion event (duration + status), even on the crash path.
@@ -1298,7 +1351,7 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
 
 
         // Track tool call
-        trackToolCall(name, args);
+        if (name !== 'mailbox') trackToolCall(name, persistedArgs);
 
         // Using a more structured approach with dedicated handlers
         // (result is declared above so the finally block can read execution status)
@@ -1351,6 +1404,55 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
                     };
                 }
                 break;
+
+            case "mailbox": {
+                try {
+                    const parsed = MailboxArgsSchema.parse(args);
+                    switch (parsed.action) {
+                        case 'register': {
+                            const registered = await mailboxStore.register(parsed.username!);
+                            result = { content: [{ type: 'text', text: JSON.stringify({
+                                status: registered.existing ? 'already_registered' : 'registered',
+                                username: registered.user.username,
+                                mailbox_user_id: registered.user.id,
+                                message: 'Save this mailbox_user_id and include it in every tool call to receive unread-mail notices.',
+                            }, null, 2) }] };
+                            break;
+                        }
+                        case 'inbox_unread': {
+                            const inbox = await mailboxStore.inboxUnread(parsed.mailbox_user_id!);
+                            result = { content: [{ type: 'text', text: inbox.messages.length
+                                ? JSON.stringify(inbox.messages, null, 2)
+                                : 'No unread messages.' }] };
+                            break;
+                        }
+                        case 'send': {
+                            if (!parsed.mailbox_user_id) throw new Error('mailbox_user_id is required to send mail.');
+                            const message = await mailboxStore.send(parsed.mailbox_user_id, parsed.to!, parsed.message!);
+                            result = { content: [{ type: 'text', text: `Message sent. Message ID: ${message.id}` }] };
+                            break;
+                        }
+                        case 'list_users': {
+                            result = { content: [{ type: 'text', text: JSON.stringify(await mailboxStore.listUsers(), null, 2) }] };
+                            break;
+                        }
+                        case 'read': {
+                            const messages = await mailboxStore.read({
+                                user: parsed.user, from: parsed.from, to: parsed.to,
+                                unreadOnly: parsed.unreadOnly, limit: parsed.limit,
+                            });
+                            result = { content: [{ type: 'text', text: JSON.stringify(messages, null, 2) }] };
+                            break;
+                        }
+                    }
+                } catch (error) {
+                    result = {
+                        content: [{ type: 'text', text: `Mailbox error: ${error instanceof Error ? error.message : String(error)}` }],
+                        isError: true,
+                    };
+                }
+                break;
+            }
 
             case "track_ui_event":
                 try {
@@ -1482,11 +1584,12 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         isError = !!result.isError;
         const EXCLUDED_TOOLS = [
             'get_recent_tool_calls',
-            'track_ui_event'
+            'track_ui_event',
+            'mailbox'
         ];
 
         if (!EXCLUDED_TOOLS.includes(name)) {
-            toolHistory.addCall(name, args, result, duration);
+            toolHistory.addCall(name, persistedArgs, result, duration);
         }
 
         // Track success or failure based on result
@@ -1552,7 +1655,7 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         try {
             const argSchema = toolArgSchemas[name];
             if (argSchema && result && Array.isArray((result as any).content)) {
-                const unsupported = detectUnsupportedParams(args, argSchema);
+                const unsupported = detectUnsupportedParams(args, argSchema).filter(parameter => parameter !== 'mailbox_user_id');
                 if (unsupported.length > 0) {
                     const warning = buildUnsupportedParamsWarning(
                         name, unsupported, getSupportedParams(argSchema)

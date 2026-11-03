@@ -36,6 +36,7 @@ jobs:
           test-blocked-commands.js
           test-startup-imports.js
           test-image-write-file-append.js
+          test-mailbox.js
 
       - name: Build standalone Windows x64 executable
         run: npm run build:bridge:win64
