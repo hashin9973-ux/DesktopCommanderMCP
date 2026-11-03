@@ -64,7 +64,7 @@ try {
   assert.ok(upgradedLegacy.startsWith(beforeLegacySection), 'prefix before the old section must remain unchanged');
   assert.ok(upgradedLegacy.endsWith(afterLegacySection), 'content after the old section must remain unchanged');
   assert.equal(upgradedLegacy.split(MAILBOX_GUIDE_HEADING).length - 1, 1);
-  assert.match(upgradedLegacy, /shared by direct MCP clients and the cloud-folder bridge/);
+  assert.match(upgradedLegacy, /shared by direct MCP clients and both file-queue bridge transports/);
   assert.doesNotMatch(upgradedLegacy, /direct MCP only/);
   assert.doesNotMatch(upgradedLegacy, /bridge parser rejects the mailbox tool/);
   assert.doesNotMatch(upgradedLegacy, /no mailbox access from the bridge/);
