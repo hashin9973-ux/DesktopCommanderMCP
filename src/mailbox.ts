@@ -33,6 +33,7 @@ export interface MailboxFilters {
 }
 
 const DATABASE_PATH = path.join(path.dirname(CONFIG_FILE), 'mailbox.json');
+const LOCK_PATH = DATABASE_PATH + '.lockfile';
 const EMPTY_DATABASE: MailboxDatabase = { version: 1, users: [], messages: [] };
 let inProcessQueue: Promise<unknown> = Promise.resolve();
 
@@ -49,26 +50,27 @@ function validateMessage(body: string): string {
   if (value.length > 20000) throw new Error('Message body cannot exceed 20,000 characters.');
   return value;
 }
-async function ensureDatabase(): Promise<void> {
+async function ensureLockFile(): Promise<void> {
   await fs.mkdir(path.dirname(DATABASE_PATH), { recursive: true });
-  try {
-    const handle = await fs.open(DATABASE_PATH, 'wx', 0o600);
-    try { await handle.writeFile(JSON.stringify(EMPTY_DATABASE, null, 2) + '\n'); }
-    finally { await handle.close(); }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-  }
+  // Lock a stable sidecar file, not the database inode: the database itself is
+  // atomically replaced on writes, while this lock target must never change.
+  const handle = await fs.open(LOCK_PATH, 'a', 0o600);
+  await handle.close();
 }
 async function withDatabase<T>(mutate: (db: MailboxDatabase) => Promise<T> | T, write = false): Promise<T> {
   const run = async () => {
-    await ensureDatabase();
-    const release = await lockfile.lock(DATABASE_PATH, { retries: { retries: 20, minTimeout: 25, maxTimeout: 250 } });
+    await ensureLockFile();
+    const release = await lockfile.lock(LOCK_PATH, { retries: { retries: 20, minTimeout: 25, maxTimeout: 250 } });
     try {
       let db: MailboxDatabase;
       try {
         db = JSON.parse(await fs.readFile(DATABASE_PATH, 'utf8')) as MailboxDatabase;
       } catch (error) {
-        throw new Error(`Mailbox database could not be read safely: ${error instanceof Error ? error.message : String(error)}`);
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          db = { version: 1, users: [], messages: [] };
+        } else {
+          throw new Error(`Mailbox database could not be read safely: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
       if (db.version !== 1 || !Array.isArray(db.users) || !Array.isArray(db.messages)) {
         throw new Error('Mailbox database has an unsupported or invalid format; no changes were made.');
