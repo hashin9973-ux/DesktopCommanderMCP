@@ -272,7 +272,7 @@ export async function startCloudflareQuickTunnel(
   const spawnProcess = options.spawnProcess || spawn;
   const child: ChildProcess = spawnProcess(
     executable,
-    ['tunnel', '--url', origin.origin, '--no-autoupdate'],
+    ['tunnel', '--url', origin.origin],
     {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
