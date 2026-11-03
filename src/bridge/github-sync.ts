@@ -169,6 +169,15 @@ export class GitHubBridgeSync {
       const responseName = 'response-' + requestId + '.json';
       const remoteResponse = remoteResponses.find((candidate) =>
         candidate.type === 'file' && candidate.name === responseName);
+      if (remoteResponse) {
+        const completed = this.completedRequests.get(requestId);
+        if (completed
+          && completed.requestBlobSha === entry.sha
+          && completed.responseBlobSha === remoteResponse.sha) {
+          continue;
+        }
+      }
+
       const localPath = path.join(this.paths.requests, entry.name);
       const cached = await readOptional(localPath);
 
@@ -186,13 +195,6 @@ export class GitHubBridgeSync {
       }
 
       if (remoteResponse) {
-        const completed = this.completedRequests.get(requestId);
-        if (completed
-          && completed.requestBlobSha === entry.sha
-          && completed.responseBlobSha === remoteResponse.sha) {
-          continue;
-        }
-
         const responseBytes = await this.client.readFile(remoteResponse.path);
         let response: BridgeResponseReference;
         try {
