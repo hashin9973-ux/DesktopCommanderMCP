@@ -1351,7 +1351,7 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
 
 
         // Track tool call
-        trackToolCall(name, persistedArgs);
+        if (name !== 'mailbox') trackToolCall(name, persistedArgs);
 
         // Using a more structured approach with dedicated handlers
         // (result is declared above so the finally block can read execution status)
@@ -1584,7 +1584,8 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         isError = !!result.isError;
         const EXCLUDED_TOOLS = [
             'get_recent_tool_calls',
-            'track_ui_event'
+            'track_ui_event',
+            'mailbox'
         ];
 
         if (!EXCLUDED_TOOLS.includes(name)) {
