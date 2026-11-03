@@ -82,13 +82,15 @@ jobs:
               @{ tool = "get_file_info"; arguments = @{ path = $imagePath } }
             )
           } | ConvertTo-Json -Depth 20
-          $mailboxSmokeUser = "BridgeSmoke-" + [Guid]::NewGuid().ToString("N")
+          $mailboxSmokeSender = "BridgeSmokeSender-" + [Guid]::NewGuid().ToString("N")
+          $mailboxSmokeRecipient = "BridgeSmokeRecipient-" + [Guid]::NewGuid().ToString("N")
           $configRequest = @{
             protocol_version = 1
             id = "smoke-config"
             commands = @(
               @{ tool = "get_config"; arguments = @{} },
-              @{ tool = "mailbox"; arguments = @{ action = "register"; username = $mailboxSmokeUser } }
+              @{ tool = "mailbox"; arguments = @{ action = "register"; username = $mailboxSmokeSender } },
+              @{ tool = "mailbox"; arguments = @{ action = "register"; username = $mailboxSmokeRecipient } }
             )
           } | ConvertTo-Json -Depth 20
 
@@ -145,15 +147,79 @@ jobs:
             if ($imageResponse.status -ne "completed" -or $imageResponse.results.Count -ne 2) {
               throw "Sequential multi-command image request failed: $($imageResponse | ConvertTo-Json -Depth 10)"
             }
-            if ($configResponse.status -ne "completed" -or $configResponse.results.Count -ne 2) {
-              throw "Independent config/mailbox request failed: $($configResponse | ConvertTo-Json -Depth 10)"
+            if ($configResponse.status -ne "completed" -or $configResponse.results.Count -ne 3) {
+              throw "Independent config/mailbox registration request failed: $($configResponse | ConvertTo-Json -Depth 10)"
             }
-            if ($configResponse.results[1].tool -ne "mailbox" -or $configResponse.results[1].status -ne "succeeded" -or $configResponse.results[1].isError) {
-              throw "Mailbox registration did not execute successfully through the portable bridge: $($configResponse.results[1] | ConvertTo-Json -Depth 10)"
+            $mailboxSenderResult = $configResponse.results[1]
+            $mailboxRecipientResult = $configResponse.results[2]
+            if ($mailboxSenderResult.tool -ne "mailbox" -or $mailboxSenderResult.status -ne "succeeded" -or $mailboxSenderResult.isError -or $mailboxRecipientResult.tool -ne "mailbox" -or $mailboxRecipientResult.status -ne "succeeded" -or $mailboxRecipientResult.isError) {
+              throw "Mailbox registration did not execute successfully through the portable bridge: $($configResponse | ConvertTo-Json -Depth 10)"
             }
-            $mailboxRegistration = $configResponse.results[1].content[0].text | ConvertFrom-Json
-            if ($mailboxRegistration.status -ne "registered" -or $mailboxRegistration.username -ne $mailboxSmokeUser -or [string]::IsNullOrEmpty($mailboxRegistration.mailbox_user_id)) {
-              throw "Portable bridge mailbox registration returned an invalid identity: $($mailboxRegistration | ConvertTo-Json -Depth 5)"
+            $mailboxSender = $mailboxSenderResult.content[0].text | ConvertFrom-Json
+            $mailboxRecipient = $mailboxRecipientResult.content[0].text | ConvertFrom-Json
+            if ($mailboxSender.status -ne "registered" -or $mailboxSender.username -ne $mailboxSmokeSender -or [string]::IsNullOrEmpty($mailboxSender.mailbox_user_id) -or $mailboxRecipient.status -ne "registered" -or $mailboxRecipient.username -ne $mailboxSmokeRecipient -or [string]::IsNullOrEmpty($mailboxRecipient.mailbox_user_id)) {
+              throw "Portable bridge mailbox registration returned an invalid identity: $($mailboxSender | ConvertTo-Json -Depth 5) / $($mailboxRecipient | ConvertTo-Json -Depth 5)"
+            }
+
+            $mailboxSmokeMessage = "Portable bridge mailbox smoke message " + [Guid]::NewGuid().ToString("N")
+            $mailboxSendRequest = @{
+              protocol_version = 1
+              id = "smoke-mailbox-send"
+              commands = @(
+                @{ tool = "mailbox"; arguments = @{ action = "send"; mailbox_user_id = $mailboxSender.mailbox_user_id; to = $mailboxSmokeRecipient; message = $mailboxSmokeMessage } }
+              )
+            } | ConvertTo-Json -Depth 20
+            [System.IO.File]::WriteAllText((Join-Path $cloudDir "requests\request-smoke-mailbox-send.json"), $mailboxSendRequest, [System.Text.UTF8Encoding]::new($false))
+            $mailboxSendResponsePath = Join-Path $cloudDir "responses\response-smoke-mailbox-send.json"
+            $mailboxDeadline = (Get-Date).AddSeconds(30)
+            while ((Get-Date) -lt $mailboxDeadline -and !(Test-Path $mailboxSendResponsePath)) {
+              if ($process.HasExited) { throw "Bridge exited before producing the mailbox send response. stdout: $(Get-Content $stdout -Raw -ErrorAction SilentlyContinue) stderr: $(Get-Content $stderr -Raw -ErrorAction SilentlyContinue)" }
+              Start-Sleep -Milliseconds 200
+            }
+            if (!(Test-Path $mailboxSendResponsePath)) { throw "Portable bridge did not finish mailbox send within 30 seconds." }
+            $mailboxSendResponse = Get-Content $mailboxSendResponsePath -Raw | ConvertFrom-Json
+            if ($mailboxSendResponse.status -ne "completed" -or $mailboxSendResponse.results.Count -ne 1 -or $mailboxSendResponse.results[0].tool -ne "mailbox" -or $mailboxSendResponse.results[0].status -ne "succeeded" -or $mailboxSendResponse.results[0].isError) {
+              throw "Mailbox send failed through the portable bridge: $($mailboxSendResponse | ConvertTo-Json -Depth 10)"
+            }
+
+            $mailboxNoticeRequest = @{
+              protocol_version = 1
+              id = "smoke-mailbox-notice"
+              commands = @(
+                @{ tool = "get_config"; arguments = @{ mailbox_user_id = $mailboxRecipient.mailbox_user_id } }
+              )
+            } | ConvertTo-Json -Depth 20
+            [System.IO.File]::WriteAllText((Join-Path $cloudDir "requests\request-smoke-mailbox-notice.json"), $mailboxNoticeRequest, [System.Text.UTF8Encoding]::new($false))
+            $mailboxNoticeResponsePath = Join-Path $cloudDir "responses\response-smoke-mailbox-notice.json"
+            $mailboxDeadline = (Get-Date).AddSeconds(30)
+            while ((Get-Date) -lt $mailboxDeadline -and !(Test-Path $mailboxNoticeResponsePath)) {
+              if ($process.HasExited) { throw "Bridge exited before producing the mailbox notice response." }
+              Start-Sleep -Milliseconds 200
+            }
+            if (!(Test-Path $mailboxNoticeResponsePath)) { throw "Portable bridge did not finish the mailbox notice request within 30 seconds." }
+            $mailboxNoticeResponse = Get-Content $mailboxNoticeResponsePath -Raw | ConvertFrom-Json
+            if ($mailboxNoticeResponse.status -ne "completed" -or $mailboxNoticeResponse.results.Count -ne 1 -or $mailboxNoticeResponse.results[0].content[0].text -notmatch '1 new message') {
+              throw "Ordinary bridge tools did not receive the mailbox unread notice: $($mailboxNoticeResponse | ConvertTo-Json -Depth 10)"
+            }
+
+            $mailboxInboxRequest = @{
+              protocol_version = 1
+              id = "smoke-mailbox-inbox"
+              commands = @(
+                @{ tool = "mailbox"; arguments = @{ action = "inbox_unread"; mailbox_user_id = $mailboxRecipient.mailbox_user_id } }
+              )
+            } | ConvertTo-Json -Depth 20
+            [System.IO.File]::WriteAllText((Join-Path $cloudDir "requests\request-smoke-mailbox-inbox.json"), $mailboxInboxRequest, [System.Text.UTF8Encoding]::new($false))
+            $mailboxInboxResponsePath = Join-Path $cloudDir "responses\response-smoke-mailbox-inbox.json"
+            $mailboxDeadline = (Get-Date).AddSeconds(30)
+            while ((Get-Date) -lt $mailboxDeadline -and !(Test-Path $mailboxInboxResponsePath)) {
+              if ($process.HasExited) { throw "Bridge exited before producing the mailbox inbox response." }
+              Start-Sleep -Milliseconds 200
+            }
+            if (!(Test-Path $mailboxInboxResponsePath)) { throw "Portable bridge did not finish the mailbox inbox request within 30 seconds." }
+            $mailboxInboxResponse = Get-Content $mailboxInboxResponsePath -Raw | ConvertFrom-Json
+            if ($mailboxInboxResponse.status -ne "completed" -or $mailboxInboxResponse.results.Count -ne 1 -or $mailboxInboxResponse.results[0].tool -ne "mailbox" -or $mailboxInboxResponse.results[0].status -ne "succeeded" -or $mailboxInboxResponse.results[0].content[0].text -notmatch [regex]::Escape($mailboxSmokeMessage)) {
+              throw "Portable bridge mailbox inbox did not return the sent message: $($mailboxInboxResponse | ConvertTo-Json -Depth 10)"
             }
             if ($imageResponse.artifacts.Count -lt 1) {
               throw "Image read did not produce an artifact reference."
