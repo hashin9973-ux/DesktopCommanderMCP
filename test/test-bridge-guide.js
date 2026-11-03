@@ -22,7 +22,7 @@ try {
     '',
     'Existing argument schema.',
     '',
-  ].join('\\n');
+  ].join('\n');
 
   await fs.writeFile(guidePath, original, 'utf8');
   assert.equal(await appendMailboxGuideSection(guidePath), 'appended');
@@ -40,8 +40,8 @@ try {
   // Existing installations may already have a stale MCP-only mailbox section.
   // Replace only that section and preserve the guide content around it.
   const legacyPath = path.join(tempDir, 'legacy-README.md');
-  const beforeLegacySection = '# Desktop Commander Cloud-Folder Bridge\\n\\nIntro text.\\n\\n';
-  const afterLegacySection = '\\n## Tool catalog\\n\\n### read_file\\n\\nOld catalog remains.\\n';
+  const beforeLegacySection = '# Desktop Commander Cloud-Folder Bridge\n\nIntro text.\n\n';
+  const afterLegacySection = '\n## Tool catalog\n\n### read_file\n\nOld catalog remains.\n';
   const legacy = beforeLegacySection + [
     '## Optional local mailbox (direct MCP only)',
     '',
@@ -54,7 +54,7 @@ try {
     '<!-- desktop-commander:local-mailbox-guide-supplement:v1 -->',
     '',
     'Old text: no mailbox access from the bridge.',
-  ].join('\\n') + afterLegacySection;
+  ].join('\n') + afterLegacySection;
   await fs.writeFile(legacyPath, legacy, 'utf8');
   assert.equal(await appendMailboxGuideSection(legacyPath), 'updated');
 
@@ -72,7 +72,7 @@ try {
     'the upgraded mailbox section must be idempotent');
 
   const customPath = path.join(tempDir, 'custom-readme.md');
-  const customReadme = '# My own bridge notes\\n\\nKeep this file unchanged.\\n';
+  const customReadme = '# My own bridge notes\n\nKeep this file unchanged.\n';
   await fs.writeFile(customPath, customReadme, 'utf8');
   assert.equal(await appendMailboxGuideSection(customPath), 'not_bridge_guide');
   assert.equal(await fs.readFile(customPath, 'utf8'), customReadme);
