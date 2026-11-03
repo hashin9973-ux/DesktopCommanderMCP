@@ -22,7 +22,7 @@ try {
     '',
     'Existing argument schema.',
     '',
-  ].join('\n');
+  ].join('\\n');
 
   await fs.writeFile(guidePath, original, 'utf8');
   assert.equal(await appendMailboxGuideSection(guidePath), 'appended');
@@ -30,44 +30,49 @@ try {
   const appended = await fs.readFile(guidePath, 'utf8');
   assert.ok(appended.startsWith(original), 'existing guide content must be preserved exactly');
   assert.equal(appended.split(MAILBOX_GUIDE_HEADING).length - 1, 1);
-  assert.match(appended, /bridge request parser intentionally rejects the `mailbox` tool/);
-  assert.match(appended, /separate direct local Desktop Commander MCP connection/);
+  assert.match(appended, /shared by direct MCP clients and the cloud-folder bridge/);
+  assert.match(appended, /message text, usernames, and mailbox IDs included in a bridge request or returned in a response/);
+  assert.doesNotMatch(appended, /bridge request parser intentionally rejects the `mailbox` tool/);
 
   assert.equal(await appendMailboxGuideSection(guidePath), 'already_present');
   assert.equal(await fs.readFile(guidePath, 'utf8'), appended, 'a second run must not change the guide');
 
-  // Legacy guide: the heading exists, but the previous short section did not
-  // contain the warning against routing mailbox commands through start_process.
+  // Existing installations may already have a stale MCP-only mailbox section.
+  // Replace only that section and preserve the guide content around it.
   const legacyPath = path.join(tempDir, 'legacy-README.md');
-  const legacy = original + [
+  const beforeLegacySection = '# Desktop Commander Cloud-Folder Bridge\\n\\nIntro text.\\n\\n';
+  const afterLegacySection = '\\n## Tool catalog\\n\\n### read_file\\n\\nOld catalog remains.\\n';
+  const legacy = beforeLegacySection + [
+    '## Optional local mailbox (direct MCP only)',
     '',
-    MAILBOX_GUIDE_HEADING,
+    '<!-- desktop-commander:local-mailbox-guide:v1 -->',
     '',
-    'Existing mailbox guidance must remain unchanged.',
+    'Old text: the bridge parser rejects the mailbox tool.',
     '',
-    'The bridge rejects mailbox_user_id.',
+    '### Additional mailbox privacy boundary',
     '',
-  ].join('\n');
+    '<!-- desktop-commander:local-mailbox-guide-supplement:v1 -->',
+    '',
+    'Old text: no mailbox access from the bridge.',
+  ].join('\\n') + afterLegacySection;
   await fs.writeFile(legacyPath, legacy, 'utf8');
-  assert.equal(await appendMailboxGuideSection(legacyPath), 'appended');
+  assert.equal(await appendMailboxGuideSection(legacyPath), 'updated');
 
   const upgradedLegacy = await fs.readFile(legacyPath, 'utf8');
-  assert.ok(upgradedLegacy.startsWith(legacy), 'legacy guide bytes must be preserved exactly');
+  assert.ok(upgradedLegacy.startsWith(beforeLegacySection), 'prefix before the old section must remain unchanged');
+  assert.ok(upgradedLegacy.endsWith(afterLegacySection), 'content after the old section must remain unchanged');
   assert.equal(upgradedLegacy.split(MAILBOX_GUIDE_HEADING).length - 1, 1);
-  assert.match(upgradedLegacy, /Additional mailbox privacy boundary/);
-  assert.match(upgradedLegacy, /bridge `start_process` tool/);
-  assert.match(upgradedLegacy, /rather than attempting a bridge workaround/);
+  assert.match(upgradedLegacy, /shared by direct MCP clients and the cloud-folder bridge/);
+  assert.doesNotMatch(upgradedLegacy, /direct MCP only/);
+  assert.doesNotMatch(upgradedLegacy, /bridge parser rejects the mailbox tool/);
+  assert.doesNotMatch(upgradedLegacy, /no mailbox access from the bridge/);
 
   assert.equal(await appendMailboxGuideSection(legacyPath), 'already_present');
-  assert.equal(
-    await fs.readFile(legacyPath, 'utf8'),
-    upgradedLegacy,
-    'legacy guide addendum must be idempotent',
-  );
+  assert.equal(await fs.readFile(legacyPath, 'utf8'), upgradedLegacy,
+    'the upgraded mailbox section must be idempotent');
 
-  // A custom README with no exact bridge title is never modified.
   const customPath = path.join(tempDir, 'custom-readme.md');
-  const customReadme = '# My own bridge notes\n\nKeep this file unchanged.\n';
+  const customReadme = '# My own bridge notes\\n\\nKeep this file unchanged.\\n';
   await fs.writeFile(customPath, customReadme, 'utf8');
   assert.equal(await appendMailboxGuideSection(customPath), 'not_bridge_guide');
   assert.equal(await fs.readFile(customPath, 'utf8'), customReadme);
