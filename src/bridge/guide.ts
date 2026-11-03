@@ -20,7 +20,7 @@ const MAILBOX_GUIDE_SECTION = [
   '',
   '- Call `mailbox` with `action="register"` and `username` once. Save the returned `mailbox_user_id` for that identity.',
   '- Call `mailbox` with `action="list_users"` to see registered identities and unread counts.',
-  '- Call `mailbox` with `action="send"`, `mailbox_user_id`, `to` (recipient username), and `message` to send a message.',
+  '- Call `mailbox` with `action="send"`, `mailbox_user_id`, `to` (recipient username or ID), and `message` to send a message.',
   '- Call `mailbox` with `action="inbox_unread"` and `mailbox_user_id` to retrieve unread messages and mark them as read.',
   '- Call `mailbox` with `action="read"` to inspect message history. Optional filters are `user`, `from`, `to`, `unreadOnly`, and `limit`.',
   '- Include `mailbox_user_id` as an optional argument on ordinary direct MCP tool calls to receive unread-message notices. Use `inbox_unread` to retrieve the messages.',
