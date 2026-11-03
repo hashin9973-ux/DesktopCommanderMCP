@@ -381,6 +381,96 @@ export class GitHubRepositoryClient {
     throw new Error('GitHub could not commit ' + filePath + ' after repeated default-branch conflicts. Retry the synchronization.');
   }
 
+  async writeFile(filePath: string, bytes: Buffer, message: string): Promise<boolean> {
+    if (bytes.length > MAX_GITHUB_BRIDGE_FILE_BYTES) {
+      throw new Error(
+        'GitHub bridge files are limited to ' + MAX_GITHUB_BRIDGE_FILE_BYTES +
+        ' bytes (50 MiB); ' + filePath + ' is ' + bytes.length + ' bytes.',
+      );
+    }
+
+    const directory = path.posix.dirname(filePath);
+    const name = path.posix.basename(filePath);
+    const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+    const url = '/repos/' + this.repository + '/contents/' + encodedPath;
+
+    // README.md is bridge-owned metadata, not an idempotency-keyed queue file:
+    // update GitHub's auto-created README and refresh it when the guide changes.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const entries = await this.listDirectory(directory === '.' ? '' : directory);
+      const existingEntry = entries.find((entry) => entry.type === 'file' && entry.name === name);
+      if (!existingEntry) {
+        try {
+          return await this.createFileIfAbsent(filePath, bytes, message);
+        } catch (error) {
+          if (error instanceof GitHubApiError
+            && (error.status === 409 || error.status === 422)
+            && attempt < 2) {
+            continue;
+          }
+          throw error;
+        }
+      }
+
+      const existingBytes = await this.readFile(filePath);
+      if (existingBytes.equals(bytes)) return false;
+
+      try {
+        await this.requestJson(url, {
+          method: 'PUT',
+          body: JSON.stringify({
+            message,
+            content: bytes.toString('base64'),
+            branch: this.defaultBranch,
+            sha: existingEntry.sha,
+          }),
+        });
+        return true;
+      } catch (error) {
+        if (error instanceof GitHubApiError
+          && (error.status === 409 || error.status === 422)
+          && attempt < 2) {
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new Error('GitHub could not update ' + filePath + ' after repeated default-branch conflicts. Retry the synchronization.');
+  }
+
+  async deleteFileIfPresent(filePath: string, message: string): Promise<boolean> {
+    const directory = path.posix.dirname(filePath);
+    const name = path.posix.basename(filePath);
+    const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+    const url = '/repos/' + this.repository + '/contents/' + encodedPath;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const entries = await this.listDirectory(directory === '.' ? '' : directory);
+      const existingEntry = entries.find((entry) => entry.type === 'file' && entry.name === name);
+      if (!existingEntry) return false;
+
+      try {
+        await this.requestJson(url, {
+          method: 'DELETE',
+          body: JSON.stringify({
+            message,
+            sha: existingEntry.sha,
+            branch: this.defaultBranch,
+          }),
+        });
+        return true;
+      } catch (error) {
+        if (error instanceof GitHubApiError
+          && (error.status === 404 || error.status === 409 || error.status === 422)
+          && attempt < 2) {
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new Error('GitHub could not remove obsolete ' + filePath + ' after repeated default-branch conflicts. Retry the synchronization.');
+  }
+
   private async requestJson(
     route: string,
     options: { method?: string; body?: string; accept?: string } = {},
