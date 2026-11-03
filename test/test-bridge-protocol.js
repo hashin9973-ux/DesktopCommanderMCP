@@ -105,4 +105,21 @@ assert.throws(
   /Invalid JSON/,
 );
 
+assert.throws(
+  () => parseBridgeRequest('request-mailbox.json', JSON.stringify({
+    protocol_version: 1,
+    id: 'mailbox',
+    commands: [{ tool: 'mailbox', arguments: { action: 'list_users' } }],
+  })),
+  /unknown or unavailable tool "mailbox"/,
+);
+assert.throws(
+  () => parseBridgeRequest('request-mailbox-user-id.json', JSON.stringify({
+    protocol_version: 1,
+    id: 'mailbox-user-id',
+    commands: [{ tool: 'get_config', arguments: { mailbox_user_id: 'local-user-id' } }],
+  })),
+  /unsupported argument/,
+);
+
 console.log('Bridge protocol tests passed.');
