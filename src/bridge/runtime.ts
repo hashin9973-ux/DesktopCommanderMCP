@@ -402,7 +402,7 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '- Different request files execute concurrently. The default concurrency limit is unlimited (--max-parallel 0). A positive --max-parallel value sets an optional cap.',
     '- Commands within one request file execute sequentially, in their listed order.',
     '- The default delay between commands is 0 ms. Configure it with --command-delay-ms or the JSON command_delay_ms property.',
-    '- Cloud-folder mode uses filesystem notifications plus a one-second fallback scan. GitHub mode uses signed push webhooks through an optional Cloudflare Quick Tunnel for near-immediate synchronization, with a configurable reconciliation poll. If webhook setup is unavailable, GitHub mode uses polling fallback. Remote storage visibility latency depends on the provider and is not controlled by this application.',
+    '- Cloud-folder mode uses filesystem notifications plus a one-second fallback scan. GitHub mode uses signed push webhooks through an optional Cloudflare Quick Tunnel for near-immediate remote synchronization, and watches its local response folder to publish completed work immediately. A configurable reconciliation poll recovers from missed events. If webhook or local watcher setup is unavailable, GitHub mode uses polling fallback. Remote storage visibility latency depends on the provider and is not controlled by this application.',
     '- Independent requests run in parallel. Calls targeting the same file, process id, or search session are coordinated to avoid conflicting operations.',
     '- Publish each request file only after its complete contents are ready; never expose a partially-written request at its final request path.',
     '',
