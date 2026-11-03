@@ -157,18 +157,30 @@ export class GitHubRepositoryClient {
     if (!token.trim()) throw new Error('A GitHub access token is required.');
 
     const client = new GitHubRepositoryClient('', '', token, fetcher);
-    const created = await client.requestJson('/user/repos', {
-      method: 'POST',
-      body: JSON.stringify({
-        name,
-        description: 'Private Desktop Commander Bridge request and response mailbox',
-        private: true,
-        auto_init: true,
-        has_issues: false,
-        has_projects: false,
-        has_wiki: false,
-      }),
-    }) as { full_name?: unknown; private?: unknown; default_branch?: unknown };
+    let created: { full_name?: unknown; private?: unknown; default_branch?: unknown };
+    try {
+      created = await client.requestJson('/user/repos', {
+        method: 'POST',
+        body: JSON.stringify({
+          name,
+          description: 'Private Desktop Commander Bridge request and response mailbox',
+          private: true,
+          auto_init: true,
+          has_issues: false,
+          has_projects: false,
+          has_wiki: false,
+        }),
+      }) as { full_name?: unknown; private?: unknown; default_branch?: unknown };
+    } catch (error) {
+      if (error instanceof GitHubApiError && (error.status === 403 || error.status === 404)) {
+        throw new Error(
+          'GitHub did not allow automatic repository creation. The authenticated credential needs permission to create ' +
+          'repositories (fine-grained personal access tokens need Administration: write; classic tokens need the repo scope). ' +
+          'You can instead choose an existing repository where your account has write access. GitHub said: ' + error.message,
+        );
+      }
+      throw error;
+    }
 
     if (created.private !== true || typeof created.full_name !== 'string' || !created.full_name) {
       throw new Error('GitHub did not confirm creation of a private repository.');
