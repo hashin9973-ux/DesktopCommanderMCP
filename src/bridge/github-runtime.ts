@@ -355,6 +355,8 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     console.log('');
 
     child = await startWorker(cacheRoot, workerStateRoot, maxParallelRequests);
+    process.once('SIGINT', stopWorker);
+    process.once('SIGTERM', stopWorker);
     child.once('error', (error) => {
       console.error('Could not start the local Desktop Commander worker: ' + error.message);
     });
@@ -377,7 +379,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     }
   } finally {
     stopWorker();
-    if (child && child.exitCode === null) {
+    if (child && child.exitCode === null && child.pid !== undefined) {
       await new Promise<void>((resolve) => {
         child!.once('exit', () => resolve());
         child!.kill('SIGTERM');
