@@ -601,6 +601,7 @@ The server provides a comprehensive set of tools organized into several categori
 | | `get_recent_tool_calls` | Get recent tool call history with arguments and outputs for debugging and context recovery |
 | | `give_feedback_to_desktop_commander` | Open feedback form in browser to provide feedback to Desktop Commander Team |
 | **Messaging** | `mailbox` | Optional local mailbox for AI/user registration, unread messages, message sending, user lists, and filtered history |
+
 ### Local Mailbox and AI Handoffs
 
 The mailbox is an **optional, app-side messaging system** for passing work between AI sessions or between an AI and the local user. It does not use cloud storage or a remote mailbox service. Sessions must reach the same Desktop Commander app/server instance to share its mailbox. The cloud-folder bridge intentionally does not expose mailbox actions or message contents because its request/response files are synchronized.
