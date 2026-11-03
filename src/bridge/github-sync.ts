@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { writeFileAtomic } from '../utils/atomic-write.js';
+import { createGuideIfMissing } from './runtime.js';
 import {
   GitHubRepositoryClient,
   MAX_GITHUB_BRIDGE_FILE_BYTES,
@@ -28,52 +29,6 @@ interface BridgeResponseReference {
   request_hash: string;
   artifacts?: BridgeArtifactReference[];
 }
-
-const GITHUB_BRIDGE_GUIDE = [
-  '# Desktop Commander GitHub Repository Bridge',
-  '',
-  'This repository is the shared request/response mailbox for a Desktop Commander Bridge running on a trusted computer.',
-  '',
-  '## Queue folders',
-  '',
-  '- requests/ — submit request-<id>.json or request-<id>.md files.',
-  '- responses/ — read response-<id>.json results.',
-  '- artifacts/ — binary outputs referenced by responses.',
-  '- DESKTOP_COMMANDER_BRIDGE.md — this guide.',
-  '',
-  '## How it works',
-  '',
-  '1. Put a version 1 request file in requests/. Its filename must be request-<id>.json or request-<id>.md, and the request id must match the filename.',
-  '2. The Desktop Commander process connected to this repository polls the existing default branch and downloads new requests.',
-  '3. Commands execute on that local computer using Desktop Commander permissions and restrictions.',
-  '4. The bridge commits output files into artifacts/ first, then commits responses/response-<id>.json. The response file is the completion signal.',
-  '5. Read the response and retrieve any referenced artifacts from this repository.',
-  '',
-  'The bridge writes only to the repository existing default branch. It does not create branches, pull requests, or change source files outside the queue paths. The repository default branch must allow direct writes.',
-  '',
-  '## Security',
-  '',
-  'Anyone with write access to this repository can submit a request for the running computer to execute local Desktop Commander tools, including file operations and terminal commands. Use a private repository and grant write access only to people you trust. Desktop Commander restrictions are guardrails, not an operating-system sandbox. Run only one bridge worker for a shared repository.',
-  '',
-  'GitHub repository contents are persistent. The bridge does not automatically delete remote requests, responses, or artifacts. Each individual uploaded file is limited to 50 MiB by this transport.',
-  '',
-  '## Request format',
-  '',
-  'A JSON request uses protocol_version 1, a unique id, and a non-empty commands array. Each command has a tool name and arguments object. The bridge validates the tool and arguments before execution.',
-  '',
-  'Example request:',
-  '',
-  '~~~json',
-  JSON.stringify({
-    protocol_version: 1,
-    id: 'inspect-001',
-    commands: [{ tool: 'list_directory', arguments: { path: 'C:/Projects', depth: 2 } }],
-  }, null, 2),
-  '~~~',
-  '',
-  'Do not reuse request IDs. A request ID whose response already exists cannot be used for different content.',
-  '',
-].join('\n');
 
 async function readOptional(filePath: string): Promise<Buffer | null> {
   try {
@@ -132,10 +87,23 @@ export class GitHubBridgeSync {
       );
     }
 
-    await this.client.createFileIfAbsent(
+    // Regenerate the same AI-facing README that cloud-folder mode creates.
+    // The cache is private to this repository, so replace any stale local copy.
+    const readmePath = path.join(this.paths.root, 'README.md');
+    await fs.rm(readmePath, { force: true });
+    await createGuideIfMissing(this.paths.root);
+    const readme = await fs.readFile(readmePath);
+
+    // Migrate repositories initialized by older bridge versions: README.md is
+    // now the only guide, and contains the shared AI instructions and schemas.
+    await this.client.deleteFileIfPresent(
       'DESKTOP_COMMANDER_BRIDGE.md',
-      Buffer.from(GITHUB_BRIDGE_GUIDE + '\n', 'utf8'),
-      'Document Desktop Commander GitHub bridge queue',
+      'Remove obsolete separate Desktop Commander bridge guide',
+    );
+    await this.client.writeFile(
+      'README.md',
+      readme,
+      'Publish shared Desktop Commander AI README',
     );
   }
 
