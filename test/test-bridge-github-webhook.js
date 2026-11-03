@@ -153,7 +153,6 @@ assert.deepEqual(tunnelSpawnCall.args, [
   'tunnel',
   '--url',
   'http://127.0.0.1:43210',
-  '--no-autoupdate',
 ]);
 assert.equal(tunnelSpawnCall.options.windowsHide, true);
 await tunnel.close();
