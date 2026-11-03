@@ -611,7 +611,7 @@ The mailbox is an **optional, app-side messaging system** for passing work betwe
 3. Use `mailbox` with `action: "send"`, `to` (a registered username), and `message` to hand work to another identity. The sender is the identity in `mailbox_user_id`.
 4. Use `action: "inbox_unread"` to read and mark all unread messages as read. Use `action: "list_users"` to see registered identities and relative last activity, or `action: "read"` to inspect message history with optional `user`, `from`, `to`, `unreadOnly`, and `limit` filters.
 
-Mailbox data is stored locally at `~/.claude-server-commander/mailbox.json` (Windows: `%USERPROFILE%\.claude-server-commander\mailbox.json`). It is not uploaded or synchronized. Mailbox IDs are identifiers, **not authentication credentials**; anyone who can call the local app/server or modify its data directory is within the same trust boundary.
+Mailbox data is stored locally at `~/.claude-server-commander/mailbox.json` (Windows: `%USERPROFILE%\.claude-server-commander\mailbox.json`). It is not uploaded or synchronized. Mailbox tool calls and message contents are not copied into the general tool-call argument log or recent-call history. Mailbox IDs are identifiers, **not authentication credentials**; anyone who can call the local app/server or modify its data directory is within the same trust boundary.
 
 #### Mailbox shell administration
 
