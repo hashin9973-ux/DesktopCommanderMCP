@@ -179,7 +179,7 @@ export class GitHubRepositoryClient {
       if (error instanceof GitHubApiError && (error.status === 403 || error.status === 404)) {
         throw new Error(
           'GitHub did not allow automatic repository creation. The authenticated credential needs permission to create ' +
-          'repositories (fine-grained personal access tokens need Administration: write; classic tokens need the repo scope). ' +
+          'repositories (fine-grained personal access tokens need Administration: write or Repository creation: write; classic tokens need the repo scope). ' +
           'You can instead choose an existing repository where your account has write access. GitHub said: ' + error.message,
         );
       }
