@@ -40,6 +40,7 @@ jobs:
           test-bridge-protocol.js
           test-bridge-guide.js
           test-bridge-github.js
+          test-bridge-github-auth.js
           test-atomic-write.js
           test-file-handlers.js
           test-read-multiple-files.js
@@ -51,6 +52,37 @@ jobs:
 
       - name: Build standalone Windows x64 executable
         run: npm run build:bridge:win64
+
+      - name: Bundle verified GitHub CLI for browser authentication
+        shell: pwsh
+        run: |
+          $version = "2.103.2"
+          $archiveName = "gh_$($version)_windows_amd64.zip"
+          $archivePath = Join-Path $env:RUNNER_TEMP $archiveName
+          $extractPath = Join-Path $env:RUNNER_TEMP "desktop-commander-gh"
+          $downloadUrl = "https://github.com/cli/cli/releases/download/v$version/$archiveName"
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath
+
+          $expectedSha256 = "fef9fcdd8fdabd0501ab8b3d99eac976f504ab55d01bef9e8ef428a5d900ddda"
+          $actualSha256 = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "GitHub CLI archive SHA-256 mismatch. Expected $expectedSha256; got $actualSha256."
+          }
+
+          Expand-Archive -Path $archivePath -DestinationPath $extractPath -Force
+          $ghRoot = Join-Path $extractPath "gh_$($version)_windows_amd64"
+          $ghExe = Join-Path $ghRoot "bin\gh.exe"
+          if (!(Test-Path $ghExe)) {
+            throw "The verified GitHub CLI archive did not contain bin\gh.exe."
+          }
+
+          $targetDir = Join-Path $PWD "build\PortableBridge\tools\gh"
+          New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+          Copy-Item -Path (Join-Path $ghRoot "*") -Destination $targetDir -Recurse -Force
+          & (Join-Path $targetDir "bin\gh.exe") --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "The bundled GitHub CLI failed its version check."
+          }
 
       - name: Verify executable CLI
         shell: pwsh
