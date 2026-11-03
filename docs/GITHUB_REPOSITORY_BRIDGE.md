@@ -21,7 +21,7 @@ Start the portable executable and choose **GitHub repository bridge**. The first
 1. Select an existing, non-archived repository where the authenticated account has write permission. Private repositories are strongly recommended.
 2. Create a new repository under the authenticated personal account. The bridge requests that GitHub create it as **private**, initializes it, and then creates the queue folders.
 
-The created repository is a dedicated mailbox; it is not a clone of your application source repository. To create a private repository through the GitHub API, the credential must have repository-creation permissions. For a fine-grained personal access token, GitHub documents the Administration repository permission as required for this endpoint; classic tokens need the `repo` scope. See [GitHub's create-a-repository endpoint](https://docs.github.com/en/rest/repos/repos#create-a-repository-for-the-authenticated-user).
+The created repository is a dedicated mailbox; it is not a clone of your application source repository. To create a private repository through the GitHub API, the credential must have repository-creation permissions. For a fine-grained personal access token, GitHub documents either the Administration or Repository creation repository permission with write access as required for this endpoint; classic tokens need the `repo` scope. See [GitHub's create-a-repository endpoint](https://docs.github.com/en/rest/repos/repos#create-a-repository-for-the-authenticated-user).
 
 You can also configure the selection non-interactively:
 
