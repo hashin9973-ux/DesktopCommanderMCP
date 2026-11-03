@@ -219,7 +219,7 @@ export async function startGitHubWebhookServer(
 }
 
 export function extractQuickTunnelUrl(output: string): string | undefined {
-  const matches = output.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com\b/ig) || [];
+  const matches = output.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com(?=[:/?#\\s]|$)/ig) || [];
   for (const candidate of matches) {
     try {
       const parsed = new URL(candidate);
