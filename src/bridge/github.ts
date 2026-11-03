@@ -252,21 +252,40 @@ export class GitHubRepositoryClient {
       branch: this.defaultBranch,
     };
 
-    try {
-      await this.requestJson(url, { method: 'PUT', body: JSON.stringify(responseBody) });
-      return true;
-    } catch (error) {
-      if (!(error instanceof GitHubApiError) || (error.status !== 409 && error.status !== 422)) throw error;
+    // Contents API writes are individual commits to one branch. A concurrent
+    // write to a different file can advance the branch between requests, so
+    // retry a bounded number of stale-head conflicts when the target is absent.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await this.requestJson(url, { method: 'PUT', body: JSON.stringify(responseBody) });
+        return true;
+      } catch (error) {
+        if (!(error instanceof GitHubApiError) || (error.status !== 409 && error.status !== 422)) {
+          throw error;
+        }
 
-      const existing = await this.readFile(filePath).catch((readError) => {
-        throw new Error('GitHub could not verify an existing ' + filePath + ': ' + errorMessage(readError));
-      });
-      if (existing.equals(bytes)) return false;
-      throw new Error(
-        'GitHub repository already contains a different file at ' + filePath +
-        '. Request IDs and artifact paths must be unique; the existing file was not overwritten.',
-      );
+        let existing: Buffer;
+        try {
+          existing = await this.readFile(filePath);
+        } catch (readError) {
+          if (error.status === 409
+            && readError instanceof GitHubApiError
+            && readError.status === 404
+            && attempt < 2) {
+            await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+            continue;
+          }
+          throw new Error('GitHub could not verify an existing ' + filePath + ': ' + errorMessage(readError));
+        }
+
+        if (existing.equals(bytes)) return false;
+        throw new Error(
+          'GitHub repository already contains a different file at ' + filePath +
+          '. Request IDs and artifact paths must be unique; the existing file was not overwritten.',
+        );
+      }
     }
+    throw new Error('GitHub could not commit ' + filePath + ' after repeated default-branch conflicts. Retry the synchronization.');
   }
 
   private async requestJson(
