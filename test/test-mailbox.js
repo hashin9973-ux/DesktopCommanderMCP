@@ -8,6 +8,8 @@ const home = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-mailbox-test-'));
 try {
   await withEnv({ HOME: home, USERPROFILE: home }, async () => {
     const { mailboxStore } = await import('../dist/mailbox.js');
+    const { BRIDGE_TOOL_NAMES } = await import('../dist/bridge/protocol.js');
+    assert.equal(BRIDGE_TOOL_NAMES.includes('mailbox'), false, 'mailbox messages must not enter the cloud-folder bridge');
     const alice = await mailboxStore.register('Alice');
     const bob = await mailboxStore.register('Bob');
     assert.equal(alice.existing, false);
