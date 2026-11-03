@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,9 +9,12 @@ import { fileURLToPath } from 'node:url';
 import { writeFileAtomic } from '../utils/atomic-write.js';
 import {
   getGitHubAccessToken,
+  refreshGitHubAccessTokenForWebhooks,
+  GitHubApiError,
   GitHubRepositoryClient,
 } from './github.js';
 import { GitHubBridgeSync } from './github-sync.js';
+import { startCloudflareQuickTunnel, startGitHubWebhookServer, type QuickTunnel, type GitHubWebhookServer } from './github-webhook.js';
 
 interface StoredBridgeSettings {
   githubRepository?: string;
@@ -19,6 +23,10 @@ interface StoredBridgeSettings {
   githubPublicConsentAccepted?: boolean;
   githubPublicConsentRepository?: string;
   githubPollIntervalMs?: number;
+  githubReconcilePollIntervalMs?: number;
+  githubWebhookRepository?: string;
+  githubWebhookId?: number;
+  githubWebhookSecret?: string;
   maxParallelRequests?: number;
   [key: string]: unknown;
 }
@@ -28,6 +36,7 @@ interface GitHubCliOptions {
   createRepository?: string;
   pollIntervalMs?: number;
   maxParallelRequests?: number;
+  disableWebhook?: boolean;
   help: boolean;
 }
 
@@ -64,6 +73,8 @@ function parseOptions(args: string[]): GitHubCliOptions {
       options.createRepository = args[++i];
     } else if (flag === '--poll-interval-ms') {
       options.pollIntervalMs = parseIntegerOption(flag, args[++i], 1_000, 60_000);
+    } else if (flag === '--no-github-webhook') {
+      options.disableWebhook = true;
     } else if (flag === '--max-parallel') {
       options.maxParallelRequests = parseIntegerOption(flag, args[++i], 0, 100_000);
     } else {
@@ -86,7 +97,8 @@ function printHelp(): void {
     'Options:',
     '  --github-repository <owner/name>  Connect to an existing writable repository',
     '  --create-github-repository <name> Create a new private repository for your account',
-    '  --poll-interval-ms <n>            GitHub polling interval (default 5000; minimum 1000)',
+    '  --poll-interval-ms <n>            Reconciliation poll interval (default 60000 with webhooks; minimum 1000)',
+    '  --no-github-webhook               Disable push notifications and use polling only',
     '  --max-parallel <n>                Concurrent request-file limit; 0 means unlimited',
     '  -h, --help                        Show this help',
     '',
@@ -283,6 +295,8 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
   const releaseLock = await acquireBridgeLock(stateDir);
   let child: ChildProcess | undefined;
   let pollTimer: NodeJS.Timeout | undefined;
+  let webhookServer: GitHubWebhookServer | undefined;
+  let quickTunnel: QuickTunnel | undefined;
   let stopping = false;
 
   const stopWorker = () => {
@@ -302,7 +316,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       || (options.createRepository
         ? await GitHubRepositoryClient.createPrivateRepository(options.createRepository, token)
         : await chooseRepository(token, settings));
-    const client = await GitHubRepositoryClient.connect(repository, token);
+    let client = await GitHubRepositoryClient.connect(repository, token);
 
     const publicConsentAccepted = settings.githubPublicConsentAccepted === true
       && settings.githubPublicConsentRepository === repository;
@@ -346,10 +360,16 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       artifacts: path.join(cacheRoot, 'artifacts'),
     };
     const workerStateRoot = path.join(stateDir, 'github-worker-state', slug);
+    // The old 5-second value was the active polling default. When webhooks are
+    // enabled, migrate that default to a 60-second reconciliation interval.
+    const savedReconcileInterval = Number(settings.githubReconcilePollIntervalMs);
+    const legacyInterval = Number(settings.githubPollIntervalMs);
     const pollIntervalMs = options.pollIntervalMs
-      ?? (Number.isInteger(settings.githubPollIntervalMs)
-        ? Math.max(1_000, Math.min(60_000, Number(settings.githubPollIntervalMs)))
-        : 5_000);
+      ?? (Number.isInteger(savedReconcileInterval) && savedReconcileInterval >= 1_000 && savedReconcileInterval <= 60_000
+        ? savedReconcileInterval
+        : Number.isInteger(legacyInterval) && legacyInterval >= 1_000 && legacyInterval <= 60_000 && legacyInterval !== 5_000
+          ? legacyInterval
+          : 60_000);
     const maxParallelRequests = options.maxParallelRequests
       ?? (Number.isInteger(settings.maxParallelRequests) && Number(settings.maxParallelRequests) >= 0
         ? Number(settings.maxParallelRequests)
@@ -358,19 +378,104 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     settings.githubRepository = repository;
     settings.provider = 'github';
     settings.githubPollIntervalMs = pollIntervalMs;
+    settings.githubReconcilePollIntervalMs = pollIntervalMs;
     settings.maxParallelRequests = maxParallelRequests;
     await writeJsonAtomic(settingsPath, settings);
 
-    const sync = new GitHubBridgeSync(client, paths);
+    let sync = new GitHubBridgeSync(client, paths);
     await sync.initialize();
     await sync.syncOnce();
+
+    let webhookActive = false;
+    if (!options.disableWebhook) {
+      try {
+        const sameRepository = settings.githubWebhookRepository === repository;
+        const webhookSecret = sameRepository && typeof settings.githubWebhookSecret === 'string'
+          && settings.githubWebhookSecret.length >= 32
+          ? settings.githubWebhookSecret
+          : randomBytes(32).toString('hex');
+        settings.githubWebhookRepository = repository;
+        settings.githubWebhookSecret = webhookSecret;
+        await writeJsonAtomic(settingsPath, settings);
+
+        webhookServer = await startGitHubWebhookServer({
+          repository,
+          defaultBranch: client.defaultBranch,
+          secret: webhookSecret,
+          onPush: () => sync.syncOnce(),
+          onError: (error) => console.error('GitHub webhook synchronization failed: ' + error.message),
+        });
+        quickTunnel = await startCloudflareQuickTunnel(webhookServer.originUrl, {
+          onExit: (code, signal) => {
+            if (!stopping) {
+              console.warn(
+                'Cloudflare Quick Tunnel exited unexpectedly' +
+                (signal ? ' (signal ' + signal + ')' : ' (exit code ' + code + ')') +
+                '; polling reconciliation remains active.',
+              );
+            }
+          },
+        });
+
+        const savedHookId = sameRepository && Number.isSafeInteger(settings.githubWebhookId)
+          ? Number(settings.githubWebhookId)
+          : undefined;
+        let hookId: number;
+        try {
+          hookId = await client.upsertPushWebhook(
+            savedHookId,
+            quickTunnel.url + webhookServer.path,
+            webhookSecret,
+          );
+        } catch (error) {
+          if (!(error instanceof GitHubApiError) || (error.status !== 403 && error.status !== 404)) {
+            throw error;
+          }
+          console.log('');
+          console.log('GitHub needs permission to manage repository webhooks. Requesting the additional GitHub CLI permission now.');
+          const refreshedToken = await refreshGitHubAccessTokenForWebhooks();
+          client = await GitHubRepositoryClient.connect(repository, refreshedToken);
+          sync = new GitHubBridgeSync(client, paths);
+          await sync.initialize();
+          hookId = await client.upsertPushWebhook(
+            savedHookId,
+            quickTunnel.url + webhookServer.path,
+            webhookSecret,
+          );
+        }
+
+        settings.githubWebhookId = hookId;
+        await writeJsonAtomic(settingsPath, settings);
+        webhookActive = true;
+        console.log('GitHub push notifications: enabled through Cloudflare Quick Tunnel.');
+        console.log('Webhook endpoint: ' + quickTunnel.url + webhookServer.path);
+      } catch (error) {
+        console.warn(
+          'GitHub push notifications could not be enabled; the bridge will continue with polling. ' +
+          (error instanceof Error ? error.message : String(error)),
+        );
+        await quickTunnel?.close().catch(() => undefined);
+        quickTunnel = undefined;
+        await webhookServer?.close().catch(() => undefined);
+        webhookServer = undefined;
+      }
+    } else {
+      console.log('GitHub push notifications are disabled by --no-github-webhook.');
+    }
+
+    const fallbackPollIntervalMs = options.pollIntervalMs
+      ?? (Number.isInteger(legacyInterval) && legacyInterval >= 1_000 && legacyInterval <= 60_000
+        ? legacyInterval
+        : 5_000);
+    const activePollIntervalMs = webhookActive ? pollIntervalMs : fallbackPollIntervalMs;
 
     console.log('');
     console.log('Desktop Commander GitHub Repository Bridge is connected.');
     console.log('Repository: ' + repository);
     console.log('Default branch: ' + client.defaultBranch);
     console.log('Queue directories: requests/, responses/, artifacts/');
-    console.log('Polling interval: ' + pollIntervalMs + ' ms');
+    console.log('GitHub push notifications: ' + (webhookActive ? 'enabled' : 'unavailable; polling fallback active'));
+    console.log('Reconciliation polling interval: ' + activePollIntervalMs + ' ms');
     console.log('Parallel request limit: ' + (maxParallelRequests === 0 ? 'unlimited' : maxParallelRequests));
     console.log('Files are committed directly to the existing default branch. No branches or pull requests are created.');
     console.log('Press Ctrl+C to stop.');
@@ -390,7 +495,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
         console.error('GitHub queue synchronization failed; it will retry: ' + errorMessage(error));
       }
     };
-    pollTimer = setInterval(() => { void syncPoll(); }, pollIntervalMs);
+    pollTimer = setInterval(() => { void syncPoll(); }, activePollIntervalMs);
 
     const childExitCode = await new Promise<number>((resolve, reject) => {
       child!.once('error', reject);
@@ -409,6 +514,12 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     }
     process.removeListener('SIGINT', stopWorker);
     process.removeListener('SIGTERM', stopWorker);
+    await quickTunnel?.close().catch((error: unknown) => {
+      console.warn('Could not stop Cloudflare Quick Tunnel cleanly: ' + errorMessage(error));
+    });
+    await webhookServer?.close().catch((error: unknown) => {
+      console.warn('Could not stop the GitHub webhook listener cleanly: ' + errorMessage(error));
+    });
     await releaseLock();
   }
 }
