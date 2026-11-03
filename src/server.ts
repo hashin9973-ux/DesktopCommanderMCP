@@ -1241,15 +1241,31 @@ function pathArguments(args: unknown): unknown[] {
 
 export async function executeToolForBridge(name: string, args: unknown): Promise<ServerResult> {
     const schema = toolArgSchemas[name];
-    if (!schema || name === 'track_ui_event' || name === 'mailbox') {
+    if (!schema || name === 'track_ui_event') {
         return { content: [{ type: 'text', text: `Error: Unknown or unavailable tool: ${name}` }], isError: true };
     }
 
     const rawArgs = args === undefined || args === null ? {} : args;
-    if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs) && (rawArgs as Record<string, unknown>).origin === 'ui') {
+    const rawRecord = rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+        ? rawArgs as Record<string, unknown>
+        : undefined;
+    if (rawRecord?.origin === 'ui') {
         return { content: [{ type: 'text', text: 'Error: Bridge requests cannot use origin "ui".' }], isError: true };
     }
-    const unsupported = detectUnsupportedParams(rawArgs, schema);
+
+    // mailbox_user_id is a common optional argument on every MCP tool. It is
+    // carried in the bridge request as well, but is not part of each tool's
+    // individual schema (MailboxArgsSchema owns it for mailbox actions).
+    const sharedMailboxId = name === 'mailbox' ? undefined : rawRecord?.mailbox_user_id;
+    if (sharedMailboxId !== undefined && typeof sharedMailboxId !== 'string') {
+        return { content: [{ type: 'text', text: 'Error: mailbox_user_id must be a string.' }], isError: true };
+    }
+    const schemaArgs = rawRecord ? { ...rawRecord } : rawArgs;
+    if (name !== 'mailbox' && schemaArgs && typeof schemaArgs === 'object' && !Array.isArray(schemaArgs)) {
+        delete (schemaArgs as Record<string, unknown>).mailbox_user_id;
+    }
+
+    const unsupported = detectUnsupportedParams(schemaArgs, schema);
     if (unsupported.length > 0) {
         return {
             content: [{
@@ -1260,7 +1276,7 @@ export async function executeToolForBridge(name: string, args: unknown): Promise
         };
     }
 
-    const parsed = schema.safeParse(rawArgs);
+    const parsed = schema.safeParse(schemaArgs);
     if (!parsed.success || !parsed.data || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) {
         const details = parsed.success
             ? 'Arguments must resolve to a JSON object.'
@@ -1268,13 +1284,17 @@ export async function executeToolForBridge(name: string, args: unknown): Promise
         return { content: [{ type: 'text', text: `Error: Invalid arguments for ${name}: ${details}` }], isError: true };
     }
 
-    return bridgeExecutionContext.run(true, () => runWithToolCallPaths(() => {
-        addToolCallPaths(...pathArguments(parsed.data));
+    const normalizedArgs = { ...(parsed.data as Record<string, unknown>) };
+    if (typeof sharedMailboxId === 'string') normalizedArgs.mailbox_user_id = sharedMailboxId;
+
+    const result = await bridgeExecutionContext.run(true, () => runWithToolCallPaths(() => {
+        addToolCallPaths(...pathArguments(normalizedArgs));
         return handleCallToolRequest({
             method: 'tools/call',
-            params: { name, arguments: parsed.data },
+            params: { name, arguments: normalizedArgs },
         } as CallToolRequest);
     }));
+    return addMailboxNotice(result, name, normalizedArgs);
 }
 
 export async function validateBridgeArtifactPath(filePath: string): Promise<string> {
