@@ -28,7 +28,7 @@ const MAILBOX_GUIDE_SECTION = [
   '- Include `mailbox_user_id` on ordinary tool calls to receive unread-message notices. Use `inbox_unread` to retrieve the messages.',
   '',
   'A mailbox user ID is a routing identifier, not an authentication credential. Local shell administration is also available on the computer running Desktop Commander: `desktop-commander mailbox users`, `register`, `read`, `send`, `send-as-user`, `rename-user`, `delete-user`, `edit-mail`, and `delete-mail`.',
-].join('\\n');
+].join('\n');
 
 export type MailboxGuideAppendResult = 'appended' | 'updated' | 'already_present' | 'not_bridge_guide' | 'missing';
 
@@ -50,20 +50,20 @@ export async function appendMailboxGuideSection(guidePath: string): Promise<Mail
   const legacyHeadingIndex = existing.indexOf(LEGACY_MAILBOX_GUIDE_HEADING);
   const headingIndex = currentHeadingIndex >= 0 ? currentHeadingIndex : legacyHeadingIndex;
   if (headingIndex >= 0) {
-    const sectionStart = existing.lastIndexOf('\\n', headingIndex) + 1;
-    const nextHeadingIndex = existing.indexOf('\\n## ', headingIndex + 1);
+    const sectionStart = existing.lastIndexOf('\n', headingIndex) + 1;
+    const nextHeadingIndex = existing.indexOf('\n## ', headingIndex + 1);
     const sectionEnd = nextHeadingIndex >= 0 ? nextHeadingIndex + 1 : existing.length;
     const prefix = existing.slice(0, sectionStart);
     const suffix = existing.slice(sectionEnd);
-    const updated = prefix + MAILBOX_GUIDE_SECTION + (suffix ? '\\n\\n' + suffix : '\\n');
+    const updated = prefix + MAILBOX_GUIDE_SECTION + (suffix ? '\n\n' + suffix : '\n');
     await writeFileAtomic(guidePath, updated);
     return 'updated';
   }
 
-  const separator = existing.endsWith('\\n\\n') ? '' : existing.endsWith('\\n') ? '\\n' : '\\n\\n';
+  const separator = existing.endsWith('\n\n') ? '' : existing.endsWith('\n') ? '\n' : '\n\n';
   const handle = await fs.open(guidePath, 'a');
   try {
-    await handle.writeFile(separator + MAILBOX_GUIDE_SECTION + '\\n', 'utf8');
+    await handle.writeFile(separator + MAILBOX_GUIDE_SECTION + '\n', 'utf8');
     await handle.sync();
   } finally {
     await handle.close();
