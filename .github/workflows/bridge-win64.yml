@@ -29,6 +29,7 @@ jobs:
         run: >-
           npm test --
           test-bridge-protocol.js
+          test-bridge-guide.js
           test-atomic-write.js
           test-file-handlers.js
           test-read-multiple-files.js
@@ -154,8 +155,16 @@ jobs:
             if (!(Test-Path $artifactPath)) {
               throw "The image artifact referenced by the response was not materialized: $artifactPath"
             }
-            if (!(Test-Path (Join-Path $cloudDir "README.md"))) {
+            $guidePath = Join-Path $cloudDir "README.md"
+            if (!(Test-Path $guidePath)) {
               throw "Bridge did not generate README.md in the configured cloud folder."
+            }
+            $guideContent = Get-Content $guidePath -Raw
+            if ($guideContent -notmatch [regex]::Escape("## Optional local mailbox (direct MCP only)")) {
+              throw "Generated bridge README is missing the optional local-mailbox section."
+            }
+            if ($guideContent -notmatch 'mailbox_user_id.*not a supported bridge request argument[.]') {
+              throw "Generated bridge README is missing the local-mailbox bridge boundary."
             }
           }
           finally {

@@ -16,6 +16,7 @@ import { writeFileAtomic } from '../utils/atomic-write.js';
 import { preloadFileSupport } from '../utils/files/index.js';
 import { featureFlagManager } from '../utils/feature-flags.js';
 import { BRIDGE_TOOL_NAMES, parseBridgeRequest, type BridgeCommand, type BridgeRequest } from './protocol.js';
+import { appendMailboxGuideSection } from './guide.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_STORAGE_BYTES = 3_000_000_000;
@@ -437,11 +438,22 @@ async function createGuideIfMissing(directory: string): Promise<void> {
     }
     console.log('Created ' + guidePath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-      console.log('Existing README.md preserved: ' + guidePath);
-      return;
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    console.log('Existing README.md preserved: ' + guidePath);
+  }
+
+  // Add new guidance without regenerating or replacing a pre-existing guide.
+  // Custom README files and guides that already contain this section are left alone.
+  try {
+    const appendResult = await appendMailboxGuideSection(guidePath);
+    if (appendResult === 'appended') {
+      console.log('Appended optional local mailbox guidance to ' + guidePath);
+    } else if (appendResult === 'not_bridge_guide') {
+      console.log('Unrecognized README.md preserved without changes: ' + guidePath);
     }
-    throw error;
+  } catch (error) {
+    // Guide maintenance is best-effort; it must not prevent the bridge from starting.
+    console.warn('Could not append mailbox guidance to ' + guidePath + ': ' + errorMessage(error));
   }
 }
 
