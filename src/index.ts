@@ -43,6 +43,13 @@ async function runServer() {
       return;
     }
 
+    // Run local mailbox administration without starting the MCP server.
+    if (process.argv[2] === 'mailbox') {
+      const { runMailboxCli } = await import('./mailbox-cli.js');
+      await runMailboxCli(process.argv.slice(3));
+      return;
+    }
+
     // Run the cloud-folder bridge as a separate, non-MCP operating mode.
     if (process.argv[2] === 'bridge') {
       const { runBridge } = await import('./bridge/index.js');
