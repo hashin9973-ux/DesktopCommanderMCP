@@ -282,7 +282,7 @@ jobs:
               throw "Bridge did not generate README.md in the configured cloud folder."
             }
             $guideContent = Get-Content $guidePath -Raw
-            if (!$guideContent.Contains("## Optional local mailbox (direct MCP and cloud-folder bridge)")) {
+            if (!$guideContent.Contains("## Optional local mailbox (direct MCP and both bridge transports)")) {
               throw "Generated bridge README is missing the shared local-mailbox section."
             }
             if (!$guideContent.Contains("### mailbox")) {
