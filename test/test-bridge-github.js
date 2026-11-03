@@ -182,10 +182,8 @@ await assert.rejects(
   () => GitHubRepositoryClient.connect('read-only/repo', token, api.fetcher),
   /write access/,
 );
-await assert.rejects(
-  () => GitHubRepositoryClient.connect('public/repo', token, api.fetcher),
-  /only connects to private repositories/,
-);
+const publicClient = await GitHubRepositoryClient.connect('public/repo', token, api.fetcher);
+assert.equal(publicClient.isPrivate, false, 'public repository visibility must be returned for startup consent');
 
 const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-github-bridge-'));
 const paths = {
