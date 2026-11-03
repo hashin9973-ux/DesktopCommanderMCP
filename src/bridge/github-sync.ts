@@ -60,6 +60,7 @@ function isSafeArtifactPath(value: string, requestId: string): boolean {
 
 export class GitHubBridgeSync {
   private syncPromise?: Promise<void>;
+  private syncRequestedWhileRunning = false;
   private readonly completedRequests = new Map<string, {
     requestBlobSha: string;
     responseBlobSha: string;
@@ -108,8 +109,19 @@ export class GitHubBridgeSync {
   }
 
   async syncOnce(): Promise<void> {
-    if (this.syncPromise) return this.syncPromise;
-    const running = this.syncInternal().finally(() => {
+    if (this.syncPromise) {
+      // A webhook or local response event can arrive after the current pass has
+      // already listed its inputs. Remember that signal and run one more pass.
+      this.syncRequestedWhileRunning = true;
+      return this.syncPromise;
+    }
+
+    const running = (async () => {
+      do {
+        this.syncRequestedWhileRunning = false;
+        await this.syncInternal();
+      } while (this.syncRequestedWhileRunning);
+    })().finally(() => {
       this.syncPromise = undefined;
     });
     this.syncPromise = running;
