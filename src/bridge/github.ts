@@ -11,6 +11,7 @@ export interface GitHubRepositorySummary {
   default_branch: string;
   private?: boolean;
   archived?: boolean;
+  permissions?: { push?: boolean };
 }
 
 export interface GitHubContentEntry {
@@ -22,7 +23,7 @@ export interface GitHubContentEntry {
 }
 
 export async function getGitHubAccessToken(): Promise<string> {
-  const environmentToken = process.env.GITHUB_TOKEN?.trim();
+  const environmentToken = process.env.GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim();
   if (environmentToken) return environmentToken;
 
   try {
@@ -87,9 +88,9 @@ export class GitHubRepositoryClient {
 
     const client = new GitHubRepositoryClient(repository, '', token, fetcher);
     const metadata = await client.requestJson('/repos/' + repository) as {
-      full_name?: unknown;
       default_branch?: unknown;
       archived?: unknown;
+      permissions?: { push?: unknown };
     };
     if (typeof metadata.default_branch !== 'string' || !metadata.default_branch) {
       throw new Error('GitHub did not return a default branch for ' + repository + '.');
@@ -97,7 +98,43 @@ export class GitHubRepositoryClient {
     if (metadata.archived === true) {
       throw new Error('Repository ' + repository + ' is archived and cannot accept bridge queue writes.');
     }
+    if (metadata.permissions && metadata.permissions.push === false) {
+      throw new Error('Your authenticated GitHub account does not have write access to ' + repository + '. Choose a repository where you have write permission.');
+    }
     return new GitHubRepositoryClient(repository, metadata.default_branch, token, fetcher);
+  }
+
+  static async createPrivateRepository(
+    name: string,
+    token: string,
+    fetcher: typeof fetch = fetch,
+  ): Promise<string> {
+    if (!/^[A-Za-z0-9_.-]{1,100}$/.test(name)) {
+      throw new Error('Repository name must contain 1-100 letters, numbers, dots, underscores, or hyphens.');
+    }
+    if (!token.trim()) throw new Error('A GitHub access token is required.');
+
+    const client = new GitHubRepositoryClient('', '', token, fetcher);
+    const created = await client.requestJson('/user/repos', {
+      method: 'POST',
+      body: JSON.stringify({
+        name,
+        description: 'Private Desktop Commander Bridge request and response mailbox',
+        private: true,
+        auto_init: true,
+        has_issues: false,
+        has_projects: false,
+        has_wiki: false,
+      }),
+    }) as { full_name?: unknown; private?: unknown; default_branch?: unknown };
+
+    if (created.private !== true || typeof created.full_name !== 'string' || !created.full_name) {
+      throw new Error('GitHub did not confirm creation of a private repository.');
+    }
+    if (typeof created.default_branch !== 'string' || !created.default_branch) {
+      throw new Error('GitHub created the repository without returning its default branch.');
+    }
+    return created.full_name;
   }
 
   async getAuthenticatedUser(): Promise<{ login: string }> {
@@ -108,17 +145,27 @@ export class GitHubRepositoryClient {
     return { login: value.login };
   }
 
-  async listRepositories(): Promise<Array<{ full_name: string; private: boolean; archived: boolean }>> {
-    const value = await this.requestJson('/user/repos?visibility=all&affiliation=owner,collaborator,organization_member&sort=updated&per_page=100&page=1');
-    if (!Array.isArray(value)) throw new Error('GitHub repository listing returned an unexpected response.');
-    return value.filter((item): item is Record<string, unknown> =>
-      typeof item === 'object' && item !== null
-      && typeof item.full_name === 'string')
-      .map((item) => ({
-        full_name: String(item.full_name),
-        private: item.private === true,
-        archived: item.archived === true,
-      }));
+  async listRepositories(): Promise<Array<{ full_name: string; private: boolean; archived: boolean; push: boolean }>> {
+    const repositories: Array<{ full_name: string; private: boolean; archived: boolean; push: boolean }> = [];
+    for (let page = 1; page <= 10; page++) {
+      const value = await this.requestJson(
+        '/user/repos?visibility=all&affiliation=owner,collaborator,organization_member&sort=updated&per_page=100&page=' + page,
+      );
+      if (!Array.isArray(value)) throw new Error('GitHub repository listing returned an unexpected response.');
+      const current = value.filter((item): item is Record<string, unknown> =>
+        typeof item === 'object' && item !== null
+        && typeof item.full_name === 'string')
+        .map((item) => ({
+          full_name: String(item.full_name),
+          private: item.private === true,
+          archived: item.archived === true,
+          push: typeof item.permissions === 'object' && item.permissions !== null
+            && (item.permissions as Record<string, unknown>).push === true,
+        }));
+      repositories.push(...current);
+      if (value.length < 100) break;
+    }
+    return repositories;
   }
 
   async listDirectory(directory: string): Promise<GitHubContentEntry[]> {
