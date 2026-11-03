@@ -28,7 +28,7 @@ const MAILBOX_GUIDE_SECTION = [
   'Mailbox data is stored locally in the same configuration directory as Desktop Commander settings; it is not stored in the bridge request, response, or artifact folders. A mailbox user ID is a routing identifier, not an authentication credential. Keep it out of shared bridge files.',
   '',
   'For local administration, the CLI supports `desktop-commander mailbox users`, `register`, `read`, `send`, `send-as-user`, `rename-user`, `delete-user`, `edit-mail`, and `delete-mail`. Run these locally, not through the cloud-folder bridge.',
-].join('\\n');
+].join('\n');
 
 export type MailboxGuideAppendResult = 'appended' | 'already_present' | 'not_bridge_guide' | 'missing';
 
@@ -48,10 +48,12 @@ export async function appendMailboxGuideSection(guidePath: string): Promise<Mail
     return 'not_bridge_guide';
   }
 
-  const separator = existing.endsWith('\\n') ? '\\n' : '\\n\\n';
+  const newline = existing.includes('\\r\\n') ? '\\r\\n' : '\\n';
+  const section = MAILBOX_GUIDE_SECTION.replace(/\\n/g, newline);
+  const separator = existing.endsWith(newline + newline) ? '' : existing.endsWith(newline) ? newline : newline + newline;
   const handle = await fs.open(guidePath, 'a');
   try {
-    await handle.writeFile(separator + MAILBOX_GUIDE_SECTION + '\\n', 'utf8');
+    await handle.writeFile(separator + section + newline, 'utf8');
     await handle.sync();
   } finally {
     await handle.close();
