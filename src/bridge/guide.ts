@@ -6,6 +6,7 @@ export const MAILBOX_GUIDE_HEADING = '## Optional local mailbox (direct MCP and 
 const BRIDGE_GUIDE_TITLE = '# Desktop Commander Cloud-Folder Bridge';
 const MAILBOX_GUIDE_MARKER = '<!-- desktop-commander:local-mailbox-guide:v2 -->';
 const LEGACY_MAILBOX_GUIDE_HEADING = '## Optional local mailbox (direct MCP only)';
+const LEGACY_MAILBOX_SUPPLEMENT = /\\n### Additional mailbox privacy boundary\\n\\n<!-- desktop-commander:local-mailbox-guide-supplement:v1 -->[\\s\\S]*$/;
 
 const MAILBOX_GUIDE_SECTION = [
   MAILBOX_GUIDE_HEADING,
@@ -54,7 +55,10 @@ export async function appendMailboxGuideSection(guidePath: string): Promise<Mail
     const nextHeadingIndex = existing.indexOf('\n## ', headingIndex + 1);
     const sectionEnd = nextHeadingIndex >= 0 ? nextHeadingIndex + 1 : existing.length;
     const prefix = existing.slice(0, sectionStart);
-    const suffix = existing.slice(sectionEnd);
+    // Previous versions appended this warning at EOF, after the generated
+    // tool catalog. Remove that obsolete footer as well as replacing the
+    // old MCP-only section above it.
+    const suffix = existing.slice(sectionEnd).replace(LEGACY_MAILBOX_SUPPLEMENT, '');
     const updated = prefix + MAILBOX_GUIDE_SECTION + (suffix ? '\n\n' + suffix : '\n');
     await writeFileAtomic(guidePath, updated);
     return 'updated';
