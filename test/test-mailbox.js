@@ -9,7 +9,7 @@ try {
   await withEnv({ HOME: home, USERPROFILE: home }, async () => {
     const { mailboxStore } = await import('../dist/mailbox.js');
     const { BRIDGE_TOOL_NAMES } = await import('../dist/bridge/protocol.js');
-    assert.equal(BRIDGE_TOOL_NAMES.includes('mailbox'), false, 'mailbox messages must not enter the cloud-folder bridge');
+    assert.equal(BRIDGE_TOOL_NAMES.includes('mailbox'), true, 'mailbox must be exposed as a normal cloud-folder bridge tool');
     const alice = await mailboxStore.register('Alice');
     const bob = await mailboxStore.register('Bob');
     assert.equal(alice.existing, false);
@@ -48,7 +48,9 @@ try {
     const result = await mailboxStore.deleteUser('Alice');
     assert.equal(result.deletedMessages, 1, 'deleting a user removes the remaining messages they sent or received');
     assert.equal((await mailboxStore.listUsers()).some(user => user.username === 'Alice'), false);
+
     console.log('✓ mailbox registration, local persistence, send/read, unread tracking, user management, and message management');
+
   });
 } finally {
   await fs.rm(home, { recursive: true, force: true });
