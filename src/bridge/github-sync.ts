@@ -85,10 +85,15 @@ async function readOptional(filePath: string): Promise<Buffer | null> {
 }
 
 function isSafeArtifactPath(value: string, requestId: string): boolean {
-  const normalized = path.posix.normalize(value);
-  return normalized === value
-    && value.startsWith('artifacts/' + requestId + '/')
-    && !value.split('/').some((segment) => !segment || segment === '.' || segment === '..');
+  const prefix = 'artifacts/' + requestId + '/';
+  if (!value.startsWith(prefix) || value.includes('\\\\')) return false;
+  const segments = value.split('/');
+  return segments.length === 3
+    && segments[0] === 'artifacts'
+    && segments[1] === requestId
+    && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segments[2])
+    && segments[2] !== '.'
+    && segments[2] !== '..';
 }
 
 export class GitHubBridgeSync {
