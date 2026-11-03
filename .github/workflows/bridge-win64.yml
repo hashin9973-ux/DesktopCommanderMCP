@@ -70,11 +70,12 @@ jobs:
           }
 
           Expand-Archive -Path $archivePath -DestinationPath $extractPath -Force
-          $ghRoot = Join-Path $extractPath "gh_$($version)_windows_amd64"
-          $ghExe = Join-Path $ghRoot "bin\gh.exe"
-          if (!(Test-Path $ghExe)) {
-            throw "The verified GitHub CLI archive did not contain bin\gh.exe."
+          $ghExeFile = Get-ChildItem -Path $extractPath -Filter gh.exe -File -Recurse | Select-Object -First 1
+          if ($null -eq $ghExeFile) {
+            throw "The verified GitHub CLI archive did not contain gh.exe."
           }
+          $ghBinDir = Split-Path -Path $ghExeFile.FullName -Parent
+          $ghRoot = Split-Path -Path $ghBinDir -Parent
 
           $targetDir = Join-Path $PWD "build\PortableBridge\tools\gh"
           New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
