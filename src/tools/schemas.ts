@@ -237,6 +237,22 @@ export const GetRecentToolCallsArgsSchema = z.object({
   since: z.string().datetime().optional(),
 });
 
+export const MailboxArgsSchema = z.object({
+  action: z.enum(['register', 'inbox_unread', 'send', 'list_users', 'read']),
+  username: z.string().optional(),
+  to: z.string().optional(),
+  message: z.string().optional(),
+  user: z.string().optional(),
+  from: z.string().optional(),
+  unreadOnly: z.boolean().optional(),
+  limit: z.number().int().min(1).max(1000).optional(),
+  mailbox_user_id: z.string().optional(),
+}).superRefine((value, context) => {
+  if (value.action === 'register' && !value.username?.trim()) context.addIssue({ code: z.ZodIssueCode.custom, message: 'username is required for register', path: ['username'] });
+  if (value.action === 'send' && (!value.to?.trim() || !value.message?.trim())) context.addIssue({ code: z.ZodIssueCode.custom, message: 'to and message are required for send', path: ['to'] });
+  if (value.action === 'inbox_unread' && !value.mailbox_user_id?.trim()) context.addIssue({ code: z.ZodIssueCode.custom, message: 'mailbox_user_id is required for inbox_unread', path: ['mailbox_user_id'] });
+});
+
 export const TrackUiEventArgsSchema = z.object({
   event: z.string().min(1).max(80),
   component: z.string().optional().default('file_preview'),
@@ -274,5 +290,6 @@ export const toolArgSchemas: Record<string, z.ZodTypeAny> = {
   get_usage_stats: GetUsageStatsArgsSchema,
   get_recent_tool_calls: GetRecentToolCallsArgsSchema,
   give_feedback_to_desktop_commander: GiveFeedbackArgsSchema,
+  mailbox: MailboxArgsSchema,
   track_ui_event: TrackUiEventArgsSchema,
 };
