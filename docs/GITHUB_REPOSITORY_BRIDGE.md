@@ -12,7 +12,7 @@ gh auth login
 
 On startup, the bridge reads the token from the local GitHub CLI credential store using `gh auth token --hostname github.com`. It does not write the token into the repository or Desktop Commander settings.
 
-For headless deployments, set `GITHUB_TOKEN` or `GH_TOKEN` in the process environment instead. Never put a token in a request file or commit it to the repository.
+For headless deployments, set `GITHUB_TOKEN` or `GH_TOKEN` in the process environment instead. Never put a token in a request file or commit it to the repository. The first connection still requires interactive local security consent (type `YES`; and, for a public repository, separately type `PUBLIC`). After the repository-specific consent is saved locally, later starts can run non-interactively.
 
 ## Select or create the repository
 
