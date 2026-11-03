@@ -56,7 +56,7 @@ const markdown = [
   tick.repeat(3) + 'desktop-commander-v1',
   JSON.stringify({ tool: 'get_config', arguments: {} }),
   tick.repeat(3),
-].join('\\n');
+].join('\n');
 
 const parsedMarkdown = parseBridgeRequest('request-markdown-01.md', markdown);
 assert.equal(parsedMarkdown.commands.length, 2);
@@ -116,7 +116,7 @@ assert.throws(
   () => parseBridgeRequest('request-unclosed.md', [
     tick.repeat(3) + 'desktop-commander-v1',
     JSON.stringify({ tool: 'get_config', arguments: {} }),
-  ].join('\\n')),
+  ].join('\n')),
   /Unterminated/,
 );
 assert.throws(
@@ -124,7 +124,7 @@ assert.throws(
     tick.repeat(3) + 'desktop-commander-v1',
     '{ invalid json',
     tick.repeat(3),
-  ].join('\\n')),
+  ].join('\n')),
   /Invalid JSON/,
 );
 
