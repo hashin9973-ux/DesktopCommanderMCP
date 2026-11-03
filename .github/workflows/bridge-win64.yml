@@ -157,6 +157,17 @@ jobs:
             if (!(Test-Path (Join-Path $cloudDir "README.md"))) {
               throw "Bridge did not generate README.md in the configured cloud folder."
             }
+            $guidePath = Join-Path $cloudDir "README.md"
+            $guideContent = Get-Content $guidePath -Raw
+            if ($guideContent -notmatch '## Optional local mailbox \(direct MCP only\)') {
+              throw "Generated bridge guide is missing the local-mailbox boundary section."
+            }
+            if ($guideContent -notmatch 'mailbox_user_id is not an accepted bridge request argument') {
+              throw "Generated bridge guide does not explain that mailbox IDs are local-MCP-only."
+            }
+            if ($guideContent -notmatch 'desktop-commander mailbox users') {
+              throw "Generated bridge guide is missing local mailbox administration commands."
+            }
           }
           finally {
             if (!$process.HasExited) {
