@@ -6,7 +6,7 @@ export const MAILBOX_GUIDE_HEADING = '## Optional local mailbox (direct MCP and 
 const BRIDGE_GUIDE_TITLE = '# Desktop Commander Cloud-Folder Bridge';
 const MAILBOX_GUIDE_MARKER = '<!-- desktop-commander:local-mailbox-guide:v2 -->';
 const LEGACY_MAILBOX_GUIDE_HEADING = '## Optional local mailbox (direct MCP only)';
-const LEGACY_MAILBOX_SUPPLEMENT = /\\n### Additional mailbox privacy boundary\\n\\n<!-- desktop-commander:local-mailbox-guide-supplement:v1 -->[\\s\\S]*$/;
+const LEGACY_MAILBOX_SUPPLEMENT = /\n### Additional mailbox privacy boundary\n\n<!-- desktop-commander:local-mailbox-guide-supplement:v1 -->[\s\S]*$/;
 
 const MAILBOX_GUIDE_SECTION = [
   MAILBOX_GUIDE_HEADING,
