@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { parseBridgeRequest } from '../dist/bridge/protocol.js';
+import { BRIDGE_TOOL_NAMES, parseBridgeRequest } from '../dist/bridge/protocol.js';
 
 const json = JSON.stringify({
   protocol_version: 1,
@@ -17,6 +17,21 @@ assert.equal(parsedJson.commands.length, 2);
 assert.equal(parsedJson.commands[0].tool, 'list_directory');
 assert.equal(parsedJson.commands[1].tool, 'get_config');
 assert.equal(parsedJson.command_delay_ms, 0);
+assert.ok(BRIDGE_TOOL_NAMES.includes('mailbox'), 'mailbox is a supported bridge tool');
+
+const mailboxId = 'f5f9ecf0-1b22-4d15-9911-ec2b39d4c8bf';
+const mailboxRequest = parseBridgeRequest('request-mailbox-01.json', JSON.stringify({
+  protocol_version: 1,
+  id: 'mailbox-01',
+  commands: [
+    { tool: 'mailbox', arguments: { action: 'register', username: 'Bridge Alice' } },
+    { tool: 'get_config', arguments: { mailbox_user_id: mailboxId } },
+  ],
+}));
+assert.equal(mailboxRequest.commands[0].tool, 'mailbox');
+assert.equal(mailboxRequest.commands[0].arguments.action, 'register');
+assert.equal(mailboxRequest.commands[1].arguments.mailbox_user_id, mailboxId,
+  'the common mailbox_user_id argument must be preserved on non-mailbox bridge calls');
 
 const tick = String.fromCharCode(96);
 const markdown = [
@@ -41,7 +56,7 @@ const markdown = [
   tick.repeat(3) + 'desktop-commander-v1',
   JSON.stringify({ tool: 'get_config', arguments: {} }),
   tick.repeat(3),
-].join('\n');
+].join('\\n');
 
 const parsedMarkdown = parseBridgeRequest('request-markdown-01.md', markdown);
 assert.equal(parsedMarkdown.commands.length, 2);
@@ -69,6 +84,14 @@ assert.throws(
   /unsupported argument/,
 );
 assert.throws(
+  () => parseBridgeRequest('request-bad-mailbox-id.json', JSON.stringify({
+    protocol_version: 1,
+    id: 'bad-mailbox-id',
+    commands: [{ tool: 'get_config', arguments: { mailbox_user_id: 42 } }],
+  })),
+  /mailbox_user_id must be a string/,
+);
+assert.throws(
   () => parseBridgeRequest('request-bad-delay.json', JSON.stringify({
     protocol_version: 1,
     id: 'bad-delay',
@@ -93,7 +116,7 @@ assert.throws(
   () => parseBridgeRequest('request-unclosed.md', [
     tick.repeat(3) + 'desktop-commander-v1',
     JSON.stringify({ tool: 'get_config', arguments: {} }),
-  ].join('\n')),
+  ].join('\\n')),
   /Unterminated/,
 );
 assert.throws(
@@ -101,7 +124,7 @@ assert.throws(
     tick.repeat(3) + 'desktop-commander-v1',
     '{ invalid json',
     tick.repeat(3),
-  ].join('\n')),
+  ].join('\\n')),
   /Invalid JSON/,
 );
 
