@@ -163,7 +163,7 @@ jobs:
             if ($guideContent -notmatch [regex]::Escape("## Optional local mailbox (direct MCP only)")) {
               throw "Generated bridge README is missing the optional local-mailbox section."
             }
-            if ($guideContent -notmatch 'mailbox_user_id.*not a supported bridge request argument\\.') {
+            if ($guideContent -notmatch 'mailbox_user_id.*not a supported bridge request argument[.]') {
               throw "Generated bridge README is missing the local-mailbox bridge boundary."
             }
           }
