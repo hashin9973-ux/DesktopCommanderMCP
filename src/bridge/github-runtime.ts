@@ -16,6 +16,8 @@ interface StoredBridgeSettings {
   githubRepository?: string;
   githubConsentAccepted?: boolean;
   githubConsentRepository?: string;
+  githubPublicConsentAccepted?: boolean;
+  githubPublicConsentRepository?: string;
   githubPollIntervalMs?: number;
   maxParallelRequests?: number;
   [key: string]: unknown;
@@ -204,11 +206,11 @@ async function chooseRepository(
   if (choice !== '1') throw new Error('Choose 1 or 2. GitHub setup cancelled.');
 
   const repositories = (await GitHubRepositoryClient.listAccessibleRepositories(token))
-    .filter((repository) => repository.private && repository.push && !repository.archived)
+    .filter((repository) => repository.push && !repository.archived)
     .sort((a, b) => a.full_name.localeCompare(b.full_name));
 
   if (repositories.length === 0) {
-    throw new Error('No writable, non-archived private repositories were found. Choose private repository creation or grant your account write access.');
+    throw new Error('No writable, non-archived repositories were found. Choose private repository creation or grant your account write access.');
   }
 
   const visible = repositories.slice(0, 100);
@@ -297,6 +299,22 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
         ? await GitHubRepositoryClient.createPrivateRepository(options.createRepository, token)
         : await chooseRepository(token, settings));
     const client = await GitHubRepositoryClient.connect(repository, token);
+
+    const publicConsentAccepted = settings.githubPublicConsentAccepted === true
+      && settings.githubPublicConsentRepository === repository;
+    if (!client.isPrivate && !publicConsentAccepted) {
+      console.log('');
+      console.log('PUBLIC REPOSITORY WARNING');
+      console.log('This repository is public. Anyone on GitHub can read its requests, responses, file paths, and exported artifacts.');
+      console.log('Use a private repository for sensitive work. The bridge creates private repositories automatically when you choose that option.');
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        throw new Error('This is a public repository. For safety, connect to a private repository or confirm public visibility interactively by typing PUBLIC.');
+      }
+      const publicAnswer = await ask('Type PUBLIC to allow bridge queue data to be stored in this public repository: ');
+      if (publicAnswer !== 'PUBLIC') throw new Error('GitHub bridge startup cancelled; public repository consent was not granted.');
+      settings.githubPublicConsentAccepted = true;
+      settings.githubPublicConsentRepository = repository;
+    }
 
     const consentAccepted = settings.githubConsentAccepted === true
       && settings.githubConsentRepository === repository;
