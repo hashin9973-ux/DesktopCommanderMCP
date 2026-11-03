@@ -32,6 +32,7 @@ function createGitHubApiDouble() {
         full_name: 'owner/repo',
         default_branch: 'main',
         archived: false,
+        private: true,
         permissions: { push: true },
       });
     }
@@ -50,6 +51,7 @@ function createGitHubApiDouble() {
         full_name: 'read-only/repo',
         default_branch: 'main',
         archived: false,
+        private: true,
         permissions: { push: false },
       });
     }
