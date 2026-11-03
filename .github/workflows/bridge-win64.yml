@@ -30,6 +30,7 @@ jobs:
           npm test --
           test-bridge-protocol.js
           test-bridge-guide.js
+          test-bridge-github.js
           test-atomic-write.js
           test-file-handlers.js
           test-read-multiple-files.js
