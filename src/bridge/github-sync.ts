@@ -111,6 +111,8 @@ export class GitHubBridgeSync {
       fs.mkdir(this.paths.artifacts, { recursive: true }),
     ]);
 
+    // Keep Contents API writes sequential: each file creation advances the
+    // same default-branch ref and concurrent commits can conflict.
     for (const directory of ['requests', 'responses', 'artifacts']) {
       await this.client.createFileIfAbsent(
         directory + '/.gitkeep',
