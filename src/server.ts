@@ -1249,12 +1249,7 @@ export async function executeToolForBridge(name: string, args: unknown): Promise
     if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs) && (rawArgs as Record<string, unknown>).origin === 'ui') {
         return { content: [{ type: 'text', text: 'Error: Bridge requests cannot use origin "ui".' }], isError: true };
     }
-    const mailboxUserId = rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
-        ? (rawArgs as Record<string, unknown>).mailbox_user_id : undefined;
-    const validationArgs = name === 'mailbox' || !rawArgs || typeof rawArgs !== 'object' || Array.isArray(rawArgs)
-        ? rawArgs
-        : Object.fromEntries(Object.entries(rawArgs as Record<string, unknown>).filter(([key]) => key !== 'mailbox_user_id'));
-    const unsupported = detectUnsupportedParams(validationArgs, schema);
+    const unsupported = detectUnsupportedParams(rawArgs, schema);
     if (unsupported.length > 0) {
         return {
             content: [{
@@ -1265,7 +1260,7 @@ export async function executeToolForBridge(name: string, args: unknown): Promise
         };
     }
 
-    const parsed = schema.safeParse(validationArgs);
+    const parsed = schema.safeParse(rawArgs);
     if (!parsed.success || !parsed.data || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) {
         const details = parsed.success
             ? 'Arguments must resolve to a JSON object.'
@@ -1275,14 +1270,10 @@ export async function executeToolForBridge(name: string, args: unknown): Promise
 
     return bridgeExecutionContext.run(true, () => runWithToolCallPaths(() => {
         addToolCallPaths(...pathArguments(parsed.data));
-        const callArgs = name === 'mailbox' ? parsed.data : {
-            ...parsed.data,
-            ...(typeof mailboxUserId === 'string' ? { mailbox_user_id: mailboxUserId } : {}),
-        };
         return handleCallToolRequest({
             method: 'tools/call',
-            params: { name, arguments: callArgs },
-        } as CallToolRequest).then(result => addMailboxNotice(result, name, callArgs));
+            params: { name, arguments: parsed.data },
+        } as CallToolRequest);
     }));
 }
 
