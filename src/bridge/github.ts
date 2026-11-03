@@ -1,4 +1,7 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -29,25 +32,111 @@ export interface GitHubAccountRepository {
   push: boolean;
 }
 
-export async function getGitHubAccessToken(): Promise<string> {
-  const environmentToken = process.env.GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim();
+export interface GitHubAuthenticationDependencies {
+  env?: NodeJS.ProcessEnv;
+  interactive?: boolean;
+  cliPath?: string;
+  readToken?: (cliPath: string) => Promise<string>;
+  runLogin?: (cliPath: string) => Promise<void>;
+}
+
+function resolveGitHubCliPath(): string {
+  // The Windows portable build includes the official GitHub CLI distribution.
+  // Resolve it relative to app/dist/bridge/github.js in that layout.
+  const bundledCli = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../../../tools/gh/bin/gh.exe',
+  );
+  if (process.platform === 'win32' && existsSync(bundledCli)) return bundledCli;
+  return process.platform === 'win32' ? 'gh.exe' : 'gh';
+}
+
+async function readGitHubCliToken(cliPath: string): Promise<string> {
+  const result = await execFileAsync(cliPath, ['auth', 'token', '--hostname', 'github.com'], {
+    timeout: 10_000,
+    windowsHide: true,
+    maxBuffer: 1024 * 1024,
+  });
+  const token = result.stdout.trim();
+  if (!token) throw new Error('GitHub CLI returned an empty authentication token.');
+  return token;
+}
+
+async function runGitHubCliLogin(cliPath: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(
+      cliPath,
+      ['auth', 'login', '--web', '--hostname', 'github.com', '--git-protocol', 'https'],
+      { stdio: 'inherit', windowsHide: false },
+    );
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (code === 0 && signal === null) {
+        resolve();
+      } else {
+        reject(new Error(
+          'GitHub CLI browser sign-in did not complete successfully' +
+          (signal ? ' (signal ' + signal + ').' : ' (exit code ' + code + ').'),
+        ));
+      }
+    });
+  });
+}
+
+export async function getGitHubAccessToken(
+  dependencies: GitHubAuthenticationDependencies = {},
+): Promise<string> {
+  const environment = dependencies.env || process.env;
+  const environmentToken = environment.GITHUB_TOKEN?.trim() || environment.GH_TOKEN?.trim();
   if (environmentToken) return environmentToken;
 
+  const cliPath = dependencies.cliPath || resolveGitHubCliPath();
+  const readToken = dependencies.readToken || readGitHubCliToken;
+  const runLogin = dependencies.runLogin || runGitHubCliLogin;
+
   try {
-    const result = await execFileAsync('gh', ['auth', 'token', '--hostname', 'github.com'], {
-      timeout: 10_000,
-      windowsHide: true,
-      maxBuffer: 1024 * 1024,
-    });
-    const token = result.stdout.trim();
-    if (token) return token;
+    const token = await readToken(cliPath);
+    if (token.trim()) return token.trim();
   } catch {
-    // Do not include child-process output: it may contain credential details.
+    // A missing token is the first-run path. Do not print CLI output because it
+    // may contain account or credential details.
   }
 
+  const interactive = dependencies.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  if (!interactive) {
+    throw new Error(
+      'No GitHub session is configured. Start the GitHub bridge in an interactive terminal to sign in through the browser, ' +
+      'or set GITHUB_TOKEN/GH_TOKEN for a headless session. For manual setup, run "gh auth login --web --hostname github.com".',
+    );
+  }
+
+  console.log('');
+  console.log('No GitHub account is connected yet. Starting GitHub browser sign-in now.');
+  console.log('Complete the one-time sign-in prompts in this window and approve the request in your browser.');
+
+  try {
+    await runLogin(cliPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(
+        'The GitHub CLI authentication helper could not be started. Re-extract the complete Windows portable ZIP, ' +
+        'or install GitHub CLI from https://cli.github.com/ and run "gh auth login --web".',
+      );
+    }
+    throw new Error(
+      'GitHub browser sign-in failed: ' +
+      (error instanceof Error ? error.message : String(error)),
+    );
+  }
+
+  try {
+    const token = await readToken(cliPath);
+    if (token.trim()) return token.trim();
+  } catch {
+    // Keep the failure message free of CLI output and possible credential data.
+  }
   throw new Error(
-    'GitHub mode needs an authenticated GitHub CLI session or GITHUB_TOKEN. ' +
-    'Install GitHub CLI from https://cli.github.com/, run "gh auth login", then restart Desktop Commander.',
+    'GitHub browser sign-in finished, but no usable token was found. Confirm the browser authorization and try again.',
   );
 }
 
