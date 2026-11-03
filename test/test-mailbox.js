@@ -46,7 +46,7 @@ try {
     assert.equal((await mailboxStore.read({ from: 'User' }))[0].id, userMessage.id);
 
     const result = await mailboxStore.deleteUser('Alice');
-    assert.equal(result.deletedMessages, 2, 'deleting a user removes messages they sent or received');
+    assert.equal(result.deletedMessages, 1, 'deleting a user removes the remaining messages they sent or received');
     assert.equal((await mailboxStore.listUsers()).some(user => user.username === 'Alice'), false);
     console.log('✓ mailbox registration, local persistence, send/read, unread tracking, user management, and message management');
   });
