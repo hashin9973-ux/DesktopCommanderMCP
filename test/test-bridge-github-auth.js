@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { getGitHubAccessToken } from '../dist/bridge/github.js';
+import { getGitHubAccessToken, refreshGitHubAccessTokenForWebhooks } from '../dist/bridge/github.js';
 
 // Injected auth operations are test doubles: these checks never open a browser
 // or execute the real GitHub CLI.
@@ -53,6 +53,48 @@ await assert.rejects(
     runLogin: async () => { throw new Error('user cancelled sign-in'); },
   }),
   /GitHub browser sign-in failed: user cancelled sign-in/,
+);
+
+
+const webhookScopeEvents = [];
+const refreshedToken = await refreshGitHubAccessTokenForWebhooks({
+  env: {},
+  interactive: true,
+  cliPath: 'test-gh',
+  refresh: async (cliPath) => {
+    assert.equal(cliPath, 'test-gh');
+    webhookScopeEvents.push('refresh-admin-repo-hook');
+  },
+  readToken: async (cliPath) => {
+    assert.equal(cliPath, 'test-gh');
+    webhookScopeEvents.push('read-refreshed-token');
+    return 'token-with-webhook-permission';
+  },
+});
+assert.equal(refreshedToken, 'token-with-webhook-permission');
+assert.deepEqual(webhookScopeEvents, ['refresh-admin-repo-hook', 'read-refreshed-token']);
+
+let tokenRefreshAttempted = false;
+await assert.rejects(
+  () => refreshGitHubAccessTokenForWebhooks({
+    env: { GITHUB_TOKEN: 'fine-grained-token' },
+    interactive: true,
+    refresh: async () => { tokenRefreshAttempted = true; },
+    readToken: async () => 'unexpected-token',
+  }),
+  /Webhooks: write/,
+);
+assert.equal(tokenRefreshAttempted, false,
+  'environment tokens must not be silently replaced by a different CLI account');
+
+await assert.rejects(
+  () => refreshGitHubAccessTokenForWebhooks({
+    env: {},
+    interactive: false,
+    refresh: async () => { throw new Error('must not start in headless mode'); },
+    readToken: async () => 'unexpected-token',
+  }),
+  /repository Webhooks: write permission/,
 );
 
 console.log('GitHub browser authentication tests passed.');
