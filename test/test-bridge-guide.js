@@ -22,7 +22,7 @@ try {
     '',
     'Existing argument schema.',
     '',
-  ].join('\n');
+  ].join('\\n');
 
   await fs.writeFile(guidePath, original, 'utf8');
   assert.equal(await appendMailboxGuideSection(guidePath), 'appended');
@@ -36,14 +36,38 @@ try {
   assert.equal(await appendMailboxGuideSection(guidePath), 'already_present');
   assert.equal(await fs.readFile(guidePath, 'utf8'), appended, 'a second run must not change the guide');
 
-  const existingSectionPath = path.join(tempDir, 'README-with-existing-section.md');
-  const existingSection = original + '\n' + MAILBOX_GUIDE_HEADING + '\n\nAlready documented.\n';
-  await fs.writeFile(existingSectionPath, existingSection, 'utf8');
-  assert.equal(await appendMailboxGuideSection(existingSectionPath), 'already_present');
-  assert.equal(await fs.readFile(existingSectionPath, 'utf8'), existingSection);
+  // Legacy guide: the heading exists, but the previous short section did not
+  // contain the warning against routing mailbox commands through start_process.
+  const legacyPath = path.join(tempDir, 'legacy-README.md');
+  const legacy = original + [
+    '',
+    MAILBOX_GUIDE_HEADING,
+    '',
+    'Existing mailbox guidance must remain unchanged.',
+    '',
+    'The bridge rejects mailbox_user_id.',
+    '',
+  ].join('\\n');
+  await fs.writeFile(legacyPath, legacy, 'utf8');
+  assert.equal(await appendMailboxGuideSection(legacyPath), 'appended');
 
+  const upgradedLegacy = await fs.readFile(legacyPath, 'utf8');
+  assert.ok(upgradedLegacy.startsWith(legacy), 'legacy guide bytes must be preserved exactly');
+  assert.equal(upgradedLegacy.split(MAILBOX_GUIDE_HEADING).length - 1, 1);
+  assert.match(upgradedLegacy, /Additional mailbox privacy boundary/);
+  assert.match(upgradedLegacy, /bridge `start_process` tool/);
+  assert.match(upgradedLegacy, /rather than attempting a bridge workaround/);
+
+  assert.equal(await appendMailboxGuideSection(legacyPath), 'already_present');
+  assert.equal(
+    await fs.readFile(legacyPath, 'utf8'),
+    upgradedLegacy,
+    'legacy guide addendum must be idempotent',
+  );
+
+  // A custom README with no exact bridge title is never modified.
   const customPath = path.join(tempDir, 'custom-readme.md');
-  const customReadme = '# My own bridge notes\n\nKeep this file unchanged.\n';
+  const customReadme = '# My own bridge notes\\n\\nKeep this file unchanged.\\n';
   await fs.writeFile(customPath, customReadme, 'utf8');
   assert.equal(await appendMailboxGuideSection(customPath), 'not_bridge_guide');
   assert.equal(await fs.readFile(customPath, 'utf8'), customReadme);
