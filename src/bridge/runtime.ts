@@ -449,7 +449,7 @@ async function createGuideIfMissing(directory: string): Promise<void> {
     fence3,
     '',
     'Mailbox identities and messages are local to the Desktop Commander app data directory. A mailbox user ID is an identity reference, not an authentication credential. This local mailbox is separate from the synchronized request/response queue documented above.',
-    ''
+    '',
     '## Tool catalog',
     '',
     ...blocks,
