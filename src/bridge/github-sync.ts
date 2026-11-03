@@ -84,6 +84,13 @@ async function readOptional(filePath: string): Promise<Buffer | null> {
   }
 }
 
+function gitBlobSha(bytes: Buffer): string {
+  return createHash('sha1')
+    .update('blob ' + bytes.length + '\0')
+    .update(bytes)
+    .digest('hex');
+}
+
 function isSafeArtifactPath(value: string, requestId: string): boolean {
   const prefix = 'artifacts/' + requestId + '/';
   if (!value.startsWith(prefix) || value.includes('\\')) return false;
@@ -98,6 +105,10 @@ function isSafeArtifactPath(value: string, requestId: string): boolean {
 
 export class GitHubBridgeSync {
   private syncPromise?: Promise<void>;
+  private readonly completedRequests = new Map<string, {
+    requestBlobSha: string;
+    responseBlobSha: string;
+  }>();
 
   constructor(
     private readonly client: GitHubRepositoryClient,
@@ -154,12 +165,34 @@ export class GitHubBridgeSync {
 
       const match = REQUEST_PATTERN.exec(entry.name);
       if (!match) continue;
-      const responseName = 'response-' + match[1] + '.json';
+      const requestId = match[1];
+      const responseName = 'response-' + requestId + '.json';
       const remoteResponse = remoteResponses.find((candidate) =>
         candidate.type === 'file' && candidate.name === responseName);
+      const localPath = path.join(this.paths.requests, entry.name);
+      const cached = await readOptional(localPath);
 
-      const remoteBytes = await this.client.readFile(entry.path);
+      let requestBytes: Buffer;
+      if (cached) {
+        if (gitBlobSha(cached) !== entry.sha) {
+          throw new Error('Local GitHub queue cache conflicts with remote request ' + entry.name + '; the local file was not overwritten.');
+        }
+        requestBytes = cached;
+      } else {
+        requestBytes = await this.client.readFile(entry.path);
+        if (gitBlobSha(requestBytes) !== entry.sha) {
+          throw new Error('GitHub request ' + entry.path + ' changed while it was being downloaded. The next poll will retry.');
+        }
+      }
+
       if (remoteResponse) {
+        const completed = this.completedRequests.get(requestId);
+        if (completed
+          && completed.requestBlobSha === entry.sha
+          && completed.responseBlobSha === remoteResponse.sha) {
+          continue;
+        }
+
         const responseBytes = await this.client.readFile(remoteResponse.path);
         let response: BridgeResponseReference;
         try {
@@ -167,23 +200,21 @@ export class GitHubBridgeSync {
         } catch {
           throw new Error('Existing GitHub response ' + remoteResponse.path + ' is not valid JSON.');
         }
-        const requestHash = createHash('sha256').update(remoteBytes).digest('hex');
-        if (response.id !== match[1] || response.request_hash !== requestHash) {
-          throw new Error('GitHub request ID ' + match[1] + ' was reused with content that conflicts with its existing response.');
+        const requestHash = createHash('sha256').update(requestBytes).digest('hex');
+        if (response.id !== requestId || response.request_hash !== requestHash) {
+          throw new Error('GitHub request ID ' + requestId + ' was reused with content that conflicts with its existing response.');
         }
+        this.completedRequests.set(requestId, {
+          requestBlobSha: entry.sha,
+          responseBlobSha: remoteResponse.sha,
+        });
         continue;
       }
 
-      const localPath = path.join(this.paths.requests, entry.name);
-      const existing = await readOptional(localPath);
-      if (existing && !existing.equals(remoteBytes)) {
-        throw new Error('Local GitHub queue cache conflicts with remote request ' + entry.name + '; the local file was not overwritten.');
-      }
-      if (!existing) {
-        await writeFileAtomic(localPath, remoteBytes);
+      if (!cached) {
+        await writeFileAtomic(localPath, requestBytes);
       }
     }
-
     // Artifacts must reach GitHub before the response file signals completion.
     const localResponses = (await fs.readdir(this.paths.responses, { withFileTypes: true }))
       .filter((entry) => entry.isFile() && RESPONSE_PATTERN.test(entry.name))
@@ -242,6 +273,17 @@ export class GitHubBridgeSync {
         responseBytes,
         'Publish Desktop Commander bridge response ' + requestId,
       );
+
+      const requestEntry = remoteRequests.find((candidate) => {
+        const requestMatch = candidate.type === 'file' ? REQUEST_PATTERN.exec(candidate.name) : null;
+        return requestMatch?.[1] === requestId;
+      });
+      if (requestEntry) {
+        this.completedRequests.set(requestId, {
+          requestBlobSha: requestEntry.sha,
+          responseBlobSha: gitBlobSha(responseBytes),
+        });
+      }
 
       // The remote response is durable now. Remove local staging copies so the
       // cache does not grow forever; remote queue history remains untouched.
