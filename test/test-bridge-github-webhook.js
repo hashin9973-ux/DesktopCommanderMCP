@@ -142,7 +142,7 @@ const tunnel = await startCloudflareQuickTunnel('http://127.0.0.1:43210', {
   spawnProcess: (executable, args, options) => {
     tunnelSpawnCall = { executable, args, options };
     setImmediate(() => {
-      fakeTunnelChild.stderr.write('Your quick Tunnel has been created! Visit it at: https://quiet-marble-otter.trycloudflare.com\\r\\n');
+      fakeTunnelChild.stderr.write('Your quick Tunnel has been created! Visit it at: https://quiet-marble-otter.trycloudflare.com\r\n');
     });
     return fakeTunnelChild;
   },
