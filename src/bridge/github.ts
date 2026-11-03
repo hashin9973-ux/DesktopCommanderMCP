@@ -106,7 +106,7 @@ export async function getGitHubAccessToken(
   if (!interactive) {
     throw new Error(
       'No GitHub session is configured. Start the GitHub bridge in an interactive terminal to sign in through the browser, ' +
-      'or set GITHUB_TOKEN/GH_TOKEN for a headless session. For manual setup, run "gh auth login --web --hostname github.com".',
+      'or set GITHUB_TOKEN/GH_TOKEN for a headless session. For manual setup, run "gh auth login --web --hostname github.com --scopes admin:repo_hook".',
     );
   }
 
