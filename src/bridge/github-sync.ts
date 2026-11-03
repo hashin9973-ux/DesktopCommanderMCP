@@ -130,10 +130,11 @@ export class GitHubBridgeSync {
 
   async syncOnce(): Promise<void> {
     if (this.syncPromise) return this.syncPromise;
-    this.syncPromise = this.syncInternal().finally(() => {
+    const running = this.syncInternal().finally(() => {
       this.syncPromise = undefined;
     });
-    return this.syncPromise;
+    this.syncPromise = running;
+    return running;
   }
 
   private async syncInternal(): Promise<void> {
