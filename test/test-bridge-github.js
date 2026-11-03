@@ -16,6 +16,8 @@ function createGitHubApiDouble() {
   const commits = [];
   const rawReads = new Map();
   let createdRepositoryPayload;
+  const webhooks = new Map();
+  let nextWebhookId = 1;
 
   const jsonResponse = (value, status = 200) => new Response(JSON.stringify(value), {
     status,
@@ -69,6 +71,22 @@ function createGitHubApiDouble() {
         private: false,
         permissions: { push: true },
       });
+    }
+
+    if (url.pathname === '/repos/owner/repo/hooks' && method === 'POST') {
+      const payload = JSON.parse(String(init.body));
+      const id = nextWebhookId++;
+      webhooks.set(id, { id, ...payload });
+      return jsonResponse({ id }, 201);
+    }
+
+    const hookMatch = /^\/repos\/owner\/repo\/hooks\/(\d+)$/.exec(url.pathname);
+    if (hookMatch && method === 'PATCH') {
+      const id = Number(hookMatch[1]);
+      if (!webhooks.has(id)) return notFound();
+      const payload = JSON.parse(String(init.body));
+      webhooks.set(id, { id, ...payload });
+      return jsonResponse({ id }, 200);
     }
 
     if (url.pathname === '/user/repos' && method === 'POST') {
@@ -180,6 +198,7 @@ function createGitHubApiDouble() {
     commits,
     getRawReadCount: (filePath) => rawReads.get(filePath) || 0,
     getCreatedRepositoryPayload: () => createdRepositoryPayload,
+    webhooks,
   };
 }
 
@@ -213,6 +232,37 @@ await assert.rejects(
 );
 const publicClient = await GitHubRepositoryClient.connect('public/repo', token, api.fetcher);
 assert.equal(publicClient.isPrivate, false, 'public repository visibility must be returned for startup consent');
+
+const webhookSecret = 'a'.repeat(64);
+const initialHookId = await client.upsertPushWebhook(
+  undefined,
+  'https://quiet-marble-otter.trycloudflare.com/github-webhook/random-route',
+  webhookSecret,
+);
+assert.equal(initialHookId, 1);
+assert.equal(api.webhooks.size, 1);
+assert.deepEqual(api.webhooks.get(initialHookId).events, ['push']);
+assert.equal(api.webhooks.get(initialHookId).config.secret, webhookSecret);
+assert.equal(api.webhooks.get(initialHookId).config.insecure_ssl, '0');
+
+const updatedHookId = await client.upsertPushWebhook(
+  initialHookId,
+  'https://new-tunnel.trycloudflare.com/github-webhook/another-route',
+  webhookSecret,
+);
+assert.equal(updatedHookId, initialHookId);
+assert.equal(api.webhooks.size, 1, 'restarting the bridge should update its saved webhook rather than create duplicates');
+assert.equal(api.webhooks.get(updatedHookId).config.url, 'https://new-tunnel.trycloudflare.com/github-webhook/another-route');
+
+await assert.rejects(
+  () => client.upsertPushWebhook(undefined, 'https://example.com/webhook', webhookSecret),
+  /Cloudflare Quick Tunnel URL/,
+);
+await assert.rejects(
+  () => client.upsertPushWebhook(undefined, 'https://tunnel.trycloudflare.com/webhook', 'short'),
+  /at least 32 characters/,
+);
+
 
 const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-github-bridge-'));
 const paths = {
