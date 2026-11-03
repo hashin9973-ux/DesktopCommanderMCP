@@ -296,6 +296,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   kill_process: 'Terminate an operating-system process by PID.',
   get_usage_stats: 'Read tool usage statistics.',
   get_recent_tool_calls: 'Read recent Desktop Commander tool call history.',
+  mailbox: 'Register local mailbox identities and send, read, or list messages.',
   give_feedback_to_desktop_commander: 'Open the Desktop Commander feedback form.',
 };
 
