@@ -4,6 +4,7 @@ export const MAILBOX_GUIDE_HEADING = '## Optional local mailbox (direct MCP only
 
 const BRIDGE_GUIDE_TITLE = '# Desktop Commander Cloud-Folder Bridge';
 const MAILBOX_GUIDE_MARKER = '<!-- desktop-commander:local-mailbox-guide:v1 -->';
+const MAILBOX_GUIDE_SUPPLEMENT_MARKER = '<!-- desktop-commander:local-mailbox-guide-supplement:v1 -->';
 
 const MAILBOX_GUIDE_SECTION = [
   MAILBOX_GUIDE_HEADING,
@@ -28,7 +29,17 @@ const MAILBOX_GUIDE_SECTION = [
   'Mailbox data is stored locally in the same configuration directory as Desktop Commander settings; it is not stored in the bridge request, response, or artifact folders. A mailbox user ID is a routing identifier, not an authentication credential. Keep it out of shared bridge files.',
   '',
   'For local administration, the CLI supports `desktop-commander mailbox users`, `register`, `read`, `send`, `send-as-user`, `rename-user`, `delete-user`, `edit-mail`, and `delete-mail`. Run these locally, not through the cloud-folder bridge.',
-].join('\n');
+].join('\\n');
+
+const MAILBOX_GUIDE_SUPPLEMENT = [
+  '### Additional mailbox privacy boundary',
+  '',
+  MAILBOX_GUIDE_SUPPLEMENT_MARKER,
+  '',
+  'Do not put mailbox message contents, usernames, or `mailbox_user_id` values in cloud-synchronized `requests/` files. In particular, do not try to access the mailbox by invoking `desktop-commander mailbox ...` with the bridge `start_process` tool: the command and its arguments would themselves be uploaded to the cloud-synchronized request folder.',
+  '',
+  'A session connected only through this file bridge has no mailbox access. Mailbox tasks require a separate direct local Desktop Commander MCP connection. When that connection is unavailable, leave the task to the local user or a client with direct MCP access rather than attempting a bridge workaround.',
+].join('\\n');
 
 export type MailboxGuideAppendResult = 'appended' | 'already_present' | 'not_bridge_guide' | 'missing';
 
@@ -41,17 +52,23 @@ export async function appendMailboxGuideSection(guidePath: string): Promise<Mail
     throw error;
   }
 
-  if (existing.includes(MAILBOX_GUIDE_HEADING) || existing.includes(MAILBOX_GUIDE_MARKER)) {
+  if (existing.includes(MAILBOX_GUIDE_MARKER) || existing.includes(MAILBOX_GUIDE_SUPPLEMENT_MARKER)) {
     return 'already_present';
   }
   if (!existing.startsWith(BRIDGE_GUIDE_TITLE)) {
     return 'not_bridge_guide';
   }
 
-  const separator = existing.endsWith('\n\n') ? '' : existing.endsWith('\n') ? '\n' : '\n\n';
+  // Older generated guides already have the mailbox heading but lack the
+  // explicit warning against leaking mailbox data through start_process.
+  // Append only that missing warning; never rewrite or duplicate old content.
+  const section = existing.includes(MAILBOX_GUIDE_HEADING)
+    ? MAILBOX_GUIDE_SUPPLEMENT
+    : MAILBOX_GUIDE_SECTION;
+  const separator = existing.endsWith('\\n\\n') ? '' : existing.endsWith('\\n') ? '\\n' : '\\n\\n';
   const handle = await fs.open(guidePath, 'a');
   try {
-    await handle.writeFile(separator + MAILBOX_GUIDE_SECTION + '\n', 'utf8');
+    await handle.writeFile(separator + section + '\\n', 'utf8');
     await handle.sync();
   } finally {
     await handle.close();
