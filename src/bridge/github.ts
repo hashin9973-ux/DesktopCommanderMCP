@@ -64,6 +64,7 @@ function parseErrorMessage(body: string, status: number): string {
 export class GitHubRepositoryClient {
   readonly repository: string;
   readonly defaultBranch: string;
+  readonly isPrivate: boolean;
   private readonly token: string;
   private readonly fetcher: typeof fetch;
 
@@ -72,9 +73,11 @@ export class GitHubRepositoryClient {
     defaultBranch: string,
     token: string,
     fetcher: typeof fetch,
+    isPrivate = false,
   ) {
     this.repository = repository;
     this.defaultBranch = defaultBranch;
+    this.isPrivate = isPrivate;
     this.token = token;
     this.fetcher = fetcher;
   }
@@ -102,13 +105,10 @@ export class GitHubRepositoryClient {
     if (metadata.archived === true) {
       throw new Error('Repository ' + repository + ' is archived and cannot accept bridge queue writes.');
     }
-    if (metadata.private !== true) {
-      throw new Error('GitHub Bridge only connects to private repositories because requests, responses, file paths, and artifacts may contain sensitive data. Create a new private repository or select an existing private repository.');
-    }
     if (metadata.permissions && metadata.permissions.push === false) {
       throw new Error('Your authenticated GitHub account does not have write access to ' + repository + '. Choose a repository where you have write permission.');
     }
-    return new GitHubRepositoryClient(repository, metadata.default_branch, token, fetcher);
+    return new GitHubRepositoryClient(repository, metadata.default_branch, token, fetcher, metadata.private === true);
   }
 
   static async getAccount(
