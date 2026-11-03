@@ -30,7 +30,7 @@ try {
   const appended = await fs.readFile(guidePath, 'utf8');
   assert.ok(appended.startsWith(original), 'existing guide content must be preserved exactly');
   assert.equal(appended.split(MAILBOX_GUIDE_HEADING).length - 1, 1);
-  assert.match(appended, /shared by direct MCP clients and the cloud-folder bridge/);
+  assert.match(appended, /shared by direct MCP clients and both file-queue bridge transports/);
   assert.match(appended, /message text, usernames, and mailbox IDs included in a bridge request or returned in a response/);
   assert.doesNotMatch(appended, /bridge request parser intentionally rejects the `mailbox` tool/);
 
