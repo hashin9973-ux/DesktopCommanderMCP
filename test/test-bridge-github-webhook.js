@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import {
   extractQuickTunnelUrl,
+  startCloudflareQuickTunnel,
   startGitHubWebhookServer,
 } from '../dist/bridge/github-webhook.js';
 
@@ -114,5 +117,52 @@ assert.equal(
   extractQuickTunnelUrl('https://quiet-marble-otter.trycloudflare.com.attacker.example'),
   undefined,
 );
+
+
+const fakeTunnelChild = new EventEmitter();
+fakeTunnelChild.stdout = new PassThrough();
+fakeTunnelChild.stderr = new PassThrough();
+fakeTunnelChild.exitCode = null;
+fakeTunnelChild.signalCode = null;
+let tunnelSpawnCall;
+fakeTunnelChild.kill = () => {
+  fakeTunnelChild.signalCode = 'SIGTERM';
+  fakeTunnelChild.emit('exit', null, 'SIGTERM');
+  return true;
+};
+
+const tunnel = await startCloudflareQuickTunnel('http://127.0.0.1:43210', {
+  executablePath: 'test-cloudflared',
+  startupTimeoutMs: 1_000,
+  spawnProcess: (executable, args, options) => {
+    tunnelSpawnCall = { executable, args, options };
+    setImmediate(() => {
+      fakeTunnelChild.stderr.write('Your quick Tunnel has been created! Visit it at: https://quiet-marble-otter.trycloudflare.com');
+    });
+    return fakeTunnelChild;
+  },
+});
+assert.equal(tunnel.url, 'https://quiet-marble-otter.trycloudflare.com');
+assert.equal(tunnelSpawnCall.executable, 'test-cloudflared');
+assert.deepEqual(tunnelSpawnCall.args, [
+  'tunnel',
+  '--url',
+  'http://127.0.0.1:43210',
+  '--no-autoupdate',
+]);
+assert.equal(tunnelSpawnCall.options.windowsHide, true);
+await tunnel.close();
+
+let invalidOriginSpawned = false;
+await assert.rejects(
+  () => startCloudflareQuickTunnel('http://0.0.0.0:43210', {
+    spawnProcess: () => {
+      invalidOriginSpawned = true;
+      return fakeTunnelChild;
+    },
+  }),
+  /must use plain HTTP on 127.0.0.1/,
+);
+assert.equal(invalidOriginSpawned, false, 'the tunnel must never proxy a non-loopback local origin');
 
 console.log('GitHub webhook and Quick Tunnel tests passed.');
