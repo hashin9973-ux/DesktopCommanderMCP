@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { BRIDGE_TOOL_NAMES, parseBridgeRequest } from '../dist/bridge/protocol.js';
+import { createBridgePollingTimer } from '../dist/bridge/runtime.js';
 
 const json = JSON.stringify({
   protocol_version: 1,
@@ -128,4 +129,18 @@ assert.throws(
   /Invalid JSON/,
 );
 
-console.log('Bridge protocol tests passed.');
+
+// The polling fallback must remain referenced so a closed fs.watch handle
+// cannot let the bridge process exit before the next queue scan.
+let pollingScans = 0;
+const pollingTimer = createBridgePollingTimer(() => { pollingScans++; }, 10);
+try {
+  assert.equal(pollingTimer.hasRef(), true,
+    'request polling must keep the bridge alive if filesystem notifications fail');
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  assert.ok(pollingScans > 0, 'fallback polling should run independently of fs.watch');
+} finally {
+  clearInterval(pollingTimer);
+}
+
+console.log('Bridge protocol and polling fallback tests passed.');
