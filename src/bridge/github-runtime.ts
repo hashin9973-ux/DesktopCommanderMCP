@@ -204,11 +204,11 @@ async function chooseRepository(
   if (choice !== '1') throw new Error('Choose 1 or 2. GitHub setup cancelled.');
 
   const repositories = (await GitHubRepositoryClient.listAccessibleRepositories(token))
-    .filter((repository) => repository.push && !repository.archived)
+    .filter((repository) => repository.private && repository.push && !repository.archived)
     .sort((a, b) => a.full_name.localeCompare(b.full_name));
 
   if (repositories.length === 0) {
-    throw new Error('No writable, non-archived repositories were found. Choose private repository creation or grant your account write access.');
+    throw new Error('No writable, non-archived private repositories were found. Choose private repository creation or grant your account write access.');
   }
 
   const visible = repositories.slice(0, 100);
