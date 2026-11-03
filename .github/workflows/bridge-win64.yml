@@ -1,6 +1,15 @@
 name: Windows x64 bridge executable
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/bridge/**'
+      - 'src/index.ts'
+      - 'scripts/bridge-launcher.cjs'
+      - 'test/test-bridge-*.js'
+      - 'docs/GITHUB_REPOSITORY_BRIDGE.md'
+      - '.github/workflows/bridge-win64.yml'
   pull_request:
     branches: [main]
   workflow_dispatch:
