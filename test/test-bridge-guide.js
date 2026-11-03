@@ -49,12 +49,14 @@ try {
     '',
     'Old text: the bridge parser rejects the mailbox tool.',
     '',
+  ].join('\n') + afterLegacySection + [
+    '',
     '### Additional mailbox privacy boundary',
     '',
     '<!-- desktop-commander:local-mailbox-guide-supplement:v1 -->',
     '',
     'Old text: no mailbox access from the bridge.',
-  ].join('\n') + afterLegacySection;
+  ].join('\n');
   await fs.writeFile(legacyPath, legacy, 'utf8');
   assert.equal(await appendMailboxGuideSection(legacyPath), 'updated');
 
