@@ -74,13 +74,17 @@ jobs:
           if ($null -eq $ghExeFile) {
             throw "The verified GitHub CLI archive did not contain gh.exe."
           }
-          $ghBinDir = Split-Path -Path $ghExeFile.FullName -Parent
-          $ghRoot = Split-Path -Path $ghBinDir -Parent
 
-          $targetDir = Join-Path $PWD "build\PortableBridge\tools\gh"
+          # Install the verified executable at one fixed path independent of
+          # how the upstream ZIP nests its distribution files.
+          $targetDir = Join-Path $PWD "build\PortableBridge\tools"
           New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-          Copy-Item -Path (Join-Path $ghRoot "*") -Destination $targetDir -Recurse -Force
-          & (Join-Path $targetDir "bin\gh.exe") --version
+          Copy-Item -Path $ghExeFile.FullName -Destination (Join-Path $targetDir "gh.exe") -Force
+          $licenseFiles = Get-ChildItem -Path $extractPath -Filter "LICENSE*" -File -Recurse
+          foreach ($licenseFile in $licenseFiles) {
+            Copy-Item -Path $licenseFile.FullName -Destination (Join-Path $targetDir $licenseFile.Name) -Force
+          }
+          & (Join-Path $targetDir "gh.exe") --version
           if ($LASTEXITCODE -ne 0) {
             throw "The bundled GitHub CLI failed its version check."
           }
