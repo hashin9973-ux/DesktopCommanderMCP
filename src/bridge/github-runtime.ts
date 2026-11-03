@@ -251,12 +251,16 @@ async function startWorker(
 
   const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
   const entryPoint = path.resolve(moduleDirectory, '../index.js');
-  const environment = {
+  const environment: NodeJS.ProcessEnv = {
     ...process.env,
     ...(process.platform === 'win32'
       ? { LOCALAPPDATA: workerLocalAppData }
       : { XDG_STATE_HOME: workerXdgStateHome }),
   };
+  // The bridge parent needs these credentials for GitHub API calls. Do not
+  // pass environment-supplied GitHub tokens into the process that runs tools.
+  delete environment.GITHUB_TOKEN;
+  delete environment.GH_TOKEN;
 
   const child = spawn(process.execPath, [entryPoint, 'bridge', '--directory', cacheRoot], {
     cwd: process.cwd(),
