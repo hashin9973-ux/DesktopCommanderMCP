@@ -30,7 +30,7 @@ try {
   const appended = await fs.readFile(guidePath, 'utf8');
   assert.ok(appended.startsWith(original), 'existing guide content must be preserved exactly');
   assert.equal(appended.split(MAILBOX_GUIDE_HEADING).length - 1, 1);
-  assert.match(appended, /bridge request parser intentionally rejects the \`mailbox\` tool/);
+  assert.match(appended, /bridge request parser intentionally rejects the `mailbox` tool/);
   assert.match(appended, /separate direct local Desktop Commander MCP connection/);
 
   assert.equal(await appendMailboxGuideSection(guidePath), 'already_present');
@@ -55,7 +55,7 @@ try {
   assert.ok(upgradedLegacy.startsWith(legacy), 'legacy guide bytes must be preserved exactly');
   assert.equal(upgradedLegacy.split(MAILBOX_GUIDE_HEADING).length - 1, 1);
   assert.match(upgradedLegacy, /Additional mailbox privacy boundary/);
-  assert.match(upgradedLegacy, /bridge \`start_process\` tool/);
+  assert.match(upgradedLegacy, /bridge `start_process` tool/);
   assert.match(upgradedLegacy, /rather than attempting a bridge workaround/);
 
   assert.equal(await appendMailboxGuideSection(legacyPath), 'already_present');
