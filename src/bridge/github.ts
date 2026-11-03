@@ -183,8 +183,8 @@ export async function refreshGitHubAccessTokenForWebhooks(
   const environment = dependencies.env || process.env;
   if (environment.GITHUB_TOKEN?.trim() || environment.GH_TOKEN?.trim()) {
     throw new Error(
-      'The configured GITHUB_TOKEN/GH_TOKEN must have repository Webhooks: write permission. ' +
-      'For a fine-grained personal access token, grant Webhooks: write and restart the bridge.',
+      'The configured GITHUB_TOKEN/GH_TOKEN needs repository Webhooks: write permission for a fine-grained personal access token, or the admin:repo_hook scope for a classic token. ' +
+      'Update the token permissions and restart the bridge.',
     );
   }
 
