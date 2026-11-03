@@ -93,6 +93,7 @@ export class GitHubRepositoryClient {
     const metadata = await client.requestJson('/repos/' + repository) as {
       default_branch?: unknown;
       archived?: unknown;
+      private?: unknown;
       permissions?: { push?: unknown };
     };
     if (typeof metadata.default_branch !== 'string' || !metadata.default_branch) {
@@ -100,6 +101,9 @@ export class GitHubRepositoryClient {
     }
     if (metadata.archived === true) {
       throw new Error('Repository ' + repository + ' is archived and cannot accept bridge queue writes.');
+    }
+    if (metadata.private !== true) {
+      throw new Error('GitHub Bridge only connects to private repositories because requests, responses, file paths, and artifacts may contain sensitive data. Create a new private repository or select an existing private repository.');
     }
     if (metadata.permissions && metadata.permissions.push === false) {
       throw new Error('Your authenticated GitHub account does not have write access to ' + repository + '. Choose a repository where you have write permission.');
