@@ -71,7 +71,8 @@ Execute long-running terminal commands on your computer and manage processes thr
   - Multiple file support
   - Pattern-based replacements
   - vscode-ripgrep based recursive code or text search in folders
-- **Optional local AI mailbox** - Register named AI/user identities, send messages between agents, read unread mail, and receive unread-message notices in ordinary tool results. Mail stays on the app device and is not synchronized through the cloud-folder bridge.\n- Local tool-call history and audit logs:
+- **Optional local AI mailbox** - Register named AI/user identities, send messages between agents, read unread mail, and receive unread-message notices in ordinary tool results. Mail stays on the app device and is not synchronized through the cloud-folder bridge.
+- Local tool-call history and audit logs:
   - Tool calls and arguments are recorded locally on the machine running Desktop Commander
   - Recent call history with bounded output previews is available through `get_recent_tool_calls`
   - Size-based rotation/trimming keeps the active history files bounded
@@ -599,6 +600,7 @@ The server provides a comprehensive set of tools organized into several categori
 | **Analytics** | `get_usage_stats` | Get usage statistics for your own insight |
 | | `get_recent_tool_calls` | Get recent tool call history with arguments and outputs for debugging and context recovery |
 | | `give_feedback_to_desktop_commander` | Open feedback form in browser to provide feedback to Desktop Commander Team |
+| **Messaging** | `mailbox` | Optional local mailbox for AI/user registration, unread messages, message sending, user lists, and filtered history |
 ### Local Mailbox and AI Handoffs
 
 The mailbox is an **optional, app-side messaging system** for passing work between AI sessions or between an AI and the local user. It does not use cloud storage or a remote mailbox service. Sessions must reach the same Desktop Commander app/server instance to share its mailbox. The cloud-folder bridge intentionally does not expose mailbox actions or message contents because its request/response files are synchronized.
@@ -619,21 +621,20 @@ Run these commands in a terminal on the machine running Desktop Commander:
 npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox users
 
 # Read all mail, or filter by user/sender/recipient/unread state
-npx @wonderwhy-er/desktop-commander mailbox read
-npx @wonderwhy-er/desktop-commander mailbox read --user AgentA --unread
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox read
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox read --user AgentA --unread
 
 # Send a message as the local human identity (creates the User identity if needed)
-npx @wonderwhy-er/desktop-commander mailbox send-as-user AgentA "Please pause; I am taking over."
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox send-as-user AgentA "Please pause; I am taking over."
 
 # Manage identities and messages
-npx @wonderwhy-er/desktop-commander mailbox rename-user AgentA AgentB
-npx @wonderwhy-er/desktop-commander mailbox delete-user AgentB
-npx @wonderwhy-er/desktop-commander mailbox edit-mail MESSAGE_ID "Updated instructions"
-npx @wonderwhy-er/desktop-commander mailbox delete-mail MESSAGE_ID
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox rename-user AgentA AgentB
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox delete-user AgentB
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox edit-mail MESSAGE_ID "Updated instructions"
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox delete-mail MESSAGE_ID
 ```
 
 The same CLI is available from a local checkout with `node dist/index.js mailbox ...`. Deleting a user also deletes messages sent or received by that user. These CLI commands are administrative local access; protect the machine account and mailbox file accordingly.
-| **Messaging** | `mailbox` | Optional local mailbox for AI/user registration, unread messages, message sending, user lists, and filtered history |
 
 ### Quick Examples
 
