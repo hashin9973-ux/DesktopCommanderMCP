@@ -289,6 +289,37 @@ assert.ok(Date.now() - rateLimitWaitStartedAt >= 800,
   'the next GitHub API request must honor Retry-After instead of immediately retrying');
 assert.equal(rateLimitCalls, 3);
 
+const webhookSecretForRateLimitTest = 'b'.repeat(64);
+let webhookRateLimitCalls = 0;
+const webhookRateLimitedClient = await GitHubRepositoryClient.connect('owner/repo', token, async () => {
+  webhookRateLimitCalls++;
+  if (webhookRateLimitCalls === 1) {
+    return new Response(JSON.stringify({
+      default_branch: 'main',
+      archived: false,
+      private: true,
+      permissions: { push: true },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return new Response(JSON.stringify({ message: 'You have exceeded a secondary rate limit.' }), {
+    status: 403,
+    headers: { 'content-type': 'application/json', 'retry-after': '1' },
+  });
+});
+await assert.rejects(
+  () => webhookRateLimitedClient.upsertPushWebhook(
+    undefined,
+    'https://quiet-marble-otter.trycloudflare.com/github-webhook/rate-limit-test',
+    webhookSecretForRateLimitTest,
+  ),
+  (error) => {
+    assert.ok(error instanceof GitHubApiError);
+    assert.equal(error.rateLimit?.kind, 'secondary',
+      'webhook registration must preserve 403 rate-limit metadata instead of disguising it as missing permission');
+    return true;
+  },
+);
+
 let primaryLimitCalls = 0;
 const primaryResetEpoch = Math.ceil(Date.now() / 1_000) + 1;
 const primaryRateLimitedClient = await GitHubRepositoryClient.connect('owner/repo', token, async () => {

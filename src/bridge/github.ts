@@ -332,7 +332,7 @@ export class GitHubRepositoryClient {
         }),
       }) as { full_name?: unknown; private?: unknown; default_branch?: unknown };
     } catch (error) {
-      if (error instanceof GitHubApiError && (error.status === 403 || error.status === 404)) {
+      if (error instanceof GitHubApiError && !error.rateLimit && (error.status === 403 || error.status === 404)) {
         throw new Error(
           'GitHub did not allow automatic repository creation. The authenticated credential needs permission to create ' +
           'repositories (fine-grained personal access tokens need Administration: write or Repository creation: write; classic tokens need the repo scope). ' +
@@ -421,8 +421,8 @@ export class GitHubRepositoryClient {
       }
       return Number(updated.id);
     } catch (error) {
-      if (error instanceof GitHubApiError && error.status === 404) return create();
-      if (error instanceof GitHubApiError && error.status === 403) {
+      if (error instanceof GitHubApiError && !error.rateLimit && error.status === 404) return create();
+      if (error instanceof GitHubApiError && !error.rateLimit && error.status === 403) {
         throw new GitHubApiError(
           error.status,
           'GitHub denied repository webhook updates. Your account must own or have admin access to this repository. ' +
