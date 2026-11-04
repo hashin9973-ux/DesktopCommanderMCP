@@ -427,11 +427,17 @@ export class GitHubBridgeSync {
     // Publishing the generated guide is a one-time/version-change operation.
     // Persist its digest in the local cache so routine restarts do not make
     // extra root-list, README-download, and README-update API round trips.
-    const readmePath = path.join(this.paths.root, 'README.md');
-    await fs.rm(readmePath, { force: true });
-    await createGuideIfMissing(this.paths.root);
-    const readme = await fs.readFile(readmePath);
-    const guideDigest = createHash('sha256').update(readme).digest('hex');
+    const guideDirectory = await fs.mkdtemp(path.join(this.paths.root, '.github-guide-'));
+    let guideDigest: string;
+    let readme: Buffer;
+    try {
+      await createGuideIfMissing(guideDirectory);
+      readme = await fs.readFile(path.join(guideDirectory, 'README.md'));
+      guideDigest = createHash('sha256').update(readme).digest('hex');
+    } finally {
+      await fs.rm(guideDirectory, { recursive: true, force: true });
+    }
+
     const guideMarkerPath = path.join(this.paths.root, '.github-guide-sha256');
     const previousDigest = await readOptional(guideMarkerPath);
     if (previousDigest?.toString('utf8').trim() !== guideDigest) {
