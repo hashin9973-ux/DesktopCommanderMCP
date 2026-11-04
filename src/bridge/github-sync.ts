@@ -99,6 +99,32 @@ function resolveArtifactPath(root: string, requestId: string, artifactPath: stri
   return localPath;
 }
 
+async function ensureSafeArtifactDirectory(
+  paths: GitHubBridgeCachePaths,
+  requestId: string,
+): Promise<void> {
+  const realRoot = await fs.realpath(paths.root);
+  const artifactRootStat = await fs.lstat(paths.artifacts);
+  if (!artifactRootStat.isDirectory() || artifactRootStat.isSymbolicLink()) {
+    throw new Error('The local GitHub artifact cache root must be a real directory.');
+  }
+  const realArtifactRoot = await fs.realpath(paths.artifacts);
+  if (path.resolve(realArtifactRoot) !== path.resolve(path.join(realRoot, 'artifacts'))) {
+    throw new Error('The local GitHub artifact cache root resolves outside the bridge cache.');
+  }
+
+  const requestDirectory = path.join(paths.artifacts, requestId);
+  await fs.mkdir(requestDirectory, { recursive: true });
+  const requestDirectoryStat = await fs.lstat(requestDirectory);
+  if (!requestDirectoryStat.isDirectory() || requestDirectoryStat.isSymbolicLink()) {
+    throw new Error('The local artifact directory for request ' + requestId + ' must be a real directory.');
+  }
+  const realRequestDirectory = await fs.realpath(requestDirectory);
+  if (path.resolve(realRequestDirectory) !== path.resolve(path.join(realArtifactRoot, requestId))) {
+    throw new Error('The local artifact directory for request ' + requestId + ' resolves outside the bridge cache.');
+  }
+}
+
 async function writeBufferArtifact(
   paths: GitHubBridgeCachePaths,
   requestId: string,
@@ -521,6 +547,7 @@ export class GitHubBridgeSync {
         if (response.id !== requestId || typeof response.request_hash !== 'string') {
           throw new Error('Local bridge response ' + entry.name + ' has an invalid id or request hash.');
         }
+        await ensureSafeArtifactDirectory(this.paths, requestId);
 
         let responseChanged = await externalizeOversizedResponse(response, requestId, this.paths);
         responseChanged = (await prepareResponseArtifacts(response, requestId, this.paths)) || responseChanged;
