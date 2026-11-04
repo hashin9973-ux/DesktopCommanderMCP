@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const GITHUB_API_ROOT = 'https://api.github.com';
 const GITHUB_API_VERSION = '2022-11-28';
+const GITHUB_API_REQUEST_TIMEOUT_MS = 15_000;
 export const MAX_GITHUB_BRIDGE_FILE_BYTES = 50 * 1024 * 1024;
 
 export interface GitHubRepositorySummary {
@@ -637,6 +638,7 @@ export class GitHubRepositoryClient {
         ...(options.body ? { 'Content-Type': 'application/json' } : {}),
       },
       ...(options.body ? { body: options.body } : {}),
+      signal: AbortSignal.timeout(GITHUB_API_REQUEST_TIMEOUT_MS),
     });
 
     if (!response.ok) {
