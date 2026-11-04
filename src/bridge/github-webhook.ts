@@ -299,7 +299,7 @@ export async function startCloudflareQuickTunnel(
     }, options.startupTimeoutMs ?? DEFAULT_TUNNEL_STARTUP_TIMEOUT_MS);
   });
 
-  let onAbort = () => undefined;
+  let onAbort: () => void = () => {};
   const removeAbortListener = () => {
     options.signal?.removeEventListener('abort', onAbort);
   };
