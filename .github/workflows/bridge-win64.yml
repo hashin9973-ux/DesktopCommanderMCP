@@ -147,9 +147,11 @@ jobs:
             throw "The Local API shortcut does not launch Local API mode."
           }
 
+          $menuInput = Join-Path $env:TEMP "DesktopCommander-menu-test-in.txt"
           $menuStdout = Join-Path $env:TEMP "DesktopCommander-menu-test-out.txt"
           $menuStderr = Join-Path $env:TEMP "DesktopCommander-menu-test-err.txt"
-          $menuProcess = Start-Process -FilePath "build\PortableBridge\DesktopCommanderBridge.exe" -ArgumentList "--menu" -PassThru -Wait -NoNewWindow -RedirectStandardOutput $menuStdout -RedirectStandardError $menuStderr
+          [System.IO.File]::WriteAllText($menuInput, "")
+          $menuProcess = Start-Process -FilePath "build\PortableBridge\DesktopCommanderBridge.exe" -ArgumentList "--menu" -PassThru -Wait -NoNewWindow -RedirectStandardInput $menuInput -RedirectStandardOutput $menuStdout -RedirectStandardError $menuStderr
           $menuOutput = (Get-Content $menuStdout -Raw -ErrorAction SilentlyContinue) + (Get-Content $menuStderr -Raw -ErrorAction SilentlyContinue)
           if ($menuProcess.ExitCode -eq 0 -or $menuOutput -notmatch "requires an interactive terminal") {
             throw "Forced menu selection did not fail clearly when stdio is non-interactive. Output: $menuOutput"
