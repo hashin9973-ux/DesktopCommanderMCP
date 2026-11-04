@@ -46,8 +46,8 @@ interface BridgeResponseReference {
   error?: string;
 }
 
-const MAX_GITHUB_BRIDGE_CHUNK_BYTES = 32 * 1024 * 1024;
-const MAX_GITHUB_INLINE_RESPONSE_BYTES = 32 * 1024 * 1024;
+const MAX_GITHUB_BRIDGE_CHUNK_BYTES = 1_000_000;
+const MAX_GITHUB_INLINE_RESPONSE_BYTES = 1_000_000;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -239,7 +239,7 @@ async function externalizeOversizedResponse(
   if (finalSize > MAX_GITHUB_INLINE_RESPONSE_BYTES) {
     throw new Error(
       'Response response-' + requestId + '.json remains ' + finalSize +
-      ' bytes after externalizing large result fields; it cannot fit within the safe 32 MiB GitHub upload target.',
+      ' bytes after externalizing large result fields; it cannot fit within the safe 1 MB GitHub upload target.',
     );
   }
   return changed;
@@ -570,8 +570,8 @@ export class GitHubBridgeSync {
         }
         if (responseChanged) await writeFileAtomic(responsePath, responseBytes);
 
-        // Every uploaded file is kept at 32 MiB or less. This leaves room for
-        // base64 expansion in the GitHub Contents API request body.
+        // Every uploaded artifact is kept at 1 MB or less to match GitHub's
+        // recommended maximum Git object size and leave room for base64 encoding.
         for (const artifact of response.artifacts || []) {
           await uploadResponseArtifact(this.client, this.paths, requestId, artifact);
         }
