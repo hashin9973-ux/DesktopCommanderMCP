@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { GitHubRepositoryClient } from '../dist/bridge/github.js';
+import { GitHubRepositoryClient, MAX_GITHUB_BRIDGE_FILE_BYTES } from '../dist/bridge/github.js';
 import { GitHubBridgeSync } from '../dist/bridge/github-sync.js';
 
 // Test double for GitHub's Contents and Repositories REST APIs. No network calls are made.
@@ -420,6 +420,138 @@ try {
     /ENOENT/,
     'the follow-up pass should remove the second published response from local staging',
   );
+
+  // A response larger than GitHub's per-file limit must keep its complete
+  // tool output by externalizing JSON and publishing it as ordered chunks.
+  const largeResponseId = 'large-response-01';
+  const largeText = 'L'.repeat(MAX_GITHUB_BRIDGE_FILE_BYTES + 1_024);
+  const largeContent = [{ type: 'text', text: largeText }];
+
+  // Also exercise splitting an existing local artifact produced by the worker.
+  // A sparse file keeps the fixture small while preserving a real >32 MiB size.
+  const largeSourceArtifactPath = 'artifacts/' + largeResponseId + '/large-source.bin';
+  const largeSourceLocalPath = path.join(paths.root, ...largeSourceArtifactPath.split('/'));
+  const largeSourceBytes = 32 * 1024 * 1024 + 1;
+  await fs.mkdir(path.dirname(largeSourceLocalPath), { recursive: true });
+  const largeSourceHandle = await fs.open(largeSourceLocalPath, 'w');
+  try {
+    await largeSourceHandle.truncate(largeSourceBytes);
+  } finally {
+    await largeSourceHandle.close();
+  }
+  const zeroBlock = Buffer.alloc(1024 * 1024);
+  const largeSourceHash = crypto.createHash('sha256');
+  let sourceRemaining = largeSourceBytes;
+  while (sourceRemaining > 0) {
+    const length = Math.min(sourceRemaining, zeroBlock.length);
+    largeSourceHash.update(zeroBlock.subarray(0, length));
+    sourceRemaining -= length;
+  }
+  const largeSourceArtifact = {
+    path: largeSourceArtifactPath,
+    mimeType: 'application/octet-stream',
+    bytes: largeSourceBytes,
+    sha256: largeSourceHash.digest('hex'),
+  };
+
+  const largeResponse = {
+    protocol_version: 1,
+    id: largeResponseId,
+    request_hash: crypto.createHash('sha256').update(largeResponseId).digest('hex'),
+    status: 'completed',
+    started_at: '2026-01-01T00:00:00.000Z',
+    completed_at: '2026-01-01T00:00:01.000Z',
+    results: [{
+      index: 0,
+      tool: 'read_file',
+      status: 'succeeded',
+      isError: false,
+      content: largeContent,
+      artifacts: [largeSourceArtifact],
+    }],
+    artifacts: [largeSourceArtifact],
+  };
+  const largeResponsePath = path.join(paths.responses, 'response-' + largeResponseId + '.json');
+  await fs.writeFile(largeResponsePath, JSON.stringify(largeResponse));
+  await sync.syncOnce();
+
+  const publishedLargeResponseBytes = api.files.get('responses/response-' + largeResponseId + '.json')?.bytes;
+  assert.ok(publishedLargeResponseBytes, 'the compact response marker should be committed to GitHub');
+  assert.ok(publishedLargeResponseBytes.length < MAX_GITHUB_BRIDGE_FILE_BYTES,
+    'the response marker must stay below the GitHub per-file limit');
+  const publishedLargeResponse = JSON.parse(publishedLargeResponseBytes.toString('utf8'));
+  const publishedLargeResult = publishedLargeResponse.results[0];
+  assert.match(publishedLargeResult.content[0].text, /too large to include in the response and was moved to a JSON artifact/,
+    'oversized text content should be replaced with a retrieval instruction');
+  const contentArtifact = publishedLargeResult.artifacts.find((artifact) => artifact.mimeType === 'application/json');
+  assert.ok(contentArtifact?.parts?.length >= 2,
+    'oversized JSON content should be represented by an ordered chunk list');
+
+  const reconstructArtifact = (reference) => {
+    assert.ok(Array.isArray(reference.parts) && reference.parts.length > 0,
+      'chunked artifacts must expose their remote parts');
+    const chunks = reference.parts.map((part) => {
+      const stored = api.files.get(part.path);
+      assert.ok(stored, 'each declared artifact part must be uploaded: ' + part.path);
+      assert.equal(stored.bytes.length, part.bytes);
+      assert.equal(crypto.createHash('sha256').update(stored.bytes).digest('hex'), part.sha256);
+      assert.ok(stored.bytes.length <= 32 * 1024 * 1024,
+        'each uploaded artifact file must remain under the transport chunk size');
+      return stored.bytes;
+    });
+    const reconstructed = Buffer.concat(chunks);
+    assert.equal(reconstructed.length, reference.bytes);
+    assert.equal(crypto.createHash('sha256').update(reconstructed).digest('hex'), reference.sha256);
+    return reconstructed;
+  };
+
+  assert.deepEqual(
+    JSON.parse(reconstructArtifact(contentArtifact).toString('utf8')),
+    largeContent,
+    'reassembling the JSON artifact must restore the complete tool content',
+  );
+  const publishedSourceArtifact = publishedLargeResult.artifacts.find((artifact) => artifact.path === largeSourceArtifactPath);
+  assert.ok(publishedSourceArtifact?.parts?.length >= 2,
+    'a pre-existing local binary artifact larger than one chunk should be split before upload');
+  const reconstructedSource = reconstructArtifact(publishedSourceArtifact);
+  assert.equal(reconstructedSource.length, largeSourceBytes);
+  assert.ok(reconstructedSource.every((byte) => byte === 0),
+    'the original artifact bytes must be preserved across chunk uploads');
+  await assert.rejects(
+    () => fs.access(largeResponsePath),
+    /ENOENT/,
+    'the local response should be removed only after the response and all artifacts are durable remotely',
+  );
+
+  // A malformed response must be reported, but it must not prevent a
+  // separate valid response in the same queue snapshot from being published.
+  const invalidResponseId = 'invalid-response-01';
+  const validResponseId = 'valid-response-02';
+  await fs.writeFile(
+    path.join(paths.responses, 'response-' + invalidResponseId + '.json'),
+    '{invalid json',
+  );
+  await fs.writeFile(
+    path.join(paths.responses, 'response-' + validResponseId + '.json'),
+    JSON.stringify({
+      protocol_version: 1,
+      id: validResponseId,
+      request_hash: crypto.createHash('sha256').update(validResponseId).digest('hex'),
+      status: 'completed',
+      started_at: '2026-01-01T00:00:00.000Z',
+      completed_at: '2026-01-01T00:00:01.000Z',
+      results: [],
+      artifacts: [],
+    }),
+  );
+  await assert.rejects(
+    () => sync.syncOnce(),
+    /Could not synchronize 1 local response file/,
+  );
+  assert.ok(api.files.has('responses/response-' + validResponseId + '.json'),
+    'a malformed response must not block another response from the same sync pass');
+  await fs.access(path.join(paths.responses, 'response-' + invalidResponseId + '.json'));
+  await fs.rm(path.join(paths.responses, 'response-' + invalidResponseId + '.json'), { force: true });
 
   const restartRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-github-bridge-restart-'));
   try {

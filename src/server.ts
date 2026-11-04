@@ -1619,19 +1619,14 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
 
         if (result.isError) {
             await usageTracker.trackFailure(name);
-            console.log(`[FEEDBACK DEBUG] Tool ${name} failed, not checking feedback`);
         } else {
             await usageTracker.trackSuccess(name);
-            console.log(`[FEEDBACK DEBUG] Tool ${name} succeeded, checking feedback...`);
 
             // Check if should prompt for feedback (only on successful operations)
             const shouldPrompt = !bridgeExecutionContext.getStore() && await usageTracker.shouldPromptForFeedback();
-            console.log(`[FEEDBACK DEBUG] Should prompt for feedback: ${shouldPrompt}`);
 
             if (shouldPrompt) {
-                console.log(`[FEEDBACK DEBUG] Generating feedback message...`);
                 const feedbackResult = await usageTracker.getFeedbackPromptMessage();
-                console.log(`[FEEDBACK DEBUG] Generated variant: ${feedbackResult.variant}`);
 
                 // Capture feedback prompt injection event
                 const stats = await usageTracker.getStats();
