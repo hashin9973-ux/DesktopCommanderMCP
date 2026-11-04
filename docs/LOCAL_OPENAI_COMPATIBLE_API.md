@@ -9,7 +9,9 @@ This mode does not use MCP, the Cloud-folder request/response queue, GitHub, Clo
 1. Start KoboldCpp and load a model that supports tool/function calling.
 2. Enable **Jinja** and **Jinja for Tools** in KoboldCpp. Tool-call support and exact behavior depend on the loaded model and its chat template.
 3. Confirm the local server is ready. KoboldCpp's default OpenAI-compatible base URL is `http://localhost:5001/v1`.
-4. Launch `DesktopCommanderBridge.exe` and select **4 — Local OpenAI-compatible API**, or run `DesktopCommanderBridge.exe local-api`.
+4. From the portable folder, double-click **Start Local OpenAI API (KoboldCpp).cmd**, or run `DesktopCommanderBridge.exe local-api`. To show the four-choice menu explicitly, double-click **Choose Desktop Commander Mode.cmd**.
+
+The portable package includes both `.cmd` launchers so the Local API mode remains directly accessible even when the shell does not expose interactive TTY streams. A no-argument launch of `DesktopCommanderBridge.exe` uses the menu only when both standard input and output are interactive; MCP hosts use piped stdio and therefore start standard MCP mode without a menu.
 
 The default endpoint is `http://127.0.0.1:5001/v1`. Local API mode requests the model list from `/models` and lets you choose a returned model ID. KoboldCpp generally uses the model already loaded by the server.
 
