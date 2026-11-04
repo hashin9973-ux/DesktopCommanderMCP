@@ -391,6 +391,17 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     await sync.initialize();
     await sync.syncOnce();
 
+    let lastSyncFailureMessage: string | undefined;
+    const reportSyncFailure = (prefix: string, error: unknown): void => {
+      const message = errorMessage(error);
+      // A single irrecoverable response can trigger both the local watcher,
+      // reconciliation poll, and webhook. Report the same failure once until
+      // a later synchronization succeeds or a different error occurs.
+      if (lastSyncFailureMessage === message) return;
+      lastSyncFailureMessage = message;
+      console.error(prefix + message);
+    };
+
     let webhookActive = false;
     if (!options.disableWebhook) {
       try {
@@ -407,8 +418,11 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
           repository,
           defaultBranch: client.defaultBranch,
           secret: webhookSecret,
-          onPush: () => sync.syncOnce(),
-          onError: (error) => console.error('GitHub webhook synchronization failed: ' + error.message),
+          onPush: async () => {
+            await sync.syncOnce();
+            lastSyncFailureMessage = undefined;
+          },
+          onError: (error) => reportSyncFailure('GitHub webhook synchronization failed: ', error),
         });
         quickTunnel = await startCloudflareQuickTunnel(webhookServer.originUrl, {
           onExit: (code, signal) => {
@@ -477,8 +491,9 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     const syncPoll = async () => {
       try {
         await sync.syncOnce();
+        lastSyncFailureMessage = undefined;
       } catch (error) {
-        console.error('GitHub queue synchronization failed; it will retry: ' + errorMessage(error));
+        reportSyncFailure('GitHub queue synchronization failed; it will retry: ', error);
       }
     };
     switchToFallbackPolling = () => {
