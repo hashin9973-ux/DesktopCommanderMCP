@@ -8,6 +8,7 @@ const execFileAsync = promisify(execFile);
 const GITHUB_API_ROOT = 'https://api.github.com';
 const GITHUB_API_VERSION = '2022-11-28';
 const GITHUB_API_REQUEST_TIMEOUT_MS = 15_000;
+const GITHUB_API_TRANSFER_TIMEOUT_MS = 60_000;
 export const MAX_GITHUB_BRIDGE_FILE_BYTES = 50 * 1024 * 1024;
 
 export interface GitHubRepositorySummary {
@@ -464,7 +465,7 @@ export class GitHubRepositoryClient {
     const response = await this.request(
       '/repos/' + this.repository + '/contents/' + encodedPath +
       '?ref=' + encodeURIComponent(this.defaultBranch),
-      { accept: 'application/vnd.github.raw+json' },
+      { accept: 'application/vnd.github.raw+json', timeoutMs: GITHUB_API_TRANSFER_TIMEOUT_MS },
     );
     return Buffer.from(await response.arrayBuffer());
   }
@@ -612,7 +613,7 @@ export class GitHubRepositoryClient {
 
   private async requestJson(
     route: string,
-    options: { method?: string; body?: string; accept?: string } = {},
+    options: { method?: string; body?: string; accept?: string; timeoutMs?: number } = {},
   ): Promise<unknown> {
     const response = await this.request(route, options);
     if (response.status === 204) return null;
@@ -626,7 +627,7 @@ export class GitHubRepositoryClient {
 
   private async request(
     route: string,
-    options: { method?: string; body?: string; accept?: string } = {},
+    options: { method?: string; body?: string; accept?: string; timeoutMs?: number } = {},
   ): Promise<Response> {
     const response = await this.fetcher(GITHUB_API_ROOT + route, {
       method: options.method || 'GET',
@@ -638,7 +639,9 @@ export class GitHubRepositoryClient {
         ...(options.body ? { 'Content-Type': 'application/json' } : {}),
       },
       ...(options.body ? { body: options.body } : {}),
-      signal: AbortSignal.timeout(GITHUB_API_REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(
+        options.timeoutMs ?? (options.body ? GITHUB_API_TRANSFER_TIMEOUT_MS : GITHUB_API_REQUEST_TIMEOUT_MS),
+      ),
     });
 
     if (!response.ok) {
