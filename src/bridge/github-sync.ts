@@ -6,6 +6,7 @@ import { createGuideIfMissing } from './runtime.js';
 import {
   GitHubRepositoryClient,
   MAX_GITHUB_BRIDGE_FILE_BYTES,
+  type GitHubContentEntry,
 } from './github.js';
 
 export interface GitHubBridgeCachePaths {
