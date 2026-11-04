@@ -395,7 +395,7 @@ export class GitHubRepositoryClient {
         }
         return Number(created.id);
       } catch (error) {
-        if (error instanceof GitHubApiError && (error.status === 403 || error.status === 404)) {
+        if (error instanceof GitHubApiError && !error.rateLimit && (error.status === 403 || error.status === 404)) {
           throw new GitHubApiError(
             error.status,
             'GitHub denied repository webhook creation. Your account must own or have admin access to this repository. ' +
