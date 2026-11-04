@@ -157,6 +157,29 @@ assert.deepEqual(tunnelSpawnCall.args, [
 assert.equal(tunnelSpawnCall.options.windowsHide, true);
 await tunnel.close();
 
+const tunnelAbort = new AbortController();
+const cancellableTunnelChild = new EventEmitter();
+cancellableTunnelChild.stdout = new PassThrough();
+cancellableTunnelChild.stderr = new PassThrough();
+cancellableTunnelChild.exitCode = null;
+cancellableTunnelChild.signalCode = null;
+let cancelledTunnelKilled = false;
+cancellableTunnelChild.kill = () => {
+  cancelledTunnelKilled = true;
+  cancellableTunnelChild.signalCode = 'SIGTERM';
+  cancellableTunnelChild.emit('exit', null, 'SIGTERM');
+  return true;
+};
+const pendingTunnel = startCloudflareQuickTunnel('http://127.0.0.1:43210', {
+  executablePath: 'test-cloudflared',
+  signal: tunnelAbort.signal,
+  spawnProcess: () => cancellableTunnelChild,
+});
+tunnelAbort.abort();
+await assert.rejects(pendingTunnel, /startup was cancelled/);
+assert.equal(cancelledTunnelKilled, true,
+  'cancelling background startup must terminate the cloudflared child instead of leaking it');
+
 let invalidOriginSpawned = false;
 await assert.rejects(
   () => startCloudflareQuickTunnel('http://0.0.0.0:43210', {
