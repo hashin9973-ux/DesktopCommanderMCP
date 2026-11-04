@@ -57,6 +57,12 @@ async function runServer() {
       return;
     }
 
+    // Run the local OpenAI-compatible API agent without starting MCP or a queue bridge.
+    if (process.argv[2] === 'local-api') {
+      const { runLocalApi } = await import('./local-api/runtime.js');
+      await runLocalApi(process.argv.slice(3));
+      return;
+    }
     // Parse command line arguments for onboarding control
     const DISABLE_ONBOARDING = process.argv.includes('--no-onboarding');
     if (DISABLE_ONBOARDING) {

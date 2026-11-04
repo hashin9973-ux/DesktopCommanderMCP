@@ -5,10 +5,13 @@ on:
     branches: [main]
     paths:
       - 'src/bridge/**'
+      - 'src/local-api/**'
       - 'src/index.ts'
       - 'scripts/bridge-launcher.cjs'
       - 'test/test-bridge-*.js'
+      - 'test/test-local-api.js'
       - 'docs/GITHUB_REPOSITORY_BRIDGE.md'
+      - 'docs/LOCAL_OPENAI_COMPATIBLE_API.md'
       - '.github/workflows/bridge-win64.yml'
   pull_request:
     branches: [main]
@@ -42,6 +45,7 @@ jobs:
           test-bridge-github.js
           test-bridge-github-webhook.js
           test-bridge-github-auth.js
+          test-local-api.js
           test-atomic-write.js
           test-file-handlers.js
           test-read-multiple-files.js
@@ -119,6 +123,8 @@ jobs:
         run: |
           & build\PortableBridge\DesktopCommanderBridge.exe bridge --help
           if ($LASTEXITCODE -ne 0) { throw "Bridge executable help command failed." }
+          & build\PortableBridge\DesktopCommanderBridge.exe local-api --help
+          if ($LASTEXITCODE -ne 0) { throw "Local API executable help command failed." }
 
       - name: Smoke-test file bridge and image artifact export
         shell: pwsh
