@@ -393,11 +393,6 @@ async function uploadResponseArtifact(
 export class GitHubBridgeSync {
   private syncPromise?: Promise<void>;
   private syncRequestedWhileRunning = false;
-  private readonly completedRequests = new Map<string, {
-    requestBlobSha: string;
-    responseBlobSha: string;
-  }>();
-
   constructor(
     private readonly client: GitHubRepositoryClient,
     private readonly paths: GitHubBridgeCachePaths,
@@ -405,14 +400,22 @@ export class GitHubBridgeSync {
 
   async initialize(): Promise<void> {
     await Promise.all([
+      fs.mkdir(this.paths.root, { recursive: true }),
       fs.mkdir(this.paths.requests, { recursive: true }),
       fs.mkdir(this.paths.responses, { recursive: true }),
       fs.mkdir(this.paths.artifacts, { recursive: true }),
     ]);
 
-    // Keep Contents API writes sequential: each file creation advances the
-    // same default-branch ref and concurrent commits can conflict.
-    for (const directory of ['requests', 'responses', 'artifacts']) {
+    // Directory reads are cheaper than attempting duplicate writes and then
+    // reading the same files back after GitHub rejects each create.
+    const queueDirectories = ['requests', 'responses', 'artifacts'];
+    const listings = await Promise.all(
+      queueDirectories.map((directory) => this.client.listDirectory(directory)),
+    );
+    for (let index = 0; index < queueDirectories.length; index++) {
+      const directory = queueDirectories[index];
+      const entries = listings[index];
+      if (entries.some((entry) => entry.type === 'file' && entry.name === '.gitkeep')) continue;
       await this.client.createFileIfAbsent(
         directory + '/.gitkeep',
         Buffer.from('Desktop Commander bridge queue directory.\n', 'utf8'),
@@ -420,24 +423,28 @@ export class GitHubBridgeSync {
       );
     }
 
-    // Regenerate the same AI-facing README that cloud-folder mode creates.
-    // The cache is private to this repository, so replace any stale local copy.
+    // Publishing the generated guide is a one-time/version-change operation.
+    // Persist its digest in the local cache so routine restarts do not make
+    // extra root-list, README-download, and README-update API round trips.
     const readmePath = path.join(this.paths.root, 'README.md');
     await fs.rm(readmePath, { force: true });
     await createGuideIfMissing(this.paths.root);
     const readme = await fs.readFile(readmePath);
-
-    // Migrate repositories initialized by older bridge versions: README.md is
-    // now the only guide, and contains the shared AI instructions and schemas.
-    await this.client.deleteFileIfPresent(
-      'DESKTOP_COMMANDER_BRIDGE.md',
-      'Remove obsolete separate Desktop Commander bridge guide',
-    );
-    await this.client.writeFile(
-      'README.md',
-      readme,
-      'Publish shared Desktop Commander AI README',
-    );
+    const guideDigest = createHash('sha256').update(readme).digest('hex');
+    const guideMarkerPath = path.join(this.paths.root, '.github-guide-sha256');
+    const previousDigest = await readOptional(guideMarkerPath);
+    if (previousDigest?.toString('utf8').trim() !== guideDigest) {
+      await this.client.deleteFileIfPresent(
+        'DESKTOP_COMMANDER_BRIDGE.md',
+        'Remove obsolete separate Desktop Commander bridge guide',
+      );
+      await this.client.writeFile(
+        'README.md',
+        readme,
+        'Publish shared Desktop Commander AI README',
+      );
+      await writeFileAtomic(guideMarkerPath, Buffer.from(guideDigest + '\n', 'utf8'));
+    }
   }
 
   async syncOnce(): Promise<void> {
@@ -465,9 +472,13 @@ export class GitHubBridgeSync {
       this.client.listDirectory('requests'),
       this.client.listDirectory('responses'),
     ]);
-    const remoteResponseNames = new Set(
-      remoteResponses.filter((entry) => entry.type === 'file').map((entry) => entry.name),
-    );
+    const remoteResponseByRequestId = new Map<string, GitHubContentEntry>();
+    for (const entry of remoteResponses) {
+      if (entry.type !== 'file') continue;
+      const match = RESPONSE_PATTERN.exec(entry.name);
+      if (match) remoteResponseByRequestId.set(match[1], entry);
+    }
+    const completedRequestIds = new Set(remoteResponseByRequestId.keys());
 
     for (const entry of remoteRequests) {
       if (entry.type !== 'file' || !REQUEST_PATTERN.test(entry.name)) continue;
@@ -478,16 +489,12 @@ export class GitHubBridgeSync {
       const match = REQUEST_PATTERN.exec(entry.name);
       if (!match) continue;
       const requestId = match[1];
-      const responseName = 'response-' + requestId + '.json';
-      const remoteResponse = remoteResponses.find((candidate) =>
-        candidate.type === 'file' && candidate.name === responseName);
+      const remoteResponse = remoteResponseByRequestId.get(requestId);
       if (remoteResponse) {
-        const completed = this.completedRequests.get(requestId);
-        if (completed
-          && completed.requestBlobSha === entry.sha
-          && completed.responseBlobSha === remoteResponse.sha) {
-          continue;
-        }
+        // A response file is the durable completion marker. Never re-execute a
+        // request ID that already has one, and do not download the historical
+        // request/response pair on every process restart just to revalidate it.
+        continue;
       }
 
       const localPath = path.join(this.paths.requests, entry.name);
@@ -504,25 +511,6 @@ export class GitHubBridgeSync {
         if (gitBlobSha(requestBytes) !== entry.sha) {
           throw new Error('GitHub request ' + entry.path + ' changed while it was being downloaded. The next poll will retry.');
         }
-      }
-
-      if (remoteResponse) {
-        const responseBytes = await this.client.readFile(remoteResponse.path);
-        let response: BridgeResponseReference;
-        try {
-          response = JSON.parse(responseBytes.toString('utf8')) as BridgeResponseReference;
-        } catch {
-          throw new Error('Existing GitHub response ' + remoteResponse.path + ' is not valid JSON.');
-        }
-        const requestHash = createHash('sha256').update(requestBytes).digest('hex');
-        if (response.id !== requestId || response.request_hash !== requestHash) {
-          throw new Error('GitHub request ID ' + requestId + ' was reused with content that conflicts with its existing response.');
-        }
-        this.completedRequests.set(requestId, {
-          requestBlobSha: entry.sha,
-          responseBlobSha: remoteResponse.sha,
-        });
-        continue;
       }
 
       if (!cached) {
@@ -607,7 +595,7 @@ export class GitHubBridgeSync {
     // stage its request again or re-execute it after a restart.
     for (const entry of remoteRequests) {
       const match = entry.type === 'file' ? REQUEST_PATTERN.exec(entry.name) : null;
-      if (!match || !remoteResponseNames.has('response-' + match[1] + '.json')) continue;
+      if (!match || !completedRequestIds.has(match[1])) continue;
       await fs.rm(path.join(this.paths.requests, entry.name), { force: true });
     }
   }
