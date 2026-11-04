@@ -17,8 +17,18 @@ for (const requiredPath of [runtimePath, entryPoint]) {
   }
 }
 
-async function selectMode() {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) return [];
+async function selectMode({ required = false } = {}) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    if (required) {
+      throw new Error(
+        'The mode menu requires an interactive terminal. Launch "Choose Desktop Commander Mode.cmd" ' +
+        'from the portable folder, or run "DesktopCommanderBridge.exe local-api".',
+      );
+    }
+    // MCP hosts launch this executable with piped stdio. Keep that path on
+    // standard MCP transport rather than writing a menu into the protocol.
+    return [];
+  }
 
   const readline = createInterface({ input: process.stdin, output: process.stdout });
   try {
@@ -40,9 +50,18 @@ async function selectMode() {
 
 async function main() {
   const suppliedArgs = process.argv.slice(2);
-  const forwardedArgs = suppliedArgs.length === 0
-    ? await selectMode()
-    : suppliedArgs;
+  let forwardedArgs;
+
+  if (suppliedArgs[0] === '--menu') {
+    if (suppliedArgs.length !== 1) {
+      throw new Error('--menu cannot be combined with another command-line argument.');
+    }
+    forwardedArgs = await selectMode({ required: true });
+  } else {
+    forwardedArgs = suppliedArgs.length === 0
+      ? await selectMode()
+      : suppliedArgs;
+  }
 
   const child = spawn(runtimePath, [entryPoint, ...forwardedArgs], {
     cwd: appRoot,
