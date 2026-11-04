@@ -211,7 +211,7 @@ async function externalizeOversizedResponse(
       if (field.field === 'content') {
         field.result.content = [{
           type: 'text',
-          text: 'The complete tool content was saved as a JSON artifact at ' + location + '. Retrieve it and parse the JSON to restore the original content.',
+          text: 'The tool output was too large to include in the response and was moved to a JSON artifact at ' + location + '. Retrieve the artifact from the repository and parse the JSON to restore the complete original tool output.',
         }];
       } else if (field.field === 'structuredContent') {
         field.result.structuredContent = {
