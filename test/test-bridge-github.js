@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { GitHubRepositoryClient, MAX_GITHUB_BRIDGE_FILE_BYTES } from '../dist/bridge/github.js';
+import { GitHubApiError, GitHubRepositoryClient, MAX_GITHUB_BRIDGE_FILE_BYTES } from '../dist/bridge/github.js';
 import { createGuideIfMissing } from '../dist/bridge/runtime.js';
 import { GitHubBridgeSync } from '../dist/bridge/github-sync.js';
 
@@ -252,6 +252,102 @@ await assert.rejects(
 const publicClient = await GitHubRepositoryClient.connect('public/repo', token, api.fetcher);
 assert.equal(publicClient.isPrivate, false, 'public repository visibility must be returned for startup consent');
 
+let rateLimitCalls = 0;
+const rateLimitedClient = await GitHubRepositoryClient.connect('owner/repo', token, async () => {
+  rateLimitCalls++;
+  if (rateLimitCalls === 1) {
+    return new Response(JSON.stringify({
+      default_branch: 'main',
+      archived: false,
+      private: true,
+      permissions: { push: true },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  if (rateLimitCalls === 2) {
+    return new Response(JSON.stringify({ message: 'You have exceeded a secondary rate limit.' }), {
+      status: 403,
+      headers: { 'content-type': 'application/json', 'retry-after': '1' },
+    });
+  }
+  return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
+});
+await assert.rejects(
+  () => rateLimitedClient.listDirectory('requests'),
+  (error) => {
+    assert.ok(error instanceof GitHubApiError);
+    assert.equal(error.rateLimit?.kind, 'secondary');
+    assert.ok(Number.isFinite(error.rateLimit?.retryAt));
+    assert.match(error.message, /paused until/);
+    return true;
+  },
+  'secondary rate-limit responses should expose their retry time',
+);
+const rateLimitWaitStartedAt = Date.now();
+const recoveredListing = await rateLimitedClient.listDirectory('requests');
+assert.deepEqual(recoveredListing, []);
+assert.ok(Date.now() - rateLimitWaitStartedAt >= 800,
+  'the next GitHub API request must honor Retry-After instead of immediately retrying');
+assert.equal(rateLimitCalls, 3);
+
+const webhookSecretForRateLimitTest = 'b'.repeat(64);
+let webhookRateLimitCalls = 0;
+const webhookRateLimitedClient = await GitHubRepositoryClient.connect('owner/repo', token, async () => {
+  webhookRateLimitCalls++;
+  if (webhookRateLimitCalls === 1) {
+    return new Response(JSON.stringify({
+      default_branch: 'main',
+      archived: false,
+      private: true,
+      permissions: { push: true },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return new Response(JSON.stringify({ message: 'You have exceeded a secondary rate limit.' }), {
+    status: 403,
+    headers: { 'content-type': 'application/json', 'retry-after': '1' },
+  });
+});
+await assert.rejects(
+  () => webhookRateLimitedClient.upsertPushWebhook(
+    undefined,
+    'https://quiet-marble-otter.trycloudflare.com/github-webhook/rate-limit-test',
+    webhookSecretForRateLimitTest,
+  ),
+  (error) => {
+    assert.ok(error instanceof GitHubApiError);
+    assert.equal(error.rateLimit?.kind, 'secondary',
+      'webhook registration must preserve 403 rate-limit metadata instead of disguising it as missing permission');
+    return true;
+  },
+);
+
+let primaryLimitCalls = 0;
+const primaryResetEpoch = Math.ceil(Date.now() / 1_000) + 1;
+const primaryRateLimitedClient = await GitHubRepositoryClient.connect('owner/repo', token, async () => {
+  primaryLimitCalls++;
+  if (primaryLimitCalls === 1) {
+    return new Response(JSON.stringify({
+      default_branch: 'main',
+      archived: false,
+      private: true,
+      permissions: { push: true },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return new Response('[]', {
+    status: 200,
+    headers: {
+      'content-type': 'application/json',
+      'x-ratelimit-remaining': '0',
+      'x-ratelimit-reset': String(primaryResetEpoch),
+    },
+  });
+});
+assert.deepEqual(await primaryRateLimitedClient.listDirectory('requests'), []);
+const primaryRateLimitWaitStartedAt = Date.now();
+assert.deepEqual(await primaryRateLimitedClient.listDirectory('responses'), []);
+assert.ok(Date.now() - primaryRateLimitWaitStartedAt >= 800,
+  'a successful response with zero primary quota remaining must pause the next API request');
+assert.equal(primaryLimitCalls, 3);
+
 const webhookSecret = 'a'.repeat(64);
 const initialHookId = await client.upsertPushWebhook(
   undefined,
@@ -350,6 +446,32 @@ try {
   assert.equal(api.getRawReadCount(requestPath), 1,
     'unchanged staged requests should not be downloaded again on every poll');
 
+  const cachedRequestId = 'cached-at-startup';
+  const cachedRequestPath = 'requests/request-' + cachedRequestId + '.json';
+  const cachedRequestBytes = Buffer.from('already staged request bytes');
+  api.files.set(cachedRequestPath, {
+    bytes: cachedRequestBytes,
+    sha: gitBlobSha(cachedRequestBytes),
+  });
+  await fs.writeFile(
+    path.join(paths.requests, 'request-' + cachedRequestId + '.json'),
+    cachedRequestBytes,
+  );
+  const cachedStartupSync = new GitHubBridgeSync(client, paths);
+  const stagingLogs = [];
+  const originalLog = console.log;
+  console.log = (...args) => stagingLogs.push(args.join(' '));
+  try {
+    await cachedStartupSync.syncOnce();
+    await cachedStartupSync.syncOnce();
+  } finally {
+    console.log = originalLog;
+  }
+  assert.equal(api.getRawReadCount(cachedRequestPath), 0,
+    'a verified local cache entry must not be downloaded again after restart');
+  assert.equal(stagingLogs.filter((message) => message.includes('request-' + cachedRequestId) && message.includes('staged locally')).length, 1,
+    'a cached request should produce one staging checkpoint when first observed');
+
   const artifactPath = 'artifacts/sample-01/output.bin';
   const artifactBytes = Buffer.from([0, 1, 2, 3, 255]);
   const localArtifactPath = path.join(paths.root, ...artifactPath.split('/'));
@@ -398,6 +520,27 @@ try {
   assert.equal(api.getRawReadCount(requestPath), 1,
     'unchanged completed requests should be skipped without downloading the request or response again');
   assert.equal(api.getRawReadCount('responses/response-sample-01.json'), 0);
+
+  // Overwriting a request after its response exists must not re-execute it.
+  // A changed blob under an already-completed ID should be explicitly diagnosed.
+  const reusedRequestBytes = Buffer.from(JSON.stringify({
+    protocol_version: 1,
+    id: 'sample-01',
+    commands: [{ tool: 'get_usage_stats', arguments: {} }],
+  }), 'utf8');
+  api.files.set(requestPath, { bytes: reusedRequestBytes, sha: gitBlobSha(reusedRequestBytes) });
+  const duplicateIdWarnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => duplicateIdWarnings.push(args.join(' '));
+  try {
+    await sync.syncOnce();
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(api.getRawReadCount(requestPath), 1,
+    'a reused completed request ID must not be downloaded or executed again');
+  assert.ok(duplicateIdWarnings.some((message) => message.toLowerCase().includes('request id') && message.toLowerCase().includes('cannot be reused')),
+    'overwriting a completed request ID while the bridge is running must produce an explicit warning');
 
   // Hold the first local response upload after syncInternal has taken its
   // response-directory snapshot. A second response arriving during that pass
@@ -510,7 +653,7 @@ try {
       assert.equal(stored.bytes.length, part.bytes);
       assert.equal(crypto.createHash('sha256').update(stored.bytes).digest('hex'), part.sha256);
       assert.ok(stored.bytes.length <= 32 * 1024 * 1024,
-        'each uploaded artifact file must remain under the transport chunk size');
+        'each uploaded artifact file must remain under the 32 MiB Contents API transport chunk size');
       return stored.bytes;
     });
     const reconstructed = Buffer.concat(chunks);
@@ -518,6 +661,44 @@ try {
     assert.equal(crypto.createHash('sha256').update(reconstructed).digest('hex'), reference.sha256);
     return reconstructed;
   };
+
+  // The new automatic-dump threshold is 1 MB, not the old 32 MiB threshold.
+  const autoDumpId = 'auto-dump-01';
+  const autoDumpText = 'D'.repeat(1_000_100);
+  const autoDumpResponsePath = path.join(paths.responses, 'response-' + autoDumpId + '.json');
+  await fs.writeFile(autoDumpResponsePath, JSON.stringify({
+    protocol_version: 1,
+    id: autoDumpId,
+    request_hash: crypto.createHash('sha256').update(autoDumpId).digest('hex'),
+    status: 'completed',
+    started_at: '2026-01-01T00:00:00.000Z',
+    completed_at: '2026-01-01T00:00:01.000Z',
+    results: [{
+      index: 0,
+      tool: 'read_file',
+      status: 'succeeded',
+      isError: false,
+      content: [{ type: 'text', text: autoDumpText }],
+    }],
+    artifacts: [],
+  }));
+  await sync.syncOnce();
+  const autoDumpRemotePath = 'responses/response-' + autoDumpId + '.json';
+  const autoDumpMarker = api.files.get(autoDumpRemotePath)?.bytes;
+  assert.ok(autoDumpMarker, 'a response slightly over 1 MB must still publish a completion marker');
+  assert.ok(autoDumpMarker.length <= 1_000_000,
+    'the serialized response marker must be capped at 1 MB by automatic dumping');
+  const autoDumpPublished = JSON.parse(autoDumpMarker.toString('utf8'));
+  const autoDumpReference = autoDumpPublished.results[0].artifacts.find((artifact) => artifact.mimeType === 'application/json');
+  assert.ok(autoDumpReference, 'the oversized result must be replaced by a JSON artifact reference');
+  const autoDumpContentBytes = autoDumpReference.parts
+    ? reconstructArtifact(autoDumpReference)
+    : api.files.get(autoDumpReference.path).bytes;
+  assert.deepEqual(
+    JSON.parse(autoDumpContentBytes.toString('utf8')),
+    [{ type: 'text', text: autoDumpText }],
+    'automatic dumping must preserve the complete original tool content',
+  );
 
   assert.deepEqual(
     JSON.parse(reconstructArtifact(contentArtifact).toString('utf8')),

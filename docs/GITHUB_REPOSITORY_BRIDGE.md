@@ -47,7 +47,7 @@ Requests use protocol version 1 and the same command/tool schemas as Cloud-folde
 
 Artifacts are uploaded before the response file. The response file is the durable completion marker. Files are committed directly to the repository's existing default branch. The bridge does not create branches, pull requests, or edit application source files.
 
-When a tool result is too large to embed in the response, the bridge writes the complete original result content to an `application/json` artifact and replaces the inline content with a notice that the output was too large and moved to the referenced artifact. The artifact reference appears in the command result and at the response level. For chunked artifacts, retrieve every file in `parts` order, concatenate the exact bytes, and validate the combined `bytes` and `sha256` before parsing the JSON. The generated AI-facing `README.md` is not modified to handle this case; the retrieval notice is part of the response itself.
+When a tool result would make the response exceed 1 MB, the bridge automatically moves the largest result fields into `application/json` artifacts and keeps the response marker at or below 1 MB. Large artifact data is split into ordered chunks no larger than 32 MiB each. The artifact reference appears in the command result and at the response level. To reconstruct a chunked artifact, retrieve every file in `parts` order, concatenate the exact bytes, and validate the combined `bytes` and `sha256` before parsing the JSON. The generated AI-facing `README.md` is not modified to handle this case; the retrieval notice is part of the response itself.
 
 
 ## Requirements and limitations
@@ -55,7 +55,7 @@ When a tool result is too large to embed in the response, the bridge writes the 
 - The selected repository must allow direct writes to its default branch. A public repository requires an additional interactive confirmation because anyone can read its queue contents; the automatically-created option is always private. A branch rule that requires pull requests is incompatible with this no-branches design.
 - Use one running bridge worker per repository. GitHub commits are not a distributed worker lock.
 - Anyone with write access to the repository can submit commands for local execution on the bridge computer. Use a private repository and share write access only with trusted collaborators. The local tool restrictions are guardrails, not an operating-system sandbox.
-- GitHub queue files are limited to 50 MiB each. The transport uploads artifact files in verified chunks no larger than 32 MiB, leaving headroom for base64 encoding in the Contents API request. Large text or structured tool results are moved into JSON artifacts so the response completion marker remains small. For a chunked artifact, its `parts` array lists the remote files in reconstruction order; download and concatenate those exact bytes, then verify the artifact's total `bytes` and `sha256`. Its `path` is a logical artifact name when `parts` is present. Requests larger than the 50 MiB queue-file limit are rejected.
+- GitHub queue files are limited to 50 MiB each. Response JSON is automatically externalized once the serialized response exceeds 1 MB; artifact uploads are split into verified chunks no larger than 32 MiB to leave room for base64 encoding in Contents API requests without creating a branch commit for every 1 MB slice. GitHub recommends a maximum 1 MB Git object size and a maximum of six pushes per minute per repository; this transport chooses fewer commits per large artifact at the cost of larger-than-recommended artifact objects. This is a repository-health choice, not a GitHub Free-plan 500 MB repository quota: that 500 MB allowance is shared by GitHub Actions artifact storage and GitHub Packages. GitHub recommends keeping repositories under 1 GB. GitHub Repository Bridge retains commit history, so deleting old queue files from the latest tree does not reclaim the historical objects; long-running mailboxes can still grow and must be monitored or periodically migrated/compacted. For a chunked artifact, its `parts` array lists the remote files in reconstruction order; download and concatenate those exact bytes, then verify the artifact's total `bytes` and `sha256`. Its `path` is a logical artifact name when `parts` is present. Requests larger than the 50 MiB queue-file limit are rejected.
 - Remote queue history is retained in GitHub; the bridge does not automatically delete remote requests, responses, or artifacts. Repository maintainers can archive or remove old queue entries manually.
 - GitHub's Contents API is used for file-level reads and commits. The bridge does not check out the repository or synchronize unrelated source files to the local worker.
 
@@ -67,6 +67,22 @@ When launched directly in an interactive terminal with no arguments, the portabl
 ## Startup behavior
 
 After the saved GitHub session and repository have been validated, the local worker and five-second polling fallback start without waiting for the full queue scan or Cloudflare tunnel. Queue directory initialization, initial synchronization, and push-webhook setup continue in the background. When the tunnel and webhook are ready, the bridge switches to the configured reconciliation interval; if setup fails, it keeps polling. First-time browser sign-in and the required local security-consent prompts still need user interaction.
+
+## Diagnosing a request that appears stuck
+
+The worker's Request <id>: completed log means the tool commands finished and a response was written to the local cache. It does not, by itself, prove that GitHub received the response or that the agent retrieved it. The GitHub bridge now logs both staged request-<id> (downloaded from GitHub or verified as already present in the local worker cache) and published responses/response-<id>.json (uploaded to GitHub). Compare the exact request ID across those messages:
+
+- No request file in GitHub's requests/: the agent or its storage connector did not submit the request.
+- Request in GitHub, but no staged log: the bridge has not downloaded it; inspect synchronization errors and API rate-limit pauses.
+- Staged log, but no worker completion for that ID: the local worker or an executing tool is still processing it, or the worker stopped.
+- Worker completion, but no published log: the local response exists but GitHub synchronization has not published it; inspect the queue synchronization error.
+- Published log and matching responses/response-<id>.json on GitHub: the bridge completed the round trip. Failure to retrieve or continue from that response is on the agent/storage-connector side.
+
+On Windows, the local GitHub cache is under %LOCALAPPDATA%\DesktopCommanderBridge\github-cache\<owner>--<repo>\. The worker's durable per-request ledger is under %LOCALAPPDATA%\DesktopCommanderBridge\github-worker-state\<owner>--<repo>\localappdata\DesktopCommanderBridge\requests\<id>.json; its updated_at and command states show the last recorded execution step. Never reuse a request ID for different content.
+
+GitHub rate-limit responses are no longer retried on every poll. The bridge honors Retry-After and primary-limit reset headers, and uses increasing pauses when GitHub reports a secondary limit without a retry hint. The console error includes the next retry time.
+
+Request IDs are one-use idempotency keys. If responses/response-<id>.json already exists, a later request file with the same ID is skipped to prevent duplicate side effects. Do not overwrite an existing request file to retry different work; submit it under a new unique ID. While the bridge is running, it warns if it sees a changed request blob under an already-completed ID.
 
 ## Push notifications and Quick Tunnel
 

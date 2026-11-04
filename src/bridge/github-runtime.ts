@@ -524,7 +524,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
             webhookSecret,
           );
         } catch (error) {
-          if (!(error instanceof GitHubApiError) || (error.status !== 403 && error.status !== 404)) {
+          if (!(error instanceof GitHubApiError) || error.rateLimit || (error.status !== 403 && error.status !== 404)) {
             throw error;
           }
           console.log('');

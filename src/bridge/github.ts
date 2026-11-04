@@ -221,6 +221,8 @@ export class GitHubRepositoryClient {
   readonly isPrivate: boolean;
   private readonly token: string;
   private readonly fetcher: typeof fetch;
+  private rateLimitPauseUntil = 0;
+  private secondaryRateLimitBackoff = 0;
 
   private constructor(
     repository: string,
@@ -330,7 +332,7 @@ export class GitHubRepositoryClient {
         }),
       }) as { full_name?: unknown; private?: unknown; default_branch?: unknown };
     } catch (error) {
-      if (error instanceof GitHubApiError && (error.status === 403 || error.status === 404)) {
+      if (error instanceof GitHubApiError && !error.rateLimit && (error.status === 403 || error.status === 404)) {
         throw new Error(
           'GitHub did not allow automatic repository creation. The authenticated credential needs permission to create ' +
           'repositories (fine-grained personal access tokens need Administration: write or Repository creation: write; classic tokens need the repo scope). ' +
@@ -393,7 +395,7 @@ export class GitHubRepositoryClient {
         }
         return Number(created.id);
       } catch (error) {
-        if (error instanceof GitHubApiError && (error.status === 403 || error.status === 404)) {
+        if (error instanceof GitHubApiError && !error.rateLimit && (error.status === 403 || error.status === 404)) {
           throw new GitHubApiError(
             error.status,
             'GitHub denied repository webhook creation. Your account must own or have admin access to this repository. ' +
@@ -419,8 +421,8 @@ export class GitHubRepositoryClient {
       }
       return Number(updated.id);
     } catch (error) {
-      if (error instanceof GitHubApiError && error.status === 404) return create();
-      if (error instanceof GitHubApiError && error.status === 403) {
+      if (error instanceof GitHubApiError && !error.rateLimit && error.status === 404) return create();
+      if (error instanceof GitHubApiError && !error.rateLimit && error.status === 403) {
         throw new GitHubApiError(
           error.status,
           'GitHub denied repository webhook updates. Your account must own or have admin access to this repository. ' +
@@ -625,10 +627,18 @@ export class GitHubRepositoryClient {
     }
   }
 
+  private async waitForRateLimitPause(): Promise<void> {
+    while (this.rateLimitPauseUntil > Date.now()) {
+      const delayMs = this.rateLimitPauseUntil - Date.now();
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
   private async request(
     route: string,
     options: { method?: string; body?: string; accept?: string; timeoutMs?: number } = {},
   ): Promise<Response> {
+    await this.waitForRateLimitPause();
     const response = await this.fetcher(GITHUB_API_ROOT + route, {
       method: options.method || 'GET',
       headers: {
@@ -644,9 +654,76 @@ export class GitHubRepositoryClient {
       ),
     });
 
+    const now = Date.now();
+    const remainingHeader = response.headers.get('x-ratelimit-remaining');
+    const remaining = remainingHeader !== null && /^\d+$/.test(remainingHeader)
+      ? Number(remainingHeader)
+      : undefined;
+    const resetHeader = response.headers.get('x-ratelimit-reset');
+    const resetEpochSeconds = resetHeader !== null && /^\d+(?:\.\d+)?$/.test(resetHeader)
+      ? Number(resetHeader)
+      : undefined;
+    const resetAt = resetEpochSeconds !== undefined && Number.isFinite(resetEpochSeconds)
+      ? Math.ceil(resetEpochSeconds * 1_000)
+      : undefined;
+
+    // GitHub's primary limit is exhausted even when the current response
+    // succeeded. Pause the next request until the server's reset timestamp.
+    if (remaining === 0 && resetAt !== undefined && resetAt > now) {
+      this.rateLimitPauseUntil = Math.max(this.rateLimitPauseUntil, resetAt);
+    }
+
     if (!response.ok) {
       const body = await response.text();
       const message = parseErrorMessage(body, response.status);
+      const retryAfterHeader = response.headers.get('retry-after');
+      let retryAfterAt: number | undefined;
+      if (retryAfterHeader !== null) {
+        const retryAfterSeconds = Number(retryAfterHeader);
+        if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
+          retryAfterAt = now + Math.ceil(retryAfterSeconds * 1_000);
+        } else {
+          const retryAfterDate = Date.parse(retryAfterHeader);
+          if (Number.isFinite(retryAfterDate)) retryAfterAt = retryAfterDate;
+        }
+      }
+
+      const rateLimitMessage = /rate limit|abuse detection|temporarily blocked/i.test(message);
+      const isRateLimited = response.status === 429
+        || (response.status === 403
+          && (retryAfterAt !== undefined || remaining === 0 || rateLimitMessage));
+
+      if (isRateLimited) {
+        let retryAt: number;
+        let kind: 'primary' | 'secondary';
+        if (remaining === 0 && resetAt !== undefined && resetAt > now) {
+          retryAt = Math.max(retryAfterAt || 0, resetAt);
+          kind = 'primary';
+        } else if (retryAfterAt !== undefined) {
+          retryAt = retryAfterAt;
+          kind = 'secondary';
+        } else {
+          const backoffLevel = Math.min(this.secondaryRateLimitBackoff, 4);
+          const delayMs = Math.min(15 * 60_000, 60_000 * (2 ** backoffLevel));
+          this.secondaryRateLimitBackoff = Math.min(backoffLevel + 1, 4);
+          retryAt = now + delayMs;
+          kind = 'secondary';
+        }
+        this.rateLimitPauseUntil = Math.max(this.rateLimitPauseUntil, retryAt);
+        const rateLimit: GitHubApiRateLimit = {
+          retryAt: this.rateLimitPauseUntil,
+          kind,
+          ...(remaining === undefined ? {} : { remaining }),
+          ...(resetAt === undefined ? {} : { resetAt }),
+        };
+        throw new GitHubApiError(
+          response.status,
+          message + ' GitHub API requests are paused until ' +
+            new Date(rateLimit.retryAt).toISOString() + '.',
+          rateLimit,
+        );
+      }
+
       if (/protected branch|protected branch update failed/i.test(message)) {
         throw new GitHubApiError(
           response.status,
@@ -657,12 +734,27 @@ export class GitHubRepositoryClient {
       }
       throw new GitHubApiError(response.status, message);
     }
+
+    if (this.rateLimitPauseUntil <= Date.now()) {
+      this.secondaryRateLimitBackoff = 0;
+    }
     return response;
   }
 }
 
+export interface GitHubApiRateLimit {
+  retryAt: number;
+  kind: 'primary' | 'secondary';
+  remaining?: number;
+  resetAt?: number;
+}
+
 export class GitHubApiError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly rateLimit?: GitHubApiRateLimit,
+  ) {
     super(message);
     this.name = 'GitHubApiError';
   }

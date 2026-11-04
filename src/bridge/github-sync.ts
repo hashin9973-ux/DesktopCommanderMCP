@@ -40,13 +40,14 @@ interface BridgeCommandResultReference {
 interface BridgeResponseReference {
   id: string;
   request_hash: string;
+  status?: string;
   results?: BridgeCommandResultReference[];
   artifacts?: BridgeArtifactReference[];
   error?: string;
 }
 
 const MAX_GITHUB_BRIDGE_CHUNK_BYTES = 32 * 1024 * 1024;
-const MAX_GITHUB_INLINE_RESPONSE_BYTES = 32 * 1024 * 1024;
+const MAX_GITHUB_INLINE_RESPONSE_BYTES = 1_000_000;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -238,7 +239,7 @@ async function externalizeOversizedResponse(
   if (finalSize > MAX_GITHUB_INLINE_RESPONSE_BYTES) {
     throw new Error(
       'Response response-' + requestId + '.json remains ' + finalSize +
-      ' bytes after externalizing large result fields; it cannot fit within the safe 32 MiB GitHub upload target.',
+      ' bytes after externalizing large result fields; it cannot fit within the safe 1 MB GitHub upload target.',
     );
   }
   return changed;
@@ -394,6 +395,7 @@ async function uploadResponseArtifact(
 export class GitHubBridgeSync {
   private syncPromise?: Promise<void>;
   private syncRequestedWhileRunning = false;
+  private readonly observedRequestBlobShas = new Map<string, string>();
   constructor(
     private readonly client: GitHubRepositoryClient,
     private readonly paths: GitHubBridgeCachePaths,
@@ -497,6 +499,15 @@ export class GitHubBridgeSync {
       if (!match) continue;
       const requestId = match[1];
       const remoteResponse = remoteResponseByRequestId.get(requestId);
+      const previouslyObservedSha = this.observedRequestBlobShas.get(requestId);
+      const firstObservation = previouslyObservedSha === undefined;
+      if (previouslyObservedSha && previouslyObservedSha !== entry.sha && remoteResponse) {
+        console.warn(
+          'GitHub bridge: ignored updated ' + entry.name + ' because response-' + requestId +
+          '.json already exists. Request IDs cannot be reused; submit this work with a new ID.',
+        );
+      }
+      this.observedRequestBlobShas.set(requestId, entry.sha);
       if (remoteResponse) {
         // A response file is the durable completion marker. Never re-execute a
         // request ID that already has one, and do not download the historical
@@ -522,6 +533,9 @@ export class GitHubBridgeSync {
 
       if (!cached) {
         await writeFileAtomic(localPath, requestBytes);
+      }
+      if (firstObservation) {
+        console.log('GitHub bridge: ' + entry.name + ' is staged locally for execution.');
       }
     }
     // Artifacts must reach GitHub before the response file signals completion.
@@ -556,8 +570,8 @@ export class GitHubBridgeSync {
         }
         if (responseChanged) await writeFileAtomic(responsePath, responseBytes);
 
-        // Every uploaded file is kept at 32 MiB or less. This leaves room for
-        // base64 expansion in the GitHub Contents API request body.
+        // Keep artifact parts below the 50 MiB Contents API file limit, while
+        // avoiding a commit/push for every small slice of a large artifact.
         for (const artifact of response.artifacts || []) {
           await uploadResponseArtifact(this.client, this.paths, requestId, artifact);
         }
@@ -566,6 +580,10 @@ export class GitHubBridgeSync {
           'responses/' + entry.name,
           responseBytes,
           'Publish Desktop Commander bridge response ' + requestId,
+        );
+        console.log(
+          'GitHub bridge: published responses/' + entry.name + ' to GitHub' +
+          (typeof response.status === 'string' ? ' (' + response.status + ')' : '') + '.',
         );
 
         // The remote response is durable now. Remove local staging copies so the
