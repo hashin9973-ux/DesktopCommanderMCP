@@ -544,7 +544,7 @@ export class GitHubBridgeSync {
         const sourceResponseBytes = await fs.readFile(responsePath);
         let response: BridgeResponseReference;
         try {
-          response = JSON.parse(responseBytes.toString('utf8')) as BridgeResponseReference;
+          response = JSON.parse(sourceResponseBytes.toString('utf8')) as BridgeResponseReference;
         } catch {
           throw new Error('Local bridge response ' + entry.name + ' is not valid JSON.');
         }
