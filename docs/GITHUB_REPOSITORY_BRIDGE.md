@@ -82,6 +82,8 @@ On Windows, the local GitHub cache is under %LOCALAPPDATA%\DesktopCommanderBridg
 
 GitHub rate-limit responses are no longer retried on every poll. The bridge honors Retry-After and primary-limit reset headers, and uses increasing pauses when GitHub reports a secondary limit without a retry hint. The console error includes the next retry time.
 
+Request IDs are one-use idempotency keys. If responses/response-<id>.json already exists, a later request file with the same ID is skipped to prevent duplicate side effects. Do not overwrite an existing request file to retry different work; submit it under a new unique ID. While the bridge is running, it warns if it sees a changed request blob under an already-completed ID.
+
 ## Push notifications and Quick Tunnel
 
 GitHub mode uses a Cloudflare Quick Tunnel to receive signed GitHub push webhook deliveries without opening an inbound router port or requiring a Cloudflare account or custom domain. The local webhook server binds only to 127.0.0.1; the public tunnel exposes only a dedicated webhook route, not the Desktop Commander worker or tool interface.

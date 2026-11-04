@@ -395,6 +395,7 @@ async function uploadResponseArtifact(
 export class GitHubBridgeSync {
   private syncPromise?: Promise<void>;
   private syncRequestedWhileRunning = false;
+  private readonly observedRequestBlobShas = new Map<string, string>();
   constructor(
     private readonly client: GitHubRepositoryClient,
     private readonly paths: GitHubBridgeCachePaths,
@@ -498,6 +499,14 @@ export class GitHubBridgeSync {
       if (!match) continue;
       const requestId = match[1];
       const remoteResponse = remoteResponseByRequestId.get(requestId);
+      const previouslyObservedSha = this.observedRequestBlobShas.get(requestId);
+      if (previouslyObservedSha && previouslyObservedSha !== entry.sha && remoteResponse) {
+        console.warn(
+          'GitHub bridge: ignored updated ' + entry.name + ' because response-' + requestId +
+          '.json already exists. Request IDs cannot be reused; submit this work with a new ID.',
+        );
+      }
+      this.observedRequestBlobShas.set(requestId, entry.sha);
       if (remoteResponse) {
         // A response file is the durable completion marker. Never re-execute a
         // request ID that already has one, and do not download the historical

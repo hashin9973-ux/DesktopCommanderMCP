@@ -464,6 +464,27 @@ try {
     'unchanged completed requests should be skipped without downloading the request or response again');
   assert.equal(api.getRawReadCount('responses/response-sample-01.json'), 0);
 
+  // Overwriting a request after its response exists must not re-execute it.
+  // A changed blob under an already-completed ID should be explicitly diagnosed.
+  const reusedRequestBytes = Buffer.from(JSON.stringify({
+    protocol_version: 1,
+    id: 'sample-01',
+    commands: [{ tool: 'get_config', arguments: {} }],
+  }), 'utf8');
+  api.files.set(requestPath, { bytes: reusedRequestBytes, sha: gitBlobSha(reusedRequestBytes) });
+  const duplicateIdWarnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => duplicateIdWarnings.push(args.join(' '));
+  try {
+    await sync.syncOnce();
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(api.getRawReadCount(requestPath), 1,
+    'a reused completed request ID must not be downloaded or executed again');
+  assert.ok(duplicateIdWarnings.some((message) => message.toLowerCase().includes('request id') && message.toLowerCase().includes('cannot be reused')),
+    'overwriting a completed request ID while the bridge is running must produce an explicit warning');
+
   // Hold the first local response upload after syncInternal has taken its
   // response-directory snapshot. A second response arriving during that pass
   // must trigger a follow-up pass rather than waiting for the poll timer.
