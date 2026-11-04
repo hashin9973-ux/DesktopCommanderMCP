@@ -246,6 +246,7 @@ export interface QuickTunnelOptions {
   executablePath?: string;
   startupTimeoutMs?: number;
   spawnProcess?: typeof spawn;
+  signal?: AbortSignal;
   onExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
 }
 
@@ -298,25 +299,33 @@ export async function startCloudflareQuickTunnel(
     }, options.startupTimeoutMs ?? DEFAULT_TUNNEL_STARTUP_TIMEOUT_MS);
   });
 
+  let onAbort: () => void = () => {};
+  const removeAbortListener = () => {
+    options.signal?.removeEventListener('abort', onAbort);
+  };
   const fail = (error: Error) => {
     if (settled) return;
     settled = true;
     if (startupTimer) clearTimeout(startupTimer);
+    removeAbortListener();
     finishReject(error);
   };
-
+  onAbort = () => fail(new Error('Cloudflare Quick Tunnel startup was cancelled.'));
   const inspectOutput = (chunk: Buffer | string) => {
     output = (output + chunk.toString()).slice(-16_000);
     const url = extractQuickTunnelUrl(output);
     if (!settled && url) {
       settled = true;
       if (startupTimer) clearTimeout(startupTimer);
+      removeAbortListener();
       finishResolve(url);
     }
   };
 
   child.stdout?.on('data', inspectOutput);
   child.stderr?.on('data', inspectOutput);
+  options.signal?.addEventListener('abort', onAbort, { once: true });
+  if (options.signal?.aborted) onAbort();
   child.once('error', (error) => {
     fail(new Error(
       'Could not start cloudflared (' + executable + '): ' + error.message +

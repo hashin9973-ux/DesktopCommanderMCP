@@ -64,6 +64,10 @@ When a tool result is too large to embed in the response, the bridge writes the 
 When launched directly in an interactive terminal with no arguments, the portable executable offers **MCP**, **Cloud-folder bridge**, **GitHub repository bridge**, and **Local OpenAI-compatible API (KoboldCpp)**. MCP is the default selection. The Local API mode connects to a local model endpoint and executes Desktop Commander tools directly; it does not use this GitHub queue. See [Local OpenAI-compatible API mode](LOCAL_OPENAI_COMPATIBLE_API.md). When launched by an MCP host without an interactive terminal, the launcher starts standard MCP stdio mode without displaying a menu. Existing explicit `bridge --directory ...` invocations continue to use Cloud-folder Bridge.
 
 
+## Startup behavior
+
+After the saved GitHub session and repository have been validated, the local worker and five-second polling fallback start without waiting for the full queue scan or Cloudflare tunnel. Queue directory initialization, initial synchronization, and push-webhook setup continue in the background. When the tunnel and webhook are ready, the bridge switches to the configured reconciliation interval; if setup fails, it keeps polling. First-time browser sign-in and the required local security-consent prompts still need user interaction.
+
 ## Push notifications and Quick Tunnel
 
 GitHub mode uses a Cloudflare Quick Tunnel to receive signed GitHub push webhook deliveries without opening an inbound router port or requiring a Cloudflare account or custom domain. The local webhook server binds only to 127.0.0.1; the public tunnel exposes only a dedicated webhook route, not the Desktop Commander worker or tool interface.
