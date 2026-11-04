@@ -6,6 +6,10 @@ import process from 'node:process';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { writeFileAtomic } from '../utils/atomic-write.js';
 import { executeToolForBridge } from '../server.js';
+import { configManager } from '../config-manager.js';
+import { featureFlagManager } from '../utils/feature-flags.js';
+import { preloadFileSupport } from '../utils/files/index.js';
+import { ensureChromeAvailable } from '../tools/pdf/markdown.js';
 import { toolArgSchemas } from '../tools/schemas.js';
 
 export const DEFAULT_OPENAI_BASE_URL = 'http://127.0.0.1:5001/v1';
@@ -374,6 +378,7 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<string> {
           const args = parseFunctionArguments(call.function?.arguments);
           if (toolSupportsOrigin(name)) args.origin = 'llm';
           options.onToolCall?.(name, args);
+          if (name === 'write_pdf') await ensureChromeAvailable();
           const result = await (options.toolExecutor || executeToolForBridge)(name, args);
           resultText = formatToolResult(result);
         } catch (error) {
@@ -585,6 +590,11 @@ export async function runLocalApi(args: string[] = []): Promise<void> {
   console.log('Tools execute directly on this computer. No MCP transport, Cloud-folder queue, or GitHub repository is used.');
   console.log('API keys are read from the environment and are not saved.');
   console.log('For KoboldCpp tool calls, enable Jinja and Jinja for Tools when starting the server.');
+  await configManager.loadConfig();
+  await featureFlagManager.initialize();
+  await preloadFileSupport().catch((error: unknown) => {
+    console.warn('Optional document support failed to preload: ' + (error instanceof Error ? error.message : String(error)));
+  });
   await runConversation(
     baseUrl,
     model,
