@@ -78,7 +78,7 @@ The worker's Request <id>: completed log means the tool commands finished and a 
 - Worker completion, but no published log: the local response exists but GitHub synchronization has not published it; inspect the queue synchronization error.
 - Published log and matching responses/response-<id>.json on GitHub: the bridge completed the round trip. Failure to retrieve or continue from that response is on the agent/storage-connector side.
 
-On Windows, the local GitHub cache is under %LOCALAPPDATA%\\DesktopCommanderBridge\\github-cache\\<owner>--<repo>\\. The worker's durable per-request ledger is under %LOCALAPPDATA%\\DesktopCommanderBridge\\github-worker-state\\<owner>--<repo>\\localappdata\\DesktopCommanderBridge\\requests\\<id>.json; its updated_at and command states show the last recorded execution step. Never reuse a request ID for different content.
+On Windows, the local GitHub cache is under %LOCALAPPDATA%\DesktopCommanderBridge\github-cache\<owner>--<repo>\. The worker's durable per-request ledger is under %LOCALAPPDATA%\DesktopCommanderBridge\github-worker-state\<owner>--<repo>\localappdata\DesktopCommanderBridge\requests\<id>.json; its updated_at and command states show the last recorded execution step. Never reuse a request ID for different content.
 
 GitHub rate-limit responses are no longer retried on every poll. The bridge honors Retry-After and primary-limit reset headers, and uses increasing pauses when GitHub reports a secondary limit without a retry hint. The console error includes the next retry time.
 

@@ -289,6 +289,34 @@ assert.ok(Date.now() - rateLimitWaitStartedAt >= 800,
   'the next GitHub API request must honor Retry-After instead of immediately retrying');
 assert.equal(rateLimitCalls, 3);
 
+let primaryLimitCalls = 0;
+const primaryResetEpoch = Math.ceil(Date.now() / 1_000) + 1;
+const primaryRateLimitedClient = await GitHubRepositoryClient.connect('owner/repo', token, async () => {
+  primaryLimitCalls++;
+  if (primaryLimitCalls === 1) {
+    return new Response(JSON.stringify({
+      default_branch: 'main',
+      archived: false,
+      private: true,
+      permissions: { push: true },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return new Response('[]', {
+    status: 200,
+    headers: {
+      'content-type': 'application/json',
+      'x-ratelimit-remaining': '0',
+      'x-ratelimit-reset': String(primaryResetEpoch),
+    },
+  });
+});
+assert.deepEqual(await primaryRateLimitedClient.listDirectory('requests'), []);
+const primaryRateLimitWaitStartedAt = Date.now();
+assert.deepEqual(await primaryRateLimitedClient.listDirectory('responses'), []);
+assert.ok(Date.now() - primaryRateLimitWaitStartedAt >= 800,
+  'a successful response with zero primary quota remaining must pause the next API request');
+assert.equal(primaryLimitCalls, 3);
+
 const webhookSecret = 'a'.repeat(64);
 const initialHookId = await client.upsertPushWebhook(
   undefined,
