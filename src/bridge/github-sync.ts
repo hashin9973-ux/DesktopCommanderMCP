@@ -510,7 +510,7 @@ export class GitHubBridgeSync {
         const responseBytes = await this.client.readFile(remoteResponse.path);
         let response: BridgeResponseReference;
         try {
-          response = JSON.parse(sourceResponseBytes.toString('utf8')) as BridgeResponseReference;
+          response = JSON.parse(responseBytes.toString('utf8')) as BridgeResponseReference;
         } catch {
           throw new Error('Existing GitHub response ' + remoteResponse.path + ' is not valid JSON.');
         }
