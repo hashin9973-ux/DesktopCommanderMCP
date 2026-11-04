@@ -526,7 +526,7 @@ try {
   const reusedRequestBytes = Buffer.from(JSON.stringify({
     protocol_version: 1,
     id: 'sample-01',
-    commands: [{ tool: 'get_config', arguments: {} }],
+    commands: [{ tool: 'get_usage_stats', arguments: {} }],
   }), 'utf8');
   api.files.set(requestPath, { bytes: reusedRequestBytes, sha: gitBlobSha(reusedRequestBytes) });
   const duplicateIdWarnings = [];
