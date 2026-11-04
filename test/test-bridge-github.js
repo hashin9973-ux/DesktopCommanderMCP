@@ -550,10 +550,8 @@ try {
   );
   assert.ok(api.files.has('responses/response-' + validResponseId + '.json'),
     'a malformed response must not block another response from the same sync pass');
-  await assert.rejects(
-    () => fs.access(path.join(paths.responses, 'response-' + invalidResponseId + '.json')),
-    /ENOENT/.test(''),
-  ).catch(() => undefined);
+  await fs.access(path.join(paths.responses, 'response-' + invalidResponseId + '.json'));
+  await fs.rm(path.join(paths.responses, 'response-' + invalidResponseId + '.json'), { force: true });
 
   const restartRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-github-bridge-restart-'));
   try {
