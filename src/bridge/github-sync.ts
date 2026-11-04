@@ -47,6 +47,10 @@ interface BridgeResponseReference {
 const MAX_GITHUB_BRIDGE_CHUNK_BYTES = 32 * 1024 * 1024;
 const MAX_GITHUB_INLINE_RESPONSE_BYTES = 32 * 1024 * 1024;
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function readOptional(filePath: string): Promise<Buffer | null> {
   try {
     return await fs.readFile(filePath);
@@ -506,7 +510,7 @@ export class GitHubBridgeSync {
         const responseBytes = await this.client.readFile(remoteResponse.path);
         let response: BridgeResponseReference;
         try {
-          response = JSON.parse(responseBytes.toString('utf8')) as BridgeResponseReference;
+          response = JSON.parse(sourceResponseBytes.toString('utf8')) as BridgeResponseReference;
         } catch {
           throw new Error('Existing GitHub response ' + remoteResponse.path + ' is not valid JSON.');
         }
@@ -537,7 +541,7 @@ export class GitHubBridgeSync {
       const requestId = match[1];
       const responsePath = path.join(this.paths.responses, entry.name);
       try {
-        let responseBytes = await fs.readFile(responsePath);
+        const sourceResponseBytes = await fs.readFile(responsePath);
         let response: BridgeResponseReference;
         try {
           response = JSON.parse(responseBytes.toString('utf8')) as BridgeResponseReference;
@@ -551,7 +555,7 @@ export class GitHubBridgeSync {
 
         let responseChanged = await externalizeOversizedResponse(response, requestId, this.paths);
         responseChanged = (await prepareResponseArtifacts(response, requestId, this.paths)) || responseChanged;
-        responseBytes = serializeResponse(response);
+        const responseBytes = serializeResponse(response);
         if (responseBytes.length > MAX_GITHUB_BRIDGE_FILE_BYTES) {
           throw new Error('Response ' + entry.name + ' exceeds the 50 MiB GitHub bridge file limit after preparing its artifacts.');
         }
