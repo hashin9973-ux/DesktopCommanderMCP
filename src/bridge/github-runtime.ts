@@ -387,10 +387,6 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     settings.maxParallelRequests = maxParallelRequests;
     await writeJsonAtomic(settingsPath, settings);
 
-    let sync = new GitHubBridgeSync(client, paths);
-    await sync.initialize();
-    await sync.syncOnce();
-
     let lastSyncFailureMessage: string | undefined;
     const reportSyncFailure = (prefix: string, error: unknown): void => {
       const message = errorMessage(error);
@@ -401,6 +397,17 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       lastSyncFailureMessage = message;
       console.error(prefix + message);
     };
+
+    let sync = new GitHubBridgeSync(client, paths);
+    await sync.initialize();
+    try {
+      await sync.syncOnce();
+      lastSyncFailureMessage = undefined;
+    } catch (error) {
+      // A stale or malformed response must not prevent the local worker from
+      // starting. Keep it staged and let watcher/polling retry synchronization.
+      reportSyncFailure('GitHub queue synchronization failed; it will retry: ', error);
+    }
 
     let webhookActive = false;
     if (!options.disableWebhook) {
