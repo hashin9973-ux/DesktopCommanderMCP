@@ -204,10 +204,10 @@ async function externalizeOversizedResponse(
   }
 
   const finalSize = serializeResponse(response).length;
-  if (finalSize > MAX_GITHUB_BRIDGE_FILE_BYTES) {
+  if (finalSize > MAX_GITHUB_INLINE_RESPONSE_BYTES) {
     throw new Error(
       'Response response-' + requestId + '.json remains ' + finalSize +
-      ' bytes after externalizing large result fields; it cannot fit within the 50 MiB GitHub bridge file limit.',
+      ' bytes after externalizing large result fields; it cannot fit within the safe 32 MiB GitHub upload target.',
     );
   }
   return changed;
