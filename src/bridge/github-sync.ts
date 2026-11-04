@@ -562,17 +562,6 @@ export class GitHubBridgeSync {
           'Publish Desktop Commander bridge response ' + requestId,
         );
 
-        const requestEntry = remoteRequests.find((candidate) => {
-          const requestMatch = candidate.type === 'file' ? REQUEST_PATTERN.exec(candidate.name) : null;
-          return requestMatch?.[1] === requestId;
-        });
-        if (requestEntry) {
-          this.completedRequests.set(requestId, {
-            requestBlobSha: requestEntry.sha,
-            responseBlobSha: gitBlobSha(responseBytes),
-          });
-        }
-
         // The remote response is durable now. Remove local staging copies so the
         // cache does not grow forever; remote queue history remains untouched.
         await fs.rm(responsePath, { force: true });
