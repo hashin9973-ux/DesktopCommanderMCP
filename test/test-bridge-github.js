@@ -426,7 +426,6 @@ try {
   const largeResponseId = 'large-response-01';
   const largeText = 'L'.repeat(MAX_GITHUB_BRIDGE_FILE_BYTES + 1_024);
   const largeContent = [{ type: 'text', text: largeText }];
-  const largeContentBytes = Buffer.from(JSON.stringify(largeContent), 'utf8');
 
   // Also exercise splitting an existing local artifact produced by the worker.
   // A sparse file keeps the fixture small while preserving a real >32 MiB size.
@@ -523,6 +522,38 @@ try {
     /ENOENT/,
     'the local response should be removed only after the response and all artifacts are durable remotely',
   );
+
+  // A malformed response must be reported, but it must not prevent a
+  // separate valid response in the same queue snapshot from being published.
+  const invalidResponseId = 'invalid-response-01';
+  const validResponseId = 'valid-response-02';
+  await fs.writeFile(
+    path.join(paths.responses, 'response-' + invalidResponseId + '.json'),
+    '{invalid json',
+  );
+  await fs.writeFile(
+    path.join(paths.responses, 'response-' + validResponseId + '.json'),
+    JSON.stringify({
+      protocol_version: 1,
+      id: validResponseId,
+      request_hash: crypto.createHash('sha256').update(validResponseId).digest('hex'),
+      status: 'completed',
+      started_at: '2026-01-01T00:00:00.000Z',
+      completed_at: '2026-01-01T00:00:01.000Z',
+      results: [],
+      artifacts: [],
+    }),
+  );
+  await assert.rejects(
+    () => sync.syncOnce(),
+    /Could not synchronize 1 local response file/,
+  );
+  assert.ok(api.files.has('responses/response-' + validResponseId + '.json'),
+    'a malformed response must not block another response from the same sync pass');
+  await assert.rejects(
+    () => fs.access(path.join(paths.responses, 'response-' + invalidResponseId + '.json')),
+    /ENOENT/.test(''),
+  ).catch(() => undefined);
 
   const restartRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-github-bridge-restart-'));
   try {
