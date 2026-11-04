@@ -652,8 +652,8 @@ try {
       assert.ok(stored, 'each declared artifact part must be uploaded: ' + part.path);
       assert.equal(stored.bytes.length, part.bytes);
       assert.equal(crypto.createHash('sha256').update(stored.bytes).digest('hex'), part.sha256);
-      assert.ok(stored.bytes.length <= 1_000_000,
-        'each uploaded artifact file must remain within GitHub recommended 1 MB object size');
+      assert.ok(stored.bytes.length <= 32 * 1024 * 1024,
+        'each uploaded artifact file must remain under the 32 MiB Contents API transport chunk size');
       return stored.bytes;
     });
     const reconstructed = Buffer.concat(chunks);

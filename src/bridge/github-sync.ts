@@ -46,7 +46,7 @@ interface BridgeResponseReference {
   error?: string;
 }
 
-const MAX_GITHUB_BRIDGE_CHUNK_BYTES = 1_000_000;
+const MAX_GITHUB_BRIDGE_CHUNK_BYTES = 32 * 1024 * 1024;
 const MAX_GITHUB_INLINE_RESPONSE_BYTES = 1_000_000;
 
 function errorMessage(error: unknown): string {
@@ -570,8 +570,8 @@ export class GitHubBridgeSync {
         }
         if (responseChanged) await writeFileAtomic(responsePath, responseBytes);
 
-        // Every uploaded artifact is kept at 1 MB or less to match GitHub's
-        // recommended maximum Git object size and leave room for base64 encoding.
+        // Keep artifact parts below the 50 MiB Contents API file limit, while
+        // avoiding a commit/push for every small slice of a large artifact.
         for (const artifact of response.artifacts || []) {
           await uploadResponseArtifact(this.client, this.paths, requestId, artifact);
         }
