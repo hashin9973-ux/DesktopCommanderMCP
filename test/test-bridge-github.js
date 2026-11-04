@@ -662,6 +662,44 @@ try {
     return reconstructed;
   };
 
+  // The new automatic-dump threshold is 1 MB, not the old 32 MiB threshold.
+  const autoDumpId = 'auto-dump-01';
+  const autoDumpText = 'D'.repeat(1_000_100);
+  const autoDumpResponsePath = path.join(paths.responses, 'response-' + autoDumpId + '.json');
+  await fs.writeFile(autoDumpResponsePath, JSON.stringify({
+    protocol_version: 1,
+    id: autoDumpId,
+    request_hash: crypto.createHash('sha256').update(autoDumpId).digest('hex'),
+    status: 'completed',
+    started_at: '2026-01-01T00:00:00.000Z',
+    completed_at: '2026-01-01T00:00:01.000Z',
+    results: [{
+      index: 0,
+      tool: 'read_file',
+      status: 'succeeded',
+      isError: false,
+      content: [{ type: 'text', text: autoDumpText }],
+    }],
+    artifacts: [],
+  }));
+  await sync.syncOnce();
+  const autoDumpRemotePath = 'responses/response-' + autoDumpId + '.json';
+  const autoDumpMarker = api.files.get(autoDumpRemotePath)?.bytes;
+  assert.ok(autoDumpMarker, 'a response slightly over 1 MB must still publish a completion marker');
+  assert.ok(autoDumpMarker.length <= 1_000_000,
+    'the serialized response marker must be capped at 1 MB by automatic dumping');
+  const autoDumpPublished = JSON.parse(autoDumpMarker.toString('utf8'));
+  const autoDumpReference = autoDumpPublished.results[0].artifacts.find((artifact) => artifact.mimeType === 'application/json');
+  assert.ok(autoDumpReference, 'the oversized result must be replaced by a JSON artifact reference');
+  const autoDumpContentBytes = autoDumpReference.parts
+    ? reconstructArtifact(autoDumpReference)
+    : api.files.get(autoDumpReference.path).bytes;
+  assert.deepEqual(
+    JSON.parse(autoDumpContentBytes.toString('utf8')),
+    [{ type: 'text', text: autoDumpText }],
+    'automatic dumping must preserve the complete original tool content',
+  );
+
   assert.deepEqual(
     JSON.parse(reconstructArtifact(contentArtifact).toString('utf8')),
     largeContent,
