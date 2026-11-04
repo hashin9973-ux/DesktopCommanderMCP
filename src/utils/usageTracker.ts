@@ -1,5 +1,6 @@
 import { configManager } from '../config-manager.js';
 import { capture } from './capture.js';
+import { logger } from './logger.js';
 
 export interface ToolUsageStats {
   // Tool category counters
@@ -207,7 +208,7 @@ class UsageTracker {
       }
     } catch (error) {
       // If we can't import server, continue with other checks
-      console.log('[FEEDBACK DEBUG] Could not check client name, continuing...');
+      logger.debug('Could not check client name; continuing with feedback prompt checks.', { error: error instanceof Error ? error.message : String(error) });
     }
 
     const stats = await this.getStats();
