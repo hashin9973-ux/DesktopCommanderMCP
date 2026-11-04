@@ -299,6 +299,7 @@ export async function startCloudflareQuickTunnel(
     }, options.startupTimeoutMs ?? DEFAULT_TUNNEL_STARTUP_TIMEOUT_MS);
   });
 
+  let onAbort = () => undefined;
   const removeAbortListener = () => {
     options.signal?.removeEventListener('abort', onAbort);
   };
@@ -309,7 +310,7 @@ export async function startCloudflareQuickTunnel(
     removeAbortListener();
     finishReject(error);
   };
-  const onAbort = () => fail(new Error('Cloudflare Quick Tunnel startup was cancelled.'));
+  onAbort = () => fail(new Error('Cloudflare Quick Tunnel startup was cancelled.'));
   const inspectOutput = (chunk: Buffer | string) => {
     output = (output + chunk.toString()).slice(-16_000);
     const url = extractQuickTunnelUrl(output);
