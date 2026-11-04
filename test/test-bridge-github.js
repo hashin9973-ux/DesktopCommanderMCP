@@ -415,6 +415,32 @@ try {
   assert.equal(api.getRawReadCount(requestPath), 1,
     'unchanged staged requests should not be downloaded again on every poll');
 
+  const cachedRequestId = 'cached-at-startup';
+  const cachedRequestPath = 'requests/request-' + cachedRequestId + '.json';
+  const cachedRequestBytes = Buffer.from('already staged request bytes');
+  api.files.set(cachedRequestPath, {
+    bytes: cachedRequestBytes,
+    sha: gitBlobSha(cachedRequestBytes),
+  });
+  await fs.writeFile(
+    path.join(paths.requests, 'request-' + cachedRequestId + '.json'),
+    cachedRequestBytes,
+  );
+  const cachedStartupSync = new GitHubBridgeSync(client, paths);
+  const stagingLogs = [];
+  const originalLog = console.log;
+  console.log = (...args) => stagingLogs.push(args.join(' '));
+  try {
+    await cachedStartupSync.syncOnce();
+    await cachedStartupSync.syncOnce();
+  } finally {
+    console.log = originalLog;
+  }
+  assert.equal(api.getRawReadCount(cachedRequestPath), 0,
+    'a verified local cache entry must not be downloaded again after restart');
+  assert.equal(stagingLogs.filter((message) => message.includes('request-' + cachedRequestId) && message.includes('staged locally')).length, 1,
+    'a cached request should produce one staging checkpoint when first observed');
+
   const artifactPath = 'artifacts/sample-01/output.bin';
   const artifactBytes = Buffer.from([0, 1, 2, 3, 255]);
   const localArtifactPath = path.join(paths.root, ...artifactPath.split('/'));

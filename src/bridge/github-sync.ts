@@ -500,6 +500,7 @@ export class GitHubBridgeSync {
       const requestId = match[1];
       const remoteResponse = remoteResponseByRequestId.get(requestId);
       const previouslyObservedSha = this.observedRequestBlobShas.get(requestId);
+      const firstObservation = previouslyObservedSha === undefined;
       if (previouslyObservedSha && previouslyObservedSha !== entry.sha && remoteResponse) {
         console.warn(
           'GitHub bridge: ignored updated ' + entry.name + ' because response-' + requestId +
@@ -532,7 +533,9 @@ export class GitHubBridgeSync {
 
       if (!cached) {
         await writeFileAtomic(localPath, requestBytes);
-        console.log('GitHub bridge: staged ' + entry.name + ' from GitHub for local execution.');
+      }
+      if (firstObservation) {
+        console.log('GitHub bridge: ' + entry.name + ' is staged locally for execution.');
       }
     }
     // Artifacts must reach GitHub before the response file signals completion.

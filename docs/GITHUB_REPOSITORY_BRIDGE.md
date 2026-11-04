@@ -70,7 +70,7 @@ After the saved GitHub session and repository have been validated, the local wor
 
 ## Diagnosing a request that appears stuck
 
-The worker's Request <id>: completed log means the tool commands finished and a response was written to the local cache. It does not, by itself, prove that GitHub received the response or that the agent retrieved it. The GitHub bridge now logs both staged request-<id> (downloaded from GitHub to the local worker) and published responses/response-<id>.json (uploaded to GitHub). Compare the exact request ID across those messages:
+The worker's Request <id>: completed log means the tool commands finished and a response was written to the local cache. It does not, by itself, prove that GitHub received the response or that the agent retrieved it. The GitHub bridge now logs both staged request-<id> (downloaded from GitHub or verified as already present in the local worker cache) and published responses/response-<id>.json (uploaded to GitHub). Compare the exact request ID across those messages:
 
 - No request file in GitHub's requests/: the agent or its storage connector did not submit the request.
 - Request in GitHub, but no staged log: the bridge has not downloaded it; inspect synchronization errors and API rate-limit pauses.
