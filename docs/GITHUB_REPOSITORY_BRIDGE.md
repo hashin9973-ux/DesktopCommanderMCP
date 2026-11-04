@@ -47,6 +47,9 @@ Requests use protocol version 1 and the same command/tool schemas as Cloud-folde
 
 Artifacts are uploaded before the response file. The response file is the durable completion marker. Files are committed directly to the repository's existing default branch. The bridge does not create branches, pull requests, or edit application source files.
 
+When a tool result is too large to embed in the response, the bridge writes the complete original result content to an `application/json` artifact and replaces the inline content with a notice that the output was too large and moved to the referenced artifact. The artifact reference appears in the command result and at the response level. For chunked artifacts, retrieve every file in `parts` order, concatenate the exact bytes, and validate the combined `bytes` and `sha256` before parsing the JSON. The generated AI-facing `README.md` is not modified to handle this case; the retrieval notice is part of the response itself.
+
+
 ## Requirements and limitations
 
 - The selected repository must allow direct writes to its default branch. A public repository requires an additional interactive confirmation because anyone can read its queue contents; the automatically-created option is always private. A branch rule that requires pull requests is incompatible with this no-branches design.
