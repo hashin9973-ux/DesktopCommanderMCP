@@ -58,7 +58,7 @@ Artifacts are uploaded before the response file. The response file is the durabl
 
 ## Startup modes
 
-When launched directly in an interactive terminal with no arguments, the portable executable offers **MCP**, **Cloud-folder bridge**, and **GitHub repository bridge**. MCP is the default selection. When launched by an MCP host without an interactive terminal, the launcher starts standard MCP stdio mode without displaying a menu. Existing explicit `bridge --directory ...` invocations continue to use Cloud-folder Bridge.
+When launched directly in an interactive terminal with no arguments, the portable executable offers **MCP**, **Cloud-folder bridge**, **GitHub repository bridge**, and **Local OpenAI-compatible API (KoboldCpp)**. MCP is the default selection. The Local API mode connects to a local model endpoint and executes Desktop Commander tools directly; it does not use this GitHub queue. See [Local OpenAI-compatible API mode](LOCAL_OPENAI_COMPATIBLE_API.md). When launched by an MCP host without an interactive terminal, the launcher starts standard MCP stdio mode without displaying a menu. Existing explicit `bridge --directory ...` invocations continue to use Cloud-folder Bridge.
 
 
 ## Push notifications and Quick Tunnel
