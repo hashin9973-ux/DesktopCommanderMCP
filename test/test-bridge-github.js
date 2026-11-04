@@ -481,7 +481,7 @@ try {
     'the response marker must stay below the GitHub per-file limit');
   const publishedLargeResponse = JSON.parse(publishedLargeResponseBytes.toString('utf8'));
   const publishedLargeResult = publishedLargeResponse.results[0];
-  assert.match(publishedLargeResult.content[0].text, /saved as a JSON artifact/,
+  assert.match(publishedLargeResult.content[0].text, /too large to include in the response and was moved to a JSON artifact/,
     'oversized text content should be replaced with a retrieval instruction');
   const contentArtifact = publishedLargeResult.artifacts.find((artifact) => artifact.mimeType === 'application/json');
   assert.ok(contentArtifact?.parts?.length >= 2,
