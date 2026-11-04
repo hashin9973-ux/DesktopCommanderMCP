@@ -68,6 +68,20 @@ When launched directly in an interactive terminal with no arguments, the portabl
 
 After the saved GitHub session and repository have been validated, the local worker and five-second polling fallback start without waiting for the full queue scan or Cloudflare tunnel. Queue directory initialization, initial synchronization, and push-webhook setup continue in the background. When the tunnel and webhook are ready, the bridge switches to the configured reconciliation interval; if setup fails, it keeps polling. First-time browser sign-in and the required local security-consent prompts still need user interaction.
 
+## Diagnosing a request that appears stuck
+
+The worker's Request <id>: completed log means the tool commands finished and a response was written to the local cache. It does not, by itself, prove that GitHub received the response or that the agent retrieved it. The GitHub bridge now logs both staged request-<id> (downloaded from GitHub to the local worker) and published responses/response-<id>.json (uploaded to GitHub). Compare the exact request ID across those messages:
+
+- No request file in GitHub's requests/: the agent or its storage connector did not submit the request.
+- Request in GitHub, but no staged log: the bridge has not downloaded it; inspect synchronization errors and API rate-limit pauses.
+- Staged log, but no worker completion for that ID: the local worker or an executing tool is still processing it, or the worker stopped.
+- Worker completion, but no published log: the local response exists but GitHub synchronization has not published it; inspect the queue synchronization error.
+- Published log and matching responses/response-<id>.json on GitHub: the bridge completed the round trip. Failure to retrieve or continue from that response is on the agent/storage-connector side.
+
+On Windows, the local GitHub cache is under %LOCALAPPDATA%\\DesktopCommanderBridge\\github-cache\\<owner>--<repo>\\. The worker's durable per-request ledger is under %LOCALAPPDATA%\\DesktopCommanderBridge\\github-worker-state\\<owner>--<repo>\\localappdata\\DesktopCommanderBridge\\requests\\<id>.json; its updated_at and command states show the last recorded execution step. Never reuse a request ID for different content.
+
+GitHub rate-limit responses are no longer retried on every poll. The bridge honors Retry-After and primary-limit reset headers, and uses increasing pauses when GitHub reports a secondary limit without a retry hint. The console error includes the next retry time.
+
 ## Push notifications and Quick Tunnel
 
 GitHub mode uses a Cloudflare Quick Tunnel to receive signed GitHub push webhook deliveries without opening an inbound router port or requiring a Cloudflare account or custom domain. The local webhook server binds only to 127.0.0.1; the public tunnel exposes only a dedicated webhook route, not the Desktop Commander worker or tool interface.

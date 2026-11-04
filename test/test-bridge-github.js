@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { GitHubRepositoryClient, MAX_GITHUB_BRIDGE_FILE_BYTES } from '../dist/bridge/github.js';
+import { GitHubApiError, GitHubRepositoryClient, MAX_GITHUB_BRIDGE_FILE_BYTES } from '../dist/bridge/github.js';
 import { createGuideIfMissing } from '../dist/bridge/runtime.js';
 import { GitHubBridgeSync } from '../dist/bridge/github-sync.js';
 
@@ -251,6 +251,43 @@ await assert.rejects(
 );
 const publicClient = await GitHubRepositoryClient.connect('public/repo', token, api.fetcher);
 assert.equal(publicClient.isPrivate, false, 'public repository visibility must be returned for startup consent');
+
+let rateLimitCalls = 0;
+const rateLimitedClient = await GitHubRepositoryClient.connect('owner/repo', token, async () => {
+  rateLimitCalls++;
+  if (rateLimitCalls === 1) {
+    return new Response(JSON.stringify({
+      default_branch: 'main',
+      archived: false,
+      private: true,
+      permissions: { push: true },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  if (rateLimitCalls === 2) {
+    return new Response(JSON.stringify({ message: 'You have exceeded a secondary rate limit.' }), {
+      status: 403,
+      headers: { 'content-type': 'application/json', 'retry-after': '1' },
+    });
+  }
+  return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
+});
+await assert.rejects(
+  () => rateLimitedClient.listDirectory('requests'),
+  (error) => {
+    assert.ok(error instanceof GitHubApiError);
+    assert.equal(error.rateLimit?.kind, 'secondary');
+    assert.ok(Number.isFinite(error.rateLimit?.retryAt));
+    assert.match(error.message, /paused until/);
+    return true;
+  },
+  'secondary rate-limit responses should expose their retry time',
+);
+const rateLimitWaitStartedAt = Date.now();
+const recoveredListing = await rateLimitedClient.listDirectory('requests');
+assert.deepEqual(recoveredListing, []);
+assert.ok(Date.now() - rateLimitWaitStartedAt >= 800,
+  'the next GitHub API request must honor Retry-After instead of immediately retrying');
+assert.equal(rateLimitCalls, 3);
 
 const webhookSecret = 'a'.repeat(64);
 const initialHookId = await client.upsertPushWebhook(

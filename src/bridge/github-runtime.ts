@@ -396,6 +396,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     await writeJsonAtomic(settingsPath, settings);
 
     let lastSyncFailureMessage: string | undefined;
+    let syncPollPromise: Promise<void> | undefined;
     const reportSyncFailure = (prefix: string, error: unknown): void => {
       const message = errorMessage(error);
       if (lastSyncFailureMessage === message) return;
@@ -416,14 +417,22 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       await queueInitializationPromise;
     };
 
-    const syncPoll = async (): Promise<void> => {
-      try {
-        await ensureQueueInitialized();
-        await sync.syncOnce();
-        lastSyncFailureMessage = undefined;
-      } catch (error) {
-        reportSyncFailure('GitHub queue synchronization failed; it will retry: ', error);
-      }
+    const syncPoll = (): Promise<void> => {
+      if (syncPollPromise) return syncPollPromise;
+      let running: Promise<void>;
+      running = (async () => {
+        try {
+          await ensureQueueInitialized();
+          await sync.syncOnce();
+          lastSyncFailureMessage = undefined;
+        } catch (error) {
+          reportSyncFailure('GitHub queue synchronization failed; it will retry: ', error);
+        }
+      })().finally(() => {
+        if (syncPollPromise === running) syncPollPromise = undefined;
+      });
+      syncPollPromise = running;
+      return running;
     };
 
     const setPollingInterval = (intervalMs: number): void => {

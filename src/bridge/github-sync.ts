@@ -40,6 +40,7 @@ interface BridgeCommandResultReference {
 interface BridgeResponseReference {
   id: string;
   request_hash: string;
+  status?: string;
   results?: BridgeCommandResultReference[];
   artifacts?: BridgeArtifactReference[];
   error?: string;
@@ -522,6 +523,7 @@ export class GitHubBridgeSync {
 
       if (!cached) {
         await writeFileAtomic(localPath, requestBytes);
+        console.log('GitHub bridge: staged ' + entry.name + ' from GitHub for local execution.');
       }
     }
     // Artifacts must reach GitHub before the response file signals completion.
@@ -566,6 +568,10 @@ export class GitHubBridgeSync {
           'responses/' + entry.name,
           responseBytes,
           'Publish Desktop Commander bridge response ' + requestId,
+        );
+        console.log(
+          'GitHub bridge: published responses/' + entry.name + ' to GitHub' +
+          (typeof response.status === 'string' ? ' (' + response.status + ')' : '') + '.',
         );
 
         // The remote response is durable now. Remove local staging copies so the
