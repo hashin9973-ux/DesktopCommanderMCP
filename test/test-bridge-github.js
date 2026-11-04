@@ -125,6 +125,9 @@ function createGitHubApiDouble() {
     if (url.pathname === '/repos/owner/repo/contents/responses' && method === 'GET') {
       return directoryListing('responses');
     }
+    if (url.pathname === '/repos/owner/repo/contents/artifacts' && method === 'GET') {
+      return directoryListing('artifacts');
+    }
 
     if (repoPath && method === 'GET') {
       const value = files.get(repoPath);
@@ -569,15 +572,15 @@ try {
       /ENOENT/,
       'a request with an existing remote response must not be staged again after restart',
     );
-    assert.equal(api.getRawReadCount(requestPath), 2,
-      'a restarted bridge should verify an existing request once');
-    assert.equal(api.getRawReadCount('responses/response-sample-01.json'), 1,
-      'a restarted bridge should verify an existing response once');
+    assert.equal(api.getRawReadCount(requestPath), 1,
+      'a restarted bridge must not download a request whose response completion marker already exists');
+    assert.equal(api.getRawReadCount('responses/response-sample-01.json'), 0,
+      'a restarted bridge must not download historical completed responses');
     await restartedSync.syncOnce();
-    assert.equal(api.getRawReadCount(requestPath), 2,
-      'the restarted bridge should cache the completed request blob SHA');
-    assert.equal(api.getRawReadCount('responses/response-sample-01.json'), 1,
-      'the restarted bridge should cache the completed response blob SHA');
+    assert.equal(api.getRawReadCount(requestPath), 1,
+      'completed request history must remain excluded from every later synchronization');
+    assert.equal(api.getRawReadCount('responses/response-sample-01.json'), 0,
+      'completed response history must remain excluded from every later synchronization');
   } finally {
     await fs.rm(restartRoot, { recursive: true, force: true });
   }
