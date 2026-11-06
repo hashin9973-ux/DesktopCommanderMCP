@@ -40,6 +40,8 @@ Execute long-running terminal commands on your computer and manage processes thr
 ## Features
 
 - **Remote AI Control** - Use Desktop Commander from ChatGPT, Claude web, and other AI services via [Remote MCP](https://mcp.desktopcommander.app)
+- **GitHub Repository Bridge** - Submit local tool requests through a GitHub mailbox with signed webhook acceleration, five-second polling fallback, per-request lifecycle status, worker heartbeat, and verified response artifacts. See [GitHub Repository Bridge](docs/GITHUB_REPOSITORY_BRIDGE.md).
+- **Local OpenAI-compatible API** - Connect local tool-calling models such as KoboldCpp to Desktop Commander without MCP or a remote relay. See [Local API mode](docs/LOCAL_OPENAI_COMPATIBLE_API.md).
 - **File Preview UI** - Visual file previews in Claude Desktop with rendered markdown, inline images, expandable content, built-in markdown editor, and quick "Open in folder" access
 - **Enhanced terminal commands with interactive process control**
 - **Execute code in memory (Python, Node.js, R) without saving files**

@@ -32,6 +32,20 @@ interface StoredBridgeSettings {
   [key: string]: unknown;
 }
 
+export function resolveGitHubPollIntervalMs(
+  option: number | undefined,
+  settings: Pick<StoredBridgeSettings, 'githubReconcilePollIntervalMs' | 'githubPollIntervalMs'>,
+): number {
+  if (option !== undefined) return option;
+  const saved = Number(settings.githubReconcilePollIntervalMs);
+  // 60 seconds was the former default. Migrate that default to five seconds;
+  // users who need a slower interval can still opt in through the CLI.
+  if (Number.isInteger(saved) && saved >= 1_000 && saved <= 60_000 && saved !== 60_000) return saved;
+  const legacy = Number(settings.githubPollIntervalMs);
+  if (Number.isInteger(legacy) && legacy >= 1_000 && legacy <= 60_000 && legacy !== 5_000) return legacy;
+  return 5_000;
+}
+
 interface GitHubCliOptions {
   repository?: string;
   createRepository?: string;
@@ -98,7 +112,7 @@ function printHelp(): void {
     'Options:',
     '  --github-repository <owner/name>  Connect to an existing writable repository',
     '  --create-github-repository <name> Create a new private repository for your account',
-    '  --poll-interval-ms <n>            Reconciliation poll interval (default 60000 with webhooks; minimum 1000)',
+    '  --poll-interval-ms <n>            Reconciliation and fallback poll interval (default 5000; minimum 1000)',
     '  --no-github-webhook               Disable push notifications and use polling only',
     '  --max-parallel <n>                Concurrent request-file limit; 0 means unlimited',
     '  -h, --help                        Show this help',
@@ -246,7 +260,7 @@ async function startWorker(
   cacheRoot: string,
   workerStateRoot: string,
   maxParallelRequests: number,
-): Promise<ChildProcess> {
+): Promise<{ child: ChildProcess; exitPromise: Promise<number> }> {
   const workerLocalAppData = path.join(workerStateRoot, 'localappdata');
   const workerXdgStateHome = path.join(workerStateRoot, 'xdg-state');
   const workerStateDir = process.platform === 'win32'
@@ -281,7 +295,14 @@ async function startWorker(
     stdio: 'inherit',
     windowsHide: false,
   });
-  return child;
+  const exitPromise = new Promise<number>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code) => resolve(code === null ? 1 : code));
+  });
+  // Mark the rejection handled immediately; the parent still awaits this same
+  // promise and propagates the spawn error through its normal cleanup path.
+  void exitPromise.catch(() => undefined);
+  return { child, exitPromise };
 }
 
 export async function runGitHubBridge(args: string[] = []): Promise<void> {
@@ -296,22 +317,25 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
   const releaseLock = await acquireBridgeLock(stateDir);
   let child: ChildProcess | undefined;
   let pollTimer: NodeJS.Timeout | undefined;
+  let heartbeatTimer: NodeJS.Timeout | undefined;
   let responseWatcher: FSWatcher | undefined;
+  let statusWatcher: FSWatcher | undefined;
   let webhookServer: GitHubWebhookServer | undefined;
   let quickTunnel: QuickTunnel | undefined;
   let webhookSetupPromise: Promise<void> | undefined;
   let stopping = false;
-  let quickTunnelExited = false;
-  let webhookActive = false;
-  let responseWatcherHealthy = false;
   const tunnelStartupAbort = new AbortController();
+  let writeWorkerHeartbeat: ((state: 'ONLINE' | 'OFFLINE') => Promise<void>) | undefined;
+  let finalStatusSync: (() => Promise<void>) | undefined;
 
   const stopWorker = () => {
     if (stopping) return;
     stopping = true;
     tunnelStartupAbort.abort();
     if (pollTimer) clearInterval(pollTimer);
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
     responseWatcher?.close();
+    statusWatcher?.close();
     if (child && child.exitCode === null && !child.killed) {
       child.kill('SIGTERM');
     }
@@ -367,23 +391,14 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       requests: path.join(cacheRoot, 'requests'),
       responses: path.join(cacheRoot, 'responses'),
       artifacts: path.join(cacheRoot, 'artifacts'),
+      status: path.join(cacheRoot, 'status'),
     };
     const workerStateRoot = path.join(stateDir, 'github-worker-state', slug);
 
-    // With webhooks enabled, this is only a slow reconciliation safety net.
-    // Until the tunnel is live (or when it fails), use the faster fallback.
-    const savedReconcileInterval = Number(settings.githubReconcilePollIntervalMs);
-    const legacyInterval = Number(settings.githubPollIntervalMs);
-    const pollIntervalMs = options.pollIntervalMs
-      ?? (Number.isInteger(savedReconcileInterval) && savedReconcileInterval >= 1_000 && savedReconcileInterval <= 60_000
-        ? savedReconcileInterval
-        : Number.isInteger(legacyInterval) && legacyInterval >= 1_000 && legacyInterval <= 60_000 && legacyInterval !== 5_000
-          ? legacyInterval
-          : 60_000);
-    const fallbackPollIntervalMs = options.pollIntervalMs
-      ?? (Number.isInteger(legacyInterval) && legacyInterval >= 1_000 && legacyInterval <= 60_000
-        ? legacyInterval
-        : 5_000);
+    // Webhooks are a latency optimization. Five-second polling remains active
+    // even when a tunnel and webhook appear healthy.
+    const pollIntervalMs = resolveGitHubPollIntervalMs(options.pollIntervalMs, settings);
+    const fallbackPollIntervalMs = pollIntervalMs;
     const maxParallelRequests = options.maxParallelRequests
       ?? (Number.isInteger(settings.maxParallelRequests) && Number(settings.maxParallelRequests) >= 0
         ? Number(settings.maxParallelRequests)
@@ -404,6 +419,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     };
 
     let sync = new GitHubBridgeSync(client, paths);
+    finalStatusSync = () => sync.syncOnce();
     let queueInitialized = false;
     let queueInitializationPromise: Promise<void> | undefined;
     const ensureQueueInitialized = async (): Promise<void> => {
@@ -432,11 +448,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       pollTimer = setInterval(() => { void syncPoll(); }, intervalMs);
     };
     const switchToFallbackPolling = (): void => setPollingInterval(fallbackPollIntervalMs);
-    const switchToReconciliationPolling = (): void => {
-      if (webhookActive && responseWatcherHealthy && !quickTunnelExited) {
-        setPollingInterval(pollIntervalMs);
-      }
-    };
+    const switchToReconciliationPolling = (): void => setPollingInterval(pollIntervalMs);
 
     // Prepare only local folders before starting the worker. GitHub directory
     // creation, guide publication, and historical sync run after startup.
@@ -444,35 +456,62 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       fs.mkdir(paths.requests, { recursive: true }),
       fs.mkdir(paths.responses, { recursive: true }),
       fs.mkdir(paths.artifacts, { recursive: true }),
+      fs.mkdir(paths.status, { recursive: true }),
     ]);
 
     try {
       responseWatcher = watch(paths.responses, { persistent: true }, () => { void syncPoll(); });
-      responseWatcherHealthy = true;
       responseWatcher.on('error', (error) => {
-        responseWatcherHealthy = false;
-        console.warn('Local GitHub response-folder watcher failed; switching to polling: ' + error.message);
+        console.warn('Local GitHub response-folder watcher failed; five-second polling remains active: ' + error.message);
         switchToFallbackPolling();
       });
     } catch (error) {
-      console.warn('Could not watch local GitHub responses; polling will also upload completed responses: ' + errorMessage(error));
+      console.warn('Could not watch local GitHub responses; five-second polling will also upload completed responses: ' + errorMessage(error));
     }
+
+    try {
+      statusWatcher = watch(paths.status, { persistent: true }, () => { void syncPoll(); });
+      statusWatcher.on('error', (error) => {
+        console.warn('Local GitHub status-folder watcher failed; five-second polling remains active: ' + error.message);
+        switchToFallbackPolling();
+      });
+    } catch (error) {
+      console.warn('Could not watch local GitHub statuses; five-second polling will also publish lifecycle updates: ' + errorMessage(error));
+    }
+
+    const heartbeatWriter = async (state: 'ONLINE' | 'OFFLINE'): Promise<void> => {
+      const heartbeat = {
+        protocol_version: 1,
+        type: 'worker_heartbeat',
+        repository,
+        default_branch: client.defaultBranch,
+        state,
+        updated_at: new Date().toISOString(),
+      };
+      await writeFileAtomic(path.join(paths.status, 'worker.json'), JSON.stringify(heartbeat, null, 2));
+    };
+    writeWorkerHeartbeat = heartbeatWriter;
 
     console.log('');
     console.log('Desktop Commander GitHub Repository Bridge is starting.');
     console.log('Repository: ' + repository);
     console.log('Default branch: ' + client.defaultBranch);
-    console.log('Local worker starts immediately; queue synchronization and webhook setup run in the background.');
+    console.log('Local worker starts immediately; five-second reconciliation continues even when webhook notifications are enabled.');
     console.log('Files are committed directly to the existing default branch. No branches or pull requests are created.');
     console.log('Press Ctrl+C to stop.');
     console.log('');
 
-    child = await startWorker(cacheRoot, workerStateRoot, maxParallelRequests);
+    const startedWorker = await startWorker(cacheRoot, workerStateRoot, maxParallelRequests);
+    child = startedWorker.child;
+    const childExitPromise = startedWorker.exitPromise;
     process.once('SIGINT', stopWorker);
     process.once('SIGTERM', stopWorker);
-    child.once('error', (error) => {
-      console.error('Could not start the local Desktop Commander worker: ' + error.message);
-    });
+    await heartbeatWriter('ONLINE');
+    heartbeatTimer = setInterval(() => {
+      void heartbeatWriter('ONLINE')
+        .then(() => syncPoll())
+        .catch((error: unknown) => reportSyncFailure('Could not publish GitHub bridge worker heartbeat: ', error));
+    }, 60_000);
 
     pollTimer = setInterval(() => { void syncPoll(); }, fallbackPollIntervalMs);
     void syncPoll();
@@ -500,8 +539,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
           signal: tunnelStartupAbort.signal,
           onExit: (code, signal) => {
             if (!stopping) {
-              quickTunnelExited = true;
-              switchToFallbackPolling();
+                    switchToFallbackPolling();
               console.warn(
                 'Cloudflare Quick Tunnel exited unexpectedly' +
                 (signal ? ' (signal ' + signal + ')' : ' (exit code ' + code + ')') +
@@ -543,7 +581,6 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
         if (stopping) return;
         settings.githubWebhookId = hookId;
         await writeJsonAtomic(settingsPath, settings);
-        webhookActive = true;
         console.log('GitHub push notifications: enabled through Cloudflare Quick Tunnel.');
         console.log('Webhook endpoint: ' + quickTunnel.url + webhookServer.path);
         switchToReconciliationPolling();
@@ -558,7 +595,6 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
         quickTunnel = undefined;
         await webhookServer?.close().catch(() => undefined);
         webhookServer = undefined;
-        webhookActive = false;
         switchToFallbackPolling();
       }
     };
@@ -570,15 +606,18 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       webhookSetupPromise = enableWebhook();
     }
 
-    const childExitCode = await new Promise<number>((resolve, reject) => {
-      child!.once('error', reject);
-      child!.once('exit', (code) => resolve(code === null ? 1 : code));
-    });
+    const childExitCode = await childExitPromise;
     if (!stopping && childExitCode !== 0) {
       throw new Error('The local Desktop Commander worker exited with code ' + childExitCode + '.');
     }
   } finally {
     stopWorker();
+    await writeWorkerHeartbeat?.('OFFLINE').catch((error: unknown) => {
+      console.warn('Could not publish final GitHub bridge worker heartbeat: ' + errorMessage(error));
+    });
+    await finalStatusSync?.().catch((error: unknown) => {
+      console.warn('Could not publish final GitHub bridge status: ' + errorMessage(error));
+    });
     await webhookSetupPromise?.catch(() => undefined);
     if (child && child.exitCode === null && child.pid !== undefined) {
       await new Promise<void>((resolve) => {

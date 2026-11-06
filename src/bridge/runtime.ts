@@ -92,7 +92,105 @@ interface BridgePaths {
   requests: string;
   responses: string;
   artifacts: string;
+  status: string;
   ledgers: string;
+}
+
+export type BridgeLifecycleState = 'RECEIVED' | 'RUNNING' | 'PUBLISHING' | 'COMPLETED' | 'FAILED';
+
+export async function writeBridgeStatus(
+  statusDirectory: string,
+  id: string,
+  state: BridgeLifecycleState,
+  stage: string,
+  details: Record<string, unknown> = {},
+): Promise<void> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(id)) {
+    throw new Error('Bridge status requires a valid request ID.');
+  }
+  await fs.mkdir(statusDirectory, { recursive: true });
+  const statusPath = path.join(statusDirectory, 'status-' + id + '.json');
+  const lockPath = statusPath + '.lock';
+  const lockDeadline = Date.now() + 5_000;
+  let lockHandle: Awaited<ReturnType<typeof fs.open>> | undefined;
+
+  // The GitHub sync parent and local worker are separate processes. Serialize
+  // read/transition/write so a late RECEIVED update cannot race a RUNNING one.
+  while (!lockHandle) {
+    try {
+      lockHandle = await fs.open(lockPath, 'wx');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      try {
+        const stat = await fs.stat(lockPath);
+        if (Date.now() - stat.mtimeMs > 30_000) {
+          await fs.rm(lockPath, { force: true });
+          continue;
+        }
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw statError;
+      }
+      if (Date.now() >= lockDeadline) {
+        throw new Error('Timed out waiting for the status update lock for request ' + id + '.');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  if (!lockHandle) throw new Error('Could not acquire the status update lock for request ' + id + '.');
+  const acquiredLock = lockHandle;
+
+  try {
+    let previous: { id?: unknown; state?: unknown; stage?: unknown } | undefined;
+    try {
+      previous = JSON.parse(await fs.readFile(statusPath, 'utf8')) as {
+        id?: unknown;
+        state?: unknown;
+        stage?: unknown;
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        previous = undefined;
+      }
+    }
+
+    const rank = (candidateState: unknown, candidateStage: unknown): number => {
+      if (candidateState === 'FAILED' && candidateStage === 'request_download') return 1;
+      if (candidateState === 'FAILED' && candidateStage === 'worker_exception') return 2;
+      if (candidateState === 'RECEIVED') return 1;
+      if (candidateState === 'RUNNING') return 2;
+      if (candidateState === 'PUBLISHING') return 3;
+      if (candidateState === 'COMPLETED' || candidateState === 'FAILED') return 4;
+      return 0;
+    };
+
+    if (previous?.id === id && rank(previous.state, previous.stage) > rank(state, stage)) {
+      return;
+    }
+
+    const nextSnapshot = {
+      ...details,
+      protocol_version: 1,
+      id,
+      state,
+      stage,
+    };
+    if (previous?.id === id && previous.state === state && previous.stage === stage) {
+      const previousSnapshot = { ...previous } as Record<string, unknown>;
+      delete previousSnapshot.updated_at;
+      if (JSON.stringify(previousSnapshot) === JSON.stringify(nextSnapshot)) return;
+    }
+
+    const status = {
+      ...nextSnapshot,
+      updated_at: new Date().toISOString(),
+    };
+    await writeFileAtomic(statusPath, JSON.stringify(status, null, 2));
+  } finally {
+    await acquiredLock.close().catch(() => undefined);
+    await fs.rm(lockPath, { force: true }).catch(() => undefined);
+  }
 }
 
 function defaultSettings(): BridgeSettings {
@@ -328,6 +426,7 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '## Folder layout',
     '',
     '- requests/ — submit request-<id>.json or request-<id>.md files.',
+    '- status/ — read status-<id>.json lifecycle updates and, in GitHub mode, worker.json heartbeat.',
     '- responses/ — read response-<id>.json results.',
     '- artifacts/ — binary outputs (images, PDFs, and other files) returned by the local worker.',
     '- README.md — this guide.',
@@ -335,11 +434,13 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '## AI Quick Start',
     '',
     '1. Confirm the local Desktop Commander Bridge is running and first-run consent has been accepted. Make sure the cloud folder or GitHub repository used by this bridge is accessible.',
-    '2. Locate the bridge root in the connected cloud folder or GitHub repository. It must contain this README.md and the requests/, responses/, and artifacts/ folders. If several candidate roots exist, verify all three folders before choosing one; never guess.',
+    '2. Locate the bridge root in the connected cloud folder or GitHub repository. It must contain this README.md and the requests/, status/, responses/, and artifacts/ folders. If several candidate roots exist, verify the expected folders before choosing one; never guess.',
     '3. Read this README once at the start of a fresh chat. Keep the discovered root and pending request IDs for the rest of the session; do not repeatedly search for or reread the guide.',
-    '4. Submit a complete request file named requests/request-<id>.json. The JSON id must exactly match the filename id. Use a new unique ID for every request.',
-    '5. Do not wait for a response before submitting another independent request. Submit all independent requests first, then inspect responses/response-<id>.json for each ID.',
-    '6. For image, PDF, or binary outputs, use the artifact paths listed in the response and retrieve those files from artifacts/. Do not expect binary bytes to be embedded in response JSON.',
+    '4. Generate a new UUID (recommended) for every request and submit a complete file named requests/request-<id>.json. Its JSON id must exactly match the filename ID. Never reuse an ID, even when retrying.',
+    '5. After the request write succeeds, verify that the exact request path exists in the connected storage. In GitHub mode, verify it on the repository default branch. This confirms SUBMITTED only; it does not confirm that the local worker received or executed it.',
+    '6. Read status/status-<id>.json for RECEIVED, RUNNING, PUBLISHING, COMPLETED, or FAILED. In GitHub mode, read status/worker.json for the bridge heartbeat. A missing response alone does not prove the worker is disconnected.',
+    '7. Retrieve the exact responses/response-<id>.json path and verify its JSON id. Do not depend on listing the entire responses/ directory; large directories may exceed storage-provider listing limits.',
+    '8. For image, PDF, or binary outputs, use the artifact paths listed in the response and retrieve those files from artifacts/. Do not expect binary bytes to be embedded in response JSON.',
     '',
     'The bridge must be running on the computer that should execute the tools. The AI-side storage connector only submits requests and retrieves results; it does not execute commands. Use one bridge host per shared request root.',
     '',
@@ -347,7 +448,7 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '',
     'Use one request file per independent tool call. Write request A, then request B without checking for A yet. A successful write confirms only that the request file reached bridge storage; it does not mean the command has finished. The request ID is the job ID. Separate request files execute concurrently by default, while commands within one request file execute sequentially.',
     '',
-    'Keep the pipeline full: submit A, submit B, then check whether response A is ready. While B is still running, submit C if it is independent. Read each response as soon as it appears; do not block every submission on its own result. If several responses may be ready, list responses/ once and fetch all matching files in that pass. If one is missing, continue with other independent work and check the folder again later rather than repeatedly polling one ID.',
+    'Keep the pipeline full: submit A, submit B, then check the exact responses/response-A.json path. While B is still running, submit C if it is independent. Read each response as soon as it appears; do not block every submission on its own result. For batches, retrieve each known response path by ID instead of enumerating the full responses/ directory. If one is missing, continue with other independent work and check that exact path again later rather than repeatedly listing the queue.',
     '',
     'Example: upload requests/request-a.json, then requests/request-b.json; next look for responses/response-a.json. If it is ready, read it while B continues. Submit request C without waiting for B if C is independent, then retrieve B and C when their responses appear. Each request uses protocol_version 1, its own unique id, and a commands array containing the relevant tool call.',
     '',
@@ -359,10 +460,12 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '',
     '- Match every response to its request using the exact ID. A response filename is response-<id>.json and its JSON id must match.',
     '- Check the top-level status and every command status. A failed command stops later commands in that request; later commands are marked skipped.',
-    '- If a response is not visible yet, first confirm the request file is present in requests/ and correctly named. Allow for remote storage visibility to update, then list responses/ again. Also confirm the local bridge is running against this exact bridge root and that first-run consent was accepted.',
-    '- A rejected response usually means the request filename, ID, protocol version, tool name, or arguments failed validation. Correct the request and submit it with a new ID.',
-    '- An outcome_unknown command may have performed its side effect. Inspect the target state before retrying; never blindly resubmit a potentially non-idempotent command.',
-    '- An interrupted request may have completed some commands. Inspect its recorded results and current target state before deciding what to retry.',
+    '- If a response is not visible, read status/status-<id>.json and, in GitHub mode, status/worker.json first. Poll the exact status and response paths every 5 seconds; do not list every historical response.',
+    '- If the request file exists but no status appears after 30 seconds, verify the exact requests/ path and bridge root. In GitHub mode, also verify the repository default branch and worker heartbeat. Report the observed state and timestamps; do not claim disconnection without evidence.',
+    '- RECEIVED or RUNNING means the request was accepted. Do not submit a duplicate while it is active. PUBLISHING means execution finished and the response is being uploaded; keep checking the same response path.',
+    '- FAILED includes a stage and error. Fix the cause, then submit corrected work with a new unique ID. Never overwrite a request ID or response.',
+    '- In GitHub mode, if no worker heartbeat has been updated for 120 seconds, report that the bridge heartbeat is stale, not that the worker is definitively disconnected. Continue only after confirming the request is still pending and avoid duplicate side effects.',
+    '- An outcome_unknown or interrupted command may have performed its side effect. Inspect the target state before retrying; never blindly resubmit a potentially non-idempotent command.',
     '- If artifacts are missing, verify the response artifact path and check that the corresponding artifacts/<id>/ folder is visible in the connected storage before requesting the file again.',
     '',
     '## JSON request format',
@@ -402,13 +505,15 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '- Different request files execute concurrently. The default concurrency limit is unlimited (--max-parallel 0). A positive --max-parallel value sets an optional cap.',
     '- Commands within one request file execute sequentially, in their listed order.',
     '- The default delay between commands is 0 ms. Configure it with --command-delay-ms or the JSON command_delay_ms property.',
-    '- Cloud-folder mode uses filesystem notifications plus a one-second fallback scan. GitHub mode uses signed push webhooks through an optional Cloudflare Quick Tunnel for near-immediate remote synchronization, and watches its local response folder to publish completed work immediately. A configurable reconciliation poll recovers from missed events. If webhook or local watcher setup is unavailable, GitHub mode uses polling fallback. Remote storage visibility latency depends on the provider and is not controlled by this application.',
+    '- Cloud-folder mode uses filesystem notifications plus a one-second fallback scan. GitHub mode uses signed push webhooks through an optional Cloudflare Quick Tunnel for near-immediate remote synchronization, and watches its local response and status folders to publish updates immediately. A five-second reconciliation poll remains active even when webhooks and filesystem watchers appear healthy. If webhook or watcher setup is unavailable, the same five-second poll is the delivery path. Remote storage visibility latency depends on the provider and is not controlled by this application.',
     '- Independent requests run in parallel. Calls targeting the same file, process id, or search session are coordinated to avoid conflicting operations.',
     '- Publish each request file only after its complete contents are ready; never expose a partially-written request at its final request path.',
     '',
     '## Responses and artifacts',
     '',
     'Each accepted request produces responses/response-<id>.json. Results preserve the tool content and report command status. Top-level status is completed, failed, partial_failure, interrupted, rejected, or discarded_by_quota.',
+    '',
+    'The request file itself is the SUBMITTED acknowledgement. The bridge writes status/status-<id>.json as RECEIVED when it stages the request, RUNNING before tool execution, PUBLISHING before response upload, and COMPLETED or FAILED after the response is durable in GitHub. Status records include updated_at and the last stage; worker.json is refreshed once per minute while the GitHub bridge is connected. Always read the exact status and response file paths rather than relying on listing a large directory.',
     '',
     'Image blocks returned by read_file, read_multiple_files, or PDF page extraction are written into artifacts/<id>/. When a read tool returns a binary source file (such as a PDF, Office document, archive, audio/video file, or an otherwise unsupported binary), the original file is copied there too. The response lists each artifact path, MIME type, byte size, and SHA-256 hash. Binary bytes are not embedded as base64 in response JSON; retrieve the referenced artifact from the same bridge storage (cloud folder or GitHub repository). Cloud-folder mode can export a single artifact up to 256 MiB; GitHub mode limits each uploaded file to 50 MiB.',
     '',
@@ -1033,16 +1138,20 @@ async function processRequestFile(
   try {
     request = parseBridgeRequest(filename, bytes.toString('utf8'));
   } catch (error) {
-    await writeRejectedResponse(paths.root, id, requestHash, errorMessage(error));
+    const message = errorMessage(error);
+    await writeRejectedResponse(paths.root, id, requestHash, message);
+    await writeBridgeStatus(paths.status, id, 'FAILED', 'request_validation', { error: message });
     doneRequests.set(id, requestHash);
-    console.error('Rejected ' + filename + ': ' + errorMessage(error));
+    console.error('Rejected ' + filename + ': ' + message);
     return;
   }
 
   const ledgerPath = path.join(paths.ledgers, id + '.json');
   let ledger = await readJsonIfExists<RequestLedger>(ledgerPath);
   if (ledger && ledger.request_hash !== requestHash) {
-    await writeRejectedResponse(paths.root, id, requestHash, 'This request id was previously used with different content. Use a new id.');
+    const message = 'This request id was previously used with different content. Use a new id.';
+    await writeRejectedResponse(paths.root, id, requestHash, message);
+    await writeBridgeStatus(paths.status, id, 'FAILED', 'request_validation', { error: message });
     doneRequests.set(id, requestHash);
     return;
   }
@@ -1060,11 +1169,17 @@ async function processRequestFile(
     };
     await writeJsonAtomic(ledgerPath, ledger);
   } else if (ledger.commands.length !== request.commands.length) {
-    await writeRejectedResponse(paths.root, id, requestHash, 'The saved processing record does not match the command count in this request.');
+    const message = 'The saved processing record does not match the command count in this request.';
+    await writeRejectedResponse(paths.root, id, requestHash, message);
+    await writeBridgeStatus(paths.status, id, 'FAILED', 'request_validation', { error: message });
     doneRequests.set(id, requestHash);
     return;
   }
 
+  await writeBridgeStatus(paths.status, id, 'RUNNING', 'executing_commands', {
+    total_commands: request.commands.length,
+    started_at: ledger.started_at,
+  });
   const results: CommandResultRecord[] = [];
   let interrupted = false;
   const priorRunning = ledger.commands.findIndex((entry) => entry.state === 'running');
@@ -1217,6 +1332,10 @@ async function processRequestFile(
   ledger.updated_at = new Date().toISOString();
   await writeJsonAtomic(ledgerPath, ledger);
   const status = responseStatus(results, interrupted);
+  await writeBridgeStatus(paths.status, id, 'PUBLISHING', 'publishing_response', {
+    result_status: status,
+    total_commands: request.commands.length,
+  });
   activeResponseFiles.add(responsePath);
   try {
     await commitResponse(paths.responses, id, requestHash, ledger.started_at, results, status);
@@ -1439,8 +1558,13 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
             activeResponseFiles,
             doneRequests,
             cleanup,
-          ).catch((error) => {
-            console.error('Request processing failed (' + path.basename(candidate.path) + '): ' + errorMessage(error));
+          ).catch(async (error) => {
+            const message = errorMessage(error);
+            console.error('Request processing failed (' + path.basename(candidate.path) + '): ' + message);
+            await writeBridgeStatus(paths.status, candidate.id, 'FAILED', 'worker_exception', { error: message })
+              .catch((statusError: unknown) => {
+                console.error('Could not persist failed status for ' + candidate.id + ': ' + errorMessage(statusError));
+              });
           }).finally(() => {
             activeFiles.delete(candidate.path);
             activeRequestIds.delete(candidate.id);
@@ -1574,12 +1698,14 @@ export async function runBridge(args: string[] = []): Promise<void> {
       requests: path.join(realRoot, 'requests'),
       responses: path.join(realRoot, 'responses'),
       artifacts: path.join(realRoot, 'artifacts'),
+      status: path.join(realRoot, 'status'),
       ledgers: path.join(stateDir, 'requests'),
     };
     await Promise.all([
       ensureSafeBridgeDirectory(realRoot, paths.requests),
       ensureSafeBridgeDirectory(realRoot, paths.responses),
       ensureSafeBridgeDirectory(realRoot, paths.artifacts),
+      ensureSafeBridgeDirectory(realRoot, paths.status),
       fs.mkdir(paths.ledgers, { recursive: true }),
     ]);
     await createGuideIfMissing(realRoot);

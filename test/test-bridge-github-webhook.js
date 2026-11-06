@@ -7,6 +7,16 @@ import {
   startCloudflareQuickTunnel,
   startGitHubWebhookServer,
 } from '../dist/bridge/github-webhook.js';
+import { resolveGitHubPollIntervalMs } from '../dist/bridge/github-runtime.js';
+
+assert.equal(resolveGitHubPollIntervalMs(undefined, {}), 5_000,
+  'the default reconciliation and webhook-fallback interval must be five seconds');
+assert.equal(resolveGitHubPollIntervalMs(undefined, { githubReconcilePollIntervalMs: 60_000 }), 5_000,
+  'the previous sixty-second default must migrate to five seconds');
+assert.equal(resolveGitHubPollIntervalMs(undefined, { githubReconcilePollIntervalMs: 15_000 }), 15_000,
+  'a deliberate saved non-default interval must be preserved');
+assert.equal(resolveGitHubPollIntervalMs(10_000, {}), 10_000,
+  'an explicit CLI poll interval must override saved settings');
 
 const secret = 'test-webhook-secret-with-enough-randomness';
 let syncCount = 0;

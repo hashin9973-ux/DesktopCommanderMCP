@@ -223,6 +223,9 @@ export class GitHubRepositoryClient {
   private readonly fetcher: typeof fetch;
   private rateLimitPauseUntil = 0;
   private secondaryRateLimitBackoff = 0;
+  private cachedTreeCommitSha?: string;
+  private cachedTreeEntries?: GitHubContentEntry[];
+  private treeSnapshotPromise?: Promise<{ commitSha: string; entries: GitHubContentEntry[] }>;
 
   private constructor(
     repository: string,
@@ -434,32 +437,93 @@ export class GitHubRepositoryClient {
     }
   }
 
-  async listDirectory(directory: string): Promise<GitHubContentEntry[]> {
-    const suffix = directory ? '/' + directory.split('/').map(encodeURIComponent).join('/') : '';
-    try {
-      const value = await this.requestJson(
-        '/repos/' + this.repository + '/contents' + suffix + '?ref=' + encodeURIComponent(this.defaultBranch),
-      );
-      if (!Array.isArray(value)) {
-        throw new Error('Expected a directory listing for ' + (directory || 'repository root') + '.');
+  private async getTreeSnapshot(): Promise<GitHubContentEntry[]> {
+    if (this.treeSnapshotPromise) return (await this.treeSnapshotPromise).entries;
+
+    const pending = (async () => {
+      const commit = await this.requestJson(
+        '/repos/' + this.repository + '/commits/' + encodeURIComponent(this.defaultBranch),
+      ) as {
+        sha?: unknown;
+        commit?: { tree?: { sha?: unknown } };
+      };
+      if (typeof commit.sha !== 'string' || typeof commit.commit?.tree?.sha !== 'string') {
+        throw new Error('GitHub did not return a commit tree for default branch ' + this.defaultBranch + '.');
       }
-      return value.filter((entry): entry is GitHubContentEntry =>
-        typeof entry === 'object' && entry !== null
-        && typeof entry.name === 'string'
-        && typeof entry.path === 'string'
-        && typeof entry.sha === 'string'
-        && (entry.type === 'file' || entry.type === 'dir'))
+
+      if (commit.sha === this.cachedTreeCommitSha && this.cachedTreeEntries) {
+        return { commitSha: commit.sha, entries: this.cachedTreeEntries };
+      }
+
+      const tree = await this.requestJson(
+        '/repos/' + this.repository + '/git/trees/' + commit.commit.tree.sha + '?recursive=1',
+      ) as { truncated?: unknown; tree?: unknown };
+      if (tree.truncated === true) {
+        throw new Error(
+          'GitHub returned a truncated repository tree while indexing bridge queues. ' +
+          'The bridge will not treat an incomplete listing as an empty or complete queue.',
+        );
+      }
+      if (!Array.isArray(tree.tree)) {
+        throw new Error('GitHub did not return a valid repository tree for bridge queue indexing.');
+      }
+
+      const entries = tree.tree
+        .filter((entry): entry is Record<string, unknown> =>
+          typeof entry === 'object' && entry !== null
+          && typeof entry.path === 'string'
+          && typeof entry.sha === 'string'
+          && (entry.type === 'blob' || entry.type === 'tree'))
         .map((entry) => ({
-          name: entry.name,
-          path: entry.path,
-          sha: entry.sha,
+          name: path.posix.basename(String(entry.path)),
+          path: String(entry.path),
+          sha: String(entry.sha),
           size: typeof entry.size === 'number' ? entry.size : 0,
-          type: entry.type,
+          type: entry.type === 'tree' ? 'dir' : 'file',
         }));
-    } catch (error) {
-      if (error instanceof GitHubApiError && error.status === 404) return [];
-      throw error;
+      return { commitSha: commit.sha, entries };
+    })();
+
+    this.treeSnapshotPromise = pending;
+    try {
+      const snapshot = await pending;
+      this.cachedTreeCommitSha = snapshot.commitSha;
+      this.cachedTreeEntries = snapshot.entries;
+      return snapshot.entries;
+    } finally {
+      this.treeSnapshotPromise = undefined;
     }
+  }
+
+  private invalidateTreeSnapshot(): void {
+    this.cachedTreeCommitSha = undefined;
+    this.cachedTreeEntries = undefined;
+  }
+
+  async listDirectory(directory: string, allowMissing = false): Promise<GitHubContentEntry[]> {
+    const allEntries = await this.getTreeSnapshot();
+    const normalizedDirectory = directory.endsWith('/') ? directory.slice(0, -1) : directory;
+    const prefix = normalizedDirectory ? normalizedDirectory + '/' : '';
+    const matching = allEntries.filter((entry) => {
+      if (normalizedDirectory && entry.path === normalizedDirectory) return false;
+      if (!entry.path.startsWith(prefix)) return false;
+      const remainder = entry.path.slice(prefix.length);
+      return remainder.length > 0 && !remainder.includes('/');
+    });
+
+    if (normalizedDirectory) {
+      const normalized = normalizedDirectory;
+      const exists = allEntries.some((entry) =>
+        entry.path === normalized || entry.path.startsWith(normalized + '/'),
+      );
+      if (!exists && !allowMissing) {
+        throw new Error(
+          'GitHub repository ' + this.repository + ' does not contain the expected queue directory "' +
+          normalized + '" on default branch ' + this.defaultBranch + '.',
+        );
+      }
+    }
+    return matching;
   }
 
   async readFile(filePath: string): Promise<Buffer> {
@@ -493,6 +557,7 @@ export class GitHubRepositoryClient {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         await this.requestJson(url, { method: 'PUT', body: JSON.stringify(responseBody) });
+        this.invalidateTreeSnapshot();
         return true;
       } catch (error) {
         if (!(error instanceof GitHubApiError) || (error.status !== 409 && error.status !== 422)) {
@@ -513,7 +578,10 @@ export class GitHubRepositoryClient {
           throw new Error('GitHub could not verify an existing ' + filePath + ': ' + errorMessage(readError));
         }
 
-        if (existing.equals(bytes)) return false;
+        if (existing.equals(bytes)) {
+          this.invalidateTreeSnapshot();
+          return false;
+        }
         throw new Error(
           'GitHub repository already contains a different file at ' + filePath +
           '. Request IDs and artifact paths must be unique; the existing file was not overwritten.',
@@ -567,6 +635,7 @@ export class GitHubRepositoryClient {
             sha: existingEntry.sha,
           }),
         });
+        this.invalidateTreeSnapshot();
         return true;
       } catch (error) {
         if (error instanceof GitHubApiError
@@ -600,6 +669,7 @@ export class GitHubRepositoryClient {
             branch: this.defaultBranch,
           }),
         });
+        this.invalidateTreeSnapshot();
         return true;
       } catch (error) {
         if (error instanceof GitHubApiError
