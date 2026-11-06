@@ -869,7 +869,7 @@ try {
   );
   await assert.rejects(
     () => sync.syncOnce(),
-    /encountered 1 item error\\(s\\).*invalid-response-01\\.json/,
+    /encountered 1 item error\(s\).*invalid-response-01\.json/,
   );
   assert.ok(api.files.has('responses/response-' + validResponseId + '.json'),
     'a malformed response must not block another response from the same sync pass');
