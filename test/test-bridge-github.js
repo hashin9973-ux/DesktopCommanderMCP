@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { GitHubApiError, GitHubRepositoryClient, MAX_GITHUB_BRIDGE_FILE_BYTES } from '../dist/bridge/github.js';
-import { createGuideIfMissing } from '../dist/bridge/runtime.js';
+import { createGuideIfMissing, writeBridgeStatus } from '../dist/bridge/runtime.js';
 import { GitHubBridgeSync } from '../dist/bridge/github-sync.js';
 
 // Test double for GitHub's Contents and Repositories REST APIs. No network calls are made.
@@ -16,10 +16,12 @@ function createGitHubApiDouble() {
   const files = new Map();
   const commits = [];
   const rawReads = new Map();
+  const failedRawReads = new Set();
   let createdRepositoryPayload;
   const webhooks = new Map();
   let nextWebhookId = 1;
   let responseUploadGate;
+  let truncateNextTree = false;
 
   const jsonResponse = (value, status = 200) => new Response(JSON.stringify(value), {
     status,
@@ -39,6 +41,15 @@ function createGitHubApiDouble() {
     if (url.pathname === '/repos/owner/repo' && method === 'GET') {
       return jsonResponse({
         full_name: 'owner/repo',
+        default_branch: 'main',
+        archived: false,
+        private: true,
+        permissions: { push: true },
+      });
+    }
+    if (url.pathname === '/repos/no-tree/repo' && method === 'GET') {
+      return jsonResponse({
+        full_name: 'no-tree/repo',
         default_branch: 'main',
         archived: false,
         private: true,
@@ -117,6 +128,26 @@ function createGitHubApiDouble() {
       ]);
     }
 
+    if (url.pathname === '/repos/owner/repo/commits/main' && method === 'GET') {
+      const snapshot = [...files.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([filePath, value]) => filePath + ':' + value.sha)
+        .join('\n');
+      const commitSha = crypto.createHash('sha1').update(snapshot).digest('hex');
+      return jsonResponse({ sha: commitSha, commit: { tree: { sha: 'tree-' + commitSha } } });
+    }
+    if (url.pathname.startsWith('/repos/owner/repo/git/trees/') && method === 'GET') {
+      const tree = [...files.entries()].map(([filePath, value]) => ({
+        path: filePath,
+        sha: value.sha,
+        size: value.bytes.length,
+        type: 'blob',
+      }));
+      const truncated = truncateNextTree;
+      truncateNextTree = false;
+      return jsonResponse({ sha: url.pathname.split('/').pop(), truncated, tree: truncated ? [] : tree });
+    }
+
     if (url.pathname === '/repos/owner/repo/contents' && method === 'GET') {
       return directoryListing('');
     }
@@ -134,6 +165,9 @@ function createGitHubApiDouble() {
       const value = files.get(repoPath);
       if (!value) return notFound();
       if ((headers.get('accept') || '').includes('raw')) {
+        if (failedRawReads.delete(repoPath)) {
+          return jsonResponse({ message: 'temporary test-double read failure' }, 503);
+        }
         rawReads.set(repoPath, (rawReads.get(repoPath) || 0) + 1);
         return new Response(Buffer.from(value.bytes));
       }
@@ -200,7 +234,8 @@ function createGitHubApiDouble() {
         type: 'file',
       });
     }
-    return jsonResponse(entries);
+    // Match the real Contents API directory listing cap.
+    return jsonResponse(entries.slice(0, 1_000));
   }
 
   return {
@@ -208,6 +243,8 @@ function createGitHubApiDouble() {
     files,
     commits,
     getRawReadCount: (filePath) => rawReads.get(filePath) || 0,
+    failNextRawRead: (filePath) => failedRawReads.add(filePath),
+    truncateNextTree: () => { truncateNextTree = true; },
     getCreatedRepositoryPayload: () => createdRepositoryPayload,
     pauseNextResponseUpload: () => {
       let release;
@@ -241,6 +278,16 @@ assert.equal(listed[1].push, false);
 
 const client = await GitHubRepositoryClient.connect('owner/repo', token, api.fetcher);
 assert.equal(client.defaultBranch, 'main');
+const inaccessibleTreeClient = await GitHubRepositoryClient.connect('no-tree/repo', token, api.fetcher);
+await assert.rejects(
+  () => inaccessibleTreeClient.listDirectory('requests', true),
+  (error) => {
+    assert.ok(error instanceof GitHubApiError);
+    assert.equal(error.status, 404);
+    return true;
+  },
+  'a missing or inaccessible repository branch must not be interpreted as an empty request queue',
+);
 await assert.rejects(
   () => GitHubRepositoryClient.connect('archived/repo', token, api.fetcher),
   /archived/,
@@ -253,7 +300,8 @@ const publicClient = await GitHubRepositoryClient.connect('public/repo', token, 
 assert.equal(publicClient.isPrivate, false, 'public repository visibility must be returned for startup consent');
 
 let rateLimitCalls = 0;
-const rateLimitedClient = await GitHubRepositoryClient.connect('owner/repo', token, async () => {
+const rateLimitedClient = await GitHubRepositoryClient.connect('owner/repo', token, async (input) => {
+  const url = new URL(String(input));
   rateLimitCalls++;
   if (rateLimitCalls === 1) {
     return new Response(JSON.stringify({
@@ -269,10 +317,17 @@ const rateLimitedClient = await GitHubRepositoryClient.connect('owner/repo', tok
       headers: { 'content-type': 'application/json', 'retry-after': '1' },
     });
   }
-  return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
+  if (url.pathname.endsWith('/commits/main')) {
+    return new Response(JSON.stringify({ sha: 'commit-1', commit: { tree: { sha: 'tree-1' } } }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    });
+  }
+  return new Response(JSON.stringify({ sha: 'tree-1', truncated: false, tree: [] }), {
+    status: 200, headers: { 'content-type': 'application/json' },
+  });
 });
 await assert.rejects(
-  () => rateLimitedClient.listDirectory('requests'),
+  () => rateLimitedClient.listDirectory('requests', true),
   (error) => {
     assert.ok(error instanceof GitHubApiError);
     assert.equal(error.rateLimit?.kind, 'secondary');
@@ -283,11 +338,11 @@ await assert.rejects(
   'secondary rate-limit responses should expose their retry time',
 );
 const rateLimitWaitStartedAt = Date.now();
-const recoveredListing = await rateLimitedClient.listDirectory('requests');
+const recoveredListing = await rateLimitedClient.listDirectory('requests', true);
 assert.deepEqual(recoveredListing, []);
 assert.ok(Date.now() - rateLimitWaitStartedAt >= 800,
   'the next GitHub API request must honor Retry-After instead of immediately retrying');
-assert.equal(rateLimitCalls, 3);
+assert.equal(rateLimitCalls, 4);
 
 const webhookSecretForRateLimitTest = 'b'.repeat(64);
 let webhookRateLimitCalls = 0;
@@ -322,7 +377,8 @@ await assert.rejects(
 
 let primaryLimitCalls = 0;
 const primaryResetEpoch = Math.ceil(Date.now() / 1_000) + 1;
-const primaryRateLimitedClient = await GitHubRepositoryClient.connect('owner/repo', token, async () => {
+const primaryRateLimitedClient = await GitHubRepositoryClient.connect('owner/repo', token, async (input) => {
+  const url = new URL(String(input));
   primaryLimitCalls++;
   if (primaryLimitCalls === 1) {
     return new Response(JSON.stringify({
@@ -332,21 +388,31 @@ const primaryRateLimitedClient = await GitHubRepositoryClient.connect('owner/rep
       permissions: { push: true },
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   }
-  return new Response('[]', {
-    status: 200,
-    headers: {
-      'content-type': 'application/json',
-      'x-ratelimit-remaining': '0',
-      'x-ratelimit-reset': String(primaryResetEpoch),
-    },
+  if (primaryLimitCalls === 2) {
+    return new Response(JSON.stringify({ sha: 'commit-1', commit: { tree: { sha: 'tree-1' } } }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    });
+  }
+  if (primaryLimitCalls === 3) {
+    return new Response(JSON.stringify({ sha: 'tree-1', truncated: false, tree: [] }), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        'x-ratelimit-remaining': '0',
+        'x-ratelimit-reset': String(primaryResetEpoch),
+      },
+    });
+  }
+  return new Response(JSON.stringify({ sha: 'commit-1', commit: { tree: { sha: 'tree-1' } } }), {
+    status: 200, headers: { 'content-type': 'application/json' },
   });
 });
-assert.deepEqual(await primaryRateLimitedClient.listDirectory('requests'), []);
+assert.deepEqual(await primaryRateLimitedClient.listDirectory('requests', true), []);
 const primaryRateLimitWaitStartedAt = Date.now();
-assert.deepEqual(await primaryRateLimitedClient.listDirectory('responses'), []);
+assert.deepEqual(await primaryRateLimitedClient.listDirectory('responses', true), []);
 assert.ok(Date.now() - primaryRateLimitWaitStartedAt >= 800,
   'a successful response with zero primary quota remaining must pause the next API request');
-assert.equal(primaryLimitCalls, 3);
+assert.equal(primaryLimitCalls, 4);
 
 const webhookSecret = 'a'.repeat(64);
 const initialHookId = await client.upsertPushWebhook(
@@ -386,6 +452,21 @@ const paths = {
   responses: path.join(temporaryRoot, 'responses'),
   artifacts: path.join(temporaryRoot, 'artifacts'),
 };
+const statusDirectory = path.join(temporaryRoot, 'status');
+await writeBridgeStatus(statusDirectory, 'monotonic-status', 'RUNNING', 'executing_commands');
+await writeBridgeStatus(statusDirectory, 'monotonic-status', 'RECEIVED', 'request_staged');
+let monotonicStatus = JSON.parse(await fs.readFile(
+  path.join(statusDirectory, 'status-monotonic-status.json'), 'utf8',
+));
+assert.equal(monotonicStatus.state, 'RUNNING',
+  'a late RECEIVED acknowledgement must not overwrite a newer RUNNING state');
+await writeBridgeStatus(statusDirectory, 'monotonic-status', 'COMPLETED', 'response_available');
+await writeBridgeStatus(statusDirectory, 'monotonic-status', 'RUNNING', 'executing_commands');
+monotonicStatus = JSON.parse(await fs.readFile(
+  path.join(statusDirectory, 'status-monotonic-status.json'), 'utf8',
+));
+assert.equal(monotonicStatus.state, 'COMPLETED',
+  'a late RUNNING update must not overwrite a terminal COMPLETED state');
 
 try {
   // Simulate a repository that already has both GitHub's initial README and
@@ -441,6 +522,43 @@ try {
     'new GitHub requests should be staged in the local worker queue',
   );
   assert.equal(api.getRawReadCount(requestPath), 1);
+  const receivedStatus = JSON.parse(await fs.readFile(
+    path.join(paths.root, 'status', 'status-sample-01.json'), 'utf8',
+  ));
+  assert.equal(receivedStatus.state, 'RECEIVED', 'staging a request must create a durable RECEIVED status');
+
+  // One failed request download must not prevent another request from staging.
+  const failedId = 'temporary-read-failure';
+  const successfulId = 'continues-after-failure';
+  for (const id of [failedId, successfulId]) {
+    const bytes = Buffer.from(JSON.stringify({
+      protocol_version: 1,
+      id,
+      commands: [{ tool: 'get_config', arguments: {} }],
+    }));
+    const requestName = 'requests/request-' + id + '.json';
+    api.files.set(requestName, { bytes, sha: gitBlobSha(bytes) });
+  }
+  api.failNextRawRead('requests/request-' + failedId + '.json');
+  await assert.rejects(() => sync.syncOnce(), /temporary test-double read failure/);
+  await assert.rejects(
+    () => fs.access(path.join(paths.requests, 'request-' + failedId + '.json')),
+    /ENOENT/,
+  );
+  await fs.access(path.join(paths.requests, 'request-' + successfulId + '.json'));
+  const failedStatus = JSON.parse(await fs.readFile(
+    path.join(paths.root, 'status', 'status-' + failedId + '.json'), 'utf8',
+  ));
+  assert.equal(failedStatus.state, 'FAILED');
+  assert.equal(failedStatus.stage, 'request_download');
+
+  await sync.syncOnce();
+  await fs.access(path.join(paths.requests, 'request-' + failedId + '.json'));
+  const recoveredStatus = JSON.parse(await fs.readFile(
+    path.join(paths.root, 'status', 'status-' + failedId + '.json'), 'utf8',
+  ));
+  assert.equal(recoveredStatus.state, 'RECEIVED',
+    'a transient request-fetch failure must recover to RECEIVED on the next poll');
 
   await sync.syncOnce();
   assert.equal(api.getRawReadCount(requestPath), 1,
@@ -501,6 +619,9 @@ try {
   await sync.syncOnce();
   assert.deepEqual(api.files.get(artifactPath).bytes, artifactBytes);
   assert.ok(api.files.has('responses/response-sample-01.json'));
+  const publishedStatus = JSON.parse(api.files.get('status/status-sample-01.json').bytes.toString('utf8'));
+  assert.equal(publishedStatus.state, 'COMPLETED',
+    'the lifecycle status must become COMPLETED only after the response is durable remotely');
   assert.ok(
     api.commits.findIndex((commit) => commit.path === artifactPath)
       < api.commits.findIndex((commit) => commit.path === 'responses/response-sample-01.json'),
@@ -794,6 +915,16 @@ try {
     historicalReadRequests.add(responseName);
   }
   const historySync = new GitHubBridgeSync(client, paths);
+  const completeRequestListing = await client.listDirectory('requests');
+  assert.ok(completeRequestListing.length > 1_000,
+    'Git Trees indexing must return queue entries beyond the Contents API 1,000-entry limit');
+  const truncatedClient = await GitHubRepositoryClient.connect('owner/repo', token, api.fetcher);
+  api.truncateNextTree();
+  await assert.rejects(
+    () => truncatedClient.listDirectory('requests'),
+    /truncated repository tree/,
+    'a truncated Git tree must fail explicitly instead of silently hiding queue entries',
+  );
   await historySync.syncOnce();
   for (const remotePath of historicalReadRequests) {
     assert.equal(api.getRawReadCount(remotePath), 0,
