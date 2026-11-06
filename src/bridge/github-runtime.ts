@@ -260,7 +260,7 @@ async function startWorker(
   cacheRoot: string,
   workerStateRoot: string,
   maxParallelRequests: number,
-): Promise<ChildProcess> {
+): Promise<{ child: ChildProcess; exitPromise: Promise<number> }> {
   const workerLocalAppData = path.join(workerStateRoot, 'localappdata');
   const workerXdgStateHome = path.join(workerStateRoot, 'xdg-state');
   const workerStateDir = process.platform === 'win32'
@@ -295,7 +295,14 @@ async function startWorker(
     stdio: 'inherit',
     windowsHide: false,
   });
-  return child;
+  const exitPromise = new Promise<number>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code) => resolve(code === null ? 1 : code));
+  });
+  // Mark the rejection handled immediately; the parent still awaits this same
+  // promise and propagates the spawn error through its normal cleanup path.
+  void exitPromise.catch(() => undefined);
+  return { child, exitPromise };
 }
 
 export async function runGitHubBridge(args: string[] = []): Promise<void> {
@@ -494,15 +501,9 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     console.log('Press Ctrl+C to stop.');
     console.log('');
 
-    child = await startWorker(cacheRoot, workerStateRoot, maxParallelRequests);
-    const workerChild = child;
-    const childExitPromise = new Promise<number>((resolve, reject) => {
-      workerChild.once('error', reject);
-      workerChild.once('exit', (code) => resolve(code === null ? 1 : code));
-    });
-    // Attach a rejection handler immediately so a fast spawn failure cannot
-    // become an unhandled rejection while startup finishes its heartbeat write.
-    void childExitPromise.catch(() => undefined);
+    const startedWorker = await startWorker(cacheRoot, workerStateRoot, maxParallelRequests);
+    child = startedWorker.child;
+    const childExitPromise = startedWorker.exitPromise;
     process.once('SIGINT', stopWorker);
     process.once('SIGTERM', stopWorker);
     await heartbeatWriter('ONLINE');
