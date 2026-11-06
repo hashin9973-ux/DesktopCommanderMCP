@@ -398,6 +398,7 @@ export class GitHubBridgeSync {
   private syncPromise?: Promise<void>;
   private syncRequestedWhileRunning = false;
   private readonly observedRequestBlobShas = new Map<string, string>();
+  private readonly observedInvalidRequestShas = new Map<string, string>();
   private readonly publishedStatusDigests = new Map<string, string>();
   constructor(
     private readonly client: GitHubRepositoryClient,
@@ -500,10 +501,14 @@ export class GitHubBridgeSync {
       if (entry.type !== 'file' || entry.name === '.gitkeep') continue;
       const match = REQUEST_PATTERN.exec(entry.name);
       if (!match) {
-        console.warn(
-          'GitHub bridge: ignored ' + entry.path +
-          '; expected request-<id>.json or request-<id>.md with an ID containing only letters, digits, underscores, or hyphens.',
-        );
+        const previousSha = this.observedInvalidRequestShas.get(entry.path);
+        if (previousSha !== entry.sha) {
+          console.warn(
+            'GitHub bridge: ignored ' + entry.path +
+            '; expected request-<id>.json or request-<id>.md with an ID containing only letters, digits, underscores, or hyphens.',
+          );
+          this.observedInvalidRequestShas.set(entry.path, entry.sha);
+        }
         continue;
       }
 

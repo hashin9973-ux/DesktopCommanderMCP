@@ -467,6 +467,13 @@ monotonicStatus = JSON.parse(await fs.readFile(
 ));
 assert.equal(monotonicStatus.state, 'COMPLETED',
   'a late RUNNING update must not overwrite a terminal COMPLETED state');
+const completedStatusTimestamp = monotonicStatus.updated_at;
+await writeBridgeStatus(statusDirectory, 'monotonic-status', 'COMPLETED', 'response_available');
+monotonicStatus = JSON.parse(await fs.readFile(
+  path.join(statusDirectory, 'status-monotonic-status.json'), 'utf8',
+));
+assert.equal(monotonicStatus.updated_at, completedStatusTimestamp,
+  'an identical lifecycle update must not rewrite the status file or create another GitHub commit');
 
 try {
   // Simulate a repository that already has both GitHub's initial README and
@@ -862,7 +869,7 @@ try {
   );
   await assert.rejects(
     () => sync.syncOnce(),
-    /Could not synchronize 1 local response file/,
+    /encountered 1 item error\\(s\\).*invalid-response-01\\.json/,
   );
   assert.ok(api.files.has('responses/response-' + validResponseId + '.json'),
     'a malformed response must not block another response from the same sync pass');

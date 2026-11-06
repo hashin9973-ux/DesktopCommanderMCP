@@ -169,12 +169,21 @@ export async function writeBridgeStatus(
       return;
     }
 
-    const status = {
+    const nextSnapshot = {
       ...details,
       protocol_version: 1,
       id,
       state,
       stage,
+    };
+    if (previous?.id === id && previous.state === state && previous.stage === stage) {
+      const previousSnapshot = { ...previous } as Record<string, unknown>;
+      delete previousSnapshot.updated_at;
+      if (JSON.stringify(previousSnapshot) === JSON.stringify(nextSnapshot)) return;
+    }
+
+    const status = {
+      ...nextSnapshot,
       updated_at: new Date().toISOString(),
     };
     await writeFileAtomic(statusPath, JSON.stringify(status, null, 2));
