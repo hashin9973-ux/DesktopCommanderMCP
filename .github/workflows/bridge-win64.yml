@@ -8,6 +8,8 @@ on:
       - 'src/local-api/**'
       - 'src/index.ts'
       - 'scripts/bridge-launcher.cjs'
+      - 'scripts/choose-mode.cmd'
+      - 'scripts/start-local-api-koboldcpp.cmd'
       - 'test/test-bridge-*.js'
       - 'test/test-local-api.js'
       - 'docs/GITHUB_REPOSITORY_BRIDGE.md'
@@ -118,6 +120,12 @@ jobs:
             throw "The bundled cloudflared executable failed its version check. Expected $version; got $versionOutput."
           }
 
+      - name: Add explicit portable mode launchers
+        shell: pwsh
+        run: |
+          Copy-Item scripts\choose-mode.cmd "build\PortableBridge\Choose Desktop Commander Mode.cmd"
+          Copy-Item scripts\start-local-api-koboldcpp.cmd "build\PortableBridge\Start Local OpenAI API (KoboldCpp).cmd"
+
       - name: Verify executable CLI
         shell: pwsh
         run: |
@@ -125,6 +133,29 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Bridge executable help command failed." }
           & build\PortableBridge\DesktopCommanderBridge.exe local-api --help
           if ($LASTEXITCODE -ne 0) { throw "Local API executable help command failed." }
+
+
+          $menuLauncher = "build\PortableBridge\Choose Desktop Commander Mode.cmd"
+          $localApiLauncher = "build\PortableBridge\Start Local OpenAI API (KoboldCpp).cmd"
+          if (!(Test-Path $menuLauncher) -or !(Test-Path $localApiLauncher)) {
+            throw "The portable build is missing one or more visible mode launchers."
+          }
+          if ((Get-Content $menuLauncher -Raw) -notmatch "--menu") {
+            throw "The mode-menu shortcut does not explicitly request the interactive menu."
+          }
+          if ((Get-Content $localApiLauncher -Raw) -notmatch "local-api") {
+            throw "The Local API shortcut does not launch Local API mode."
+          }
+
+          $menuInput = Join-Path $env:TEMP "DesktopCommander-menu-test-in.txt"
+          $menuStdout = Join-Path $env:TEMP "DesktopCommander-menu-test-out.txt"
+          $menuStderr = Join-Path $env:TEMP "DesktopCommander-menu-test-err.txt"
+          [System.IO.File]::WriteAllText($menuInput, "")
+          $menuProcess = Start-Process -FilePath "build\PortableBridge\DesktopCommanderBridge.exe" -ArgumentList "--menu" -PassThru -Wait -NoNewWindow -RedirectStandardInput $menuInput -RedirectStandardOutput $menuStdout -RedirectStandardError $menuStderr
+          $menuOutput = (Get-Content $menuStdout -Raw -ErrorAction SilentlyContinue) + (Get-Content $menuStderr -Raw -ErrorAction SilentlyContinue)
+          if ($menuProcess.ExitCode -eq 0 -or $menuOutput -notmatch "requires an interactive terminal") {
+            throw "Forced menu selection did not fail clearly when stdio is non-interactive. Output: $menuOutput"
+          }
 
       - name: Smoke-test file bridge and image artifact export
         shell: pwsh
