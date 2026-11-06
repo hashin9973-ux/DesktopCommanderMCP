@@ -495,17 +495,22 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     console.log('');
 
     child = await startWorker(cacheRoot, workerStateRoot, maxParallelRequests);
+    const workerChild = child;
+    const childExitPromise = new Promise<number>((resolve, reject) => {
+      workerChild.once('error', reject);
+      workerChild.once('exit', (code) => resolve(code === null ? 1 : code));
+    });
+    // Attach a rejection handler immediately so a fast spawn failure cannot
+    // become an unhandled rejection while startup finishes its heartbeat write.
+    void childExitPromise.catch(() => undefined);
+    process.once('SIGINT', stopWorker);
+    process.once('SIGTERM', stopWorker);
     await heartbeatWriter('ONLINE');
     heartbeatTimer = setInterval(() => {
       void heartbeatWriter('ONLINE')
         .then(() => syncPoll())
         .catch((error: unknown) => reportSyncFailure('Could not publish GitHub bridge worker heartbeat: ', error));
     }, 60_000);
-    process.once('SIGINT', stopWorker);
-    process.once('SIGTERM', stopWorker);
-    child.once('error', (error) => {
-      console.error('Could not start the local Desktop Commander worker: ' + error.message);
-    });
 
     pollTimer = setInterval(() => { void syncPoll(); }, fallbackPollIntervalMs);
     void syncPoll();
@@ -600,10 +605,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       webhookSetupPromise = enableWebhook();
     }
 
-    const childExitCode = await new Promise<number>((resolve, reject) => {
-      child!.once('error', reject);
-      child!.once('exit', (code) => resolve(code === null ? 1 : code));
-    });
+    const childExitCode = await childExitPromise;
     if (!stopping && childExitCode !== 0) {
       throw new Error('The local Desktop Commander worker exited with code ' + childExitCode + '.');
     }
