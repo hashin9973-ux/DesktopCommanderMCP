@@ -21,11 +21,14 @@ interface StoredBridgeSettings {
   githubRepository?: string;
   githubConsentAccepted?: boolean;
   githubConsentRepository?: string;
+  githubConsentRepositoryId?: number;
   githubPublicConsentAccepted?: boolean;
   githubPublicConsentRepository?: string;
+  githubPublicConsentRepositoryId?: number;
   githubPollIntervalMs?: number;
   githubReconcilePollIntervalMs?: number;
   githubWebhookRepository?: string;
+  githubWebhookRepositoryId?: number;
   githubWebhookId?: number;
   githubWebhookSecret?: string;
   maxParallelRequests?: number;
@@ -50,6 +53,88 @@ function stateDirectory(): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function directoryExists(directory: string): Promise<boolean> {
+  try {
+    return (await fs.stat(directory)).isDirectory();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function readRepositoryIdentityMarker(directory: string): Promise<string | undefined> {
+  try {
+    return (await fs.readFile(path.join(directory, '.github-repository-id'), 'utf8')).trim();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+export async function resolveRepositoryCacheRoots(
+  stateDir: string,
+  repository: string,
+  repositoryId: number,
+): Promise<{ cacheRoot: string; workerStateRoot: string }> {
+  if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0) {
+    throw new Error('A valid immutable GitHub repository ID is required to resolve bridge cache paths.');
+  }
+
+  const repositoryKey = String(repositoryId);
+  const repositorySlug = repository.replace('/', '--');
+  const identityCacheRoot = path.join(stateDir, 'github-cache', repositoryKey);
+  const legacyCacheRoot = path.join(stateDir, 'github-cache', repositorySlug);
+  let cacheRoot = identityCacheRoot;
+  let cacheKey = repositoryKey;
+
+  if (repositorySlug !== repositoryKey && await directoryExists(legacyCacheRoot)
+    && !await directoryExists(identityCacheRoot)) {
+    const previousRepositoryId = await readRepositoryIdentityMarker(legacyCacheRoot);
+    if (previousRepositoryId === repositoryKey) {
+      // This cache was previously associated with the same immutable repo ID.
+      cacheRoot = legacyCacheRoot;
+      cacheKey = repositorySlug;
+    } else if (previousRepositoryId === undefined) {
+      // Old releases stored cache data by owner/name only. The same name may
+      // now refer to a deleted/recreated repository, so never reuse it silently.
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        throw new Error(
+          'An older local GitHub bridge cache exists for ' + repository + ' but has no repository identity. ' +
+          'Start the bridge interactively once and confirm whether this is the same repository; ' +
+          'if it was deleted and recreated, do not reuse the old cache.',
+        );
+      }
+      console.log('');
+      console.log('LEGACY GITHUB BRIDGE CACHE');
+      console.log('An older cache exists for ' + repository + ' but does not record the repository ID.');
+      console.log('Reuse it only if this is the same GitHub repository, not one deleted and recreated under the same name.');
+      const answer = await ask('Type REUSE to preserve pending local requests and responses, or press Enter to start a fresh cache: ');
+      if (answer === 'REUSE') {
+        cacheRoot = legacyCacheRoot;
+        cacheKey = repositorySlug;
+      }
+    } else {
+      // A marker for a different repo ID proves this is stale data from a
+      // repository previously occupying the same owner/name.
+      console.warn(
+        'Ignoring cached bridge state for ' + repository + ' because it belongs to GitHub repository ID ' +
+        previousRepositoryId + ', not the current ID ' + repositoryKey + '.',
+      );
+    }
+  }
+
+  await fs.mkdir(cacheRoot, { recursive: true });
+  await writeFileAtomic(
+    path.join(cacheRoot, '.github-repository-id'),
+    Buffer.from(repositoryKey + '\n', 'utf8'),
+  );
+
+  return {
+    cacheRoot,
+    workerStateRoot: path.join(stateDir, 'github-worker-state', cacheKey),
+  };
 }
 
 function parseIntegerOption(flag: string, raw: string | undefined, min: number, max: number): number {
@@ -193,13 +278,40 @@ async function chooseRepository(
   settings: StoredBridgeSettings,
 ): Promise<string> {
   const savedRepository = settings.githubRepository;
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   if (typeof savedRepository === 'string' && savedRepository) {
-    if (!process.stdin.isTTY || !process.stdout.isTTY) return savedRepository;
+    if (!interactive) {
+      try {
+        await GitHubRepositoryClient.connect(savedRepository, token);
+        return savedRepository;
+      } catch (error) {
+        if (error instanceof GitHubApiError && error.status === 404 && !error.rateLimit) {
+          throw new Error(
+            'The previously configured GitHub repository ' + savedRepository + ' no longer exists or is not accessible. ' +
+            'Start GitHub bridge interactively to select or create a replacement, or pass --github-repository owner/name ' +
+            'or --create-github-repository <name>.',
+          );
+        }
+        throw error;
+      }
+    }
+
     const useSaved = await ask('Use the previously configured repository ' + savedRepository + '? [Y/n] ');
-    if (!useSaved || /^y(es)?$/i.test(useSaved)) return savedRepository;
+    if (!useSaved || /^y(es)?$/i.test(useSaved)) {
+      try {
+        await GitHubRepositoryClient.connect(savedRepository, token);
+        return savedRepository;
+      } catch (error) {
+        if (!(error instanceof GitHubApiError && error.status === 404 && !error.rateLimit)) throw error;
+        console.warn(
+          'The previously configured repository ' + savedRepository +
+          ' no longer exists or is not accessible. Choose an existing repository or create a new private one.',
+        );
+      }
+    }
   }
 
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+  if (!interactive) {
     throw new Error(
       'GitHub repository is not configured. Start this mode in a terminal, pass --github-repository owner/name, ' +
       'or pass --create-github-repository <name>.',
@@ -328,7 +440,8 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     let client = await GitHubRepositoryClient.connect(repository, token);
 
     const publicConsentAccepted = settings.githubPublicConsentAccepted === true
-      && settings.githubPublicConsentRepository === repository;
+      && settings.githubPublicConsentRepository === repository
+      && settings.githubPublicConsentRepositoryId === client.repositoryId;
     if (!client.isPrivate && !publicConsentAccepted) {
       console.log('');
       console.log('PUBLIC REPOSITORY WARNING');
@@ -341,10 +454,12 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       if (publicAnswer !== 'PUBLIC') throw new Error('GitHub bridge startup cancelled; public repository consent was not granted.');
       settings.githubPublicConsentAccepted = true;
       settings.githubPublicConsentRepository = repository;
+      settings.githubPublicConsentRepositoryId = client.repositoryId;
     }
 
     const consentAccepted = settings.githubConsentAccepted === true
-      && settings.githubConsentRepository === repository;
+      && settings.githubConsentRepository === repository
+      && settings.githubConsentRepositoryId === client.repositoryId;
     if (!consentAccepted) {
       console.log('');
       console.log('SECURITY WARNING');
@@ -358,17 +473,20 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       if (answer !== 'YES') throw new Error('GitHub bridge startup cancelled; local consent was not granted.');
       settings.githubConsentAccepted = true;
       settings.githubConsentRepository = repository;
+      settings.githubConsentRepositoryId = client.repositoryId;
     }
 
-    const slug = repository.replace('/', '--');
-    const cacheRoot = path.join(stateDir, 'github-cache', slug);
+    // A repository name can be deleted and recreated. Resolve cache paths
+    // using GitHub's immutable ID so stale local requests cannot cross repos.
+    const cacheRoots = await resolveRepositoryCacheRoots(stateDir, repository, client.repositoryId);
+    const cacheRoot = cacheRoots.cacheRoot;
     const paths = {
       root: cacheRoot,
       requests: path.join(cacheRoot, 'requests'),
       responses: path.join(cacheRoot, 'responses'),
       artifacts: path.join(cacheRoot, 'artifacts'),
     };
-    const workerStateRoot = path.join(stateDir, 'github-worker-state', slug);
+    const workerStateRoot = cacheRoots.workerStateRoot;
 
     // With webhooks enabled, this is only a slow reconciliation safety net.
     // Until the tunnel is live (or when it fails), use the faster fallback.
@@ -497,12 +615,14 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
 
     const enableWebhook = async (): Promise<void> => {
       try {
-        const sameRepository = settings.githubWebhookRepository === repository;
+        const sameRepository = settings.githubWebhookRepository === repository
+          && settings.githubWebhookRepositoryId === client.repositoryId;
         const webhookSecret = sameRepository && typeof settings.githubWebhookSecret === 'string'
           && settings.githubWebhookSecret.length >= 32
           ? settings.githubWebhookSecret
           : randomBytes(32).toString('hex');
         settings.githubWebhookRepository = repository;
+        settings.githubWebhookRepositoryId = client.repositoryId;
         settings.githubWebhookSecret = webhookSecret;
         await writeJsonAtomic(settingsPath, settings);
 
