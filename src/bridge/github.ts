@@ -515,6 +515,8 @@ export class GitHubRepositoryClient {
       const result = toEntry(filePath, entry);
       if (!result) return;
       if (agentQueuePath.test(filePath)) {
+        const agentId = filePath.split('/')[1];
+        if (!isValidAgentDirectoryName(agentId)) return;
         if (filePath.split('/')[2] === 'requests') requests.push(result);
         else responses.push(result);
       } else if (legacyRequestPath.test(filePath)) {
