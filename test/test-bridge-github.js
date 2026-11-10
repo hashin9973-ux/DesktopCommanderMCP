@@ -522,6 +522,34 @@ try {
   api.files.set('README.md', { bytes: existingReadme, sha: gitBlobSha(existingReadme) });
   api.files.set('DESKTOP_COMMANDER_BRIDGE.md', { bytes: legacyGuide, sha: gitBlobSha(legacyGuide) });
 
+  const legacyRequestBytes = Buffer.from(JSON.stringify({
+    protocol_version: 1,
+    id: 'legacy-pending',
+    commands: [{ tool: 'get_config', arguments: {} }],
+  }), 'utf8');
+  const legacyResponseBytes = Buffer.from(JSON.stringify({
+    protocol_version: 1,
+    id: 'legacy-completed',
+    request_hash: crypto.createHash('sha256').update('legacy-completed').digest('hex'),
+    status: 'completed',
+    results: [],
+    artifacts: [{ path: 'artifacts/legacy-completed/output.bin', bytes: 4, sha256: 'legacy-hash' }],
+  }), 'utf8');
+  const legacyArtifactBytes = Buffer.from([4, 3, 2, 1]);
+  for (const directory of ['requests', 'responses', 'artifacts']) {
+    const sentinel = Buffer.from('legacy queue sentinel\n');
+    api.files.set(directory + '/.gitkeep', { bytes: sentinel, sha: gitBlobSha(sentinel) });
+  }
+  api.files.set('requests/legacy-pending.json', {
+    bytes: legacyRequestBytes, sha: gitBlobSha(legacyRequestBytes),
+  });
+  api.files.set('responses/legacy-completed.json', {
+    bytes: legacyResponseBytes, sha: gitBlobSha(legacyResponseBytes),
+  });
+  api.files.set('artifacts/legacy-completed/output.bin', {
+    bytes: legacyArtifactBytes, sha: gitBlobSha(legacyArtifactBytes),
+  });
+
   const sync = new GitHubBridgeSync(client, paths);
   api.resetDirectoryListingCalls();
   await sync.initialize();
@@ -530,13 +558,24 @@ try {
   assert.ok(api.files.has('agents/.gitkeep'));
   assert.ok(!api.files.has('requests/.gitkeep') && !api.files.has('responses/.gitkeep'));
   assert.ok(!api.files.has('artifacts/.gitkeep'));
+  assert.ok(api.files.has('agents/default/requests/legacy-pending.json'));
+  assert.ok(api.files.has('agents/default/responses/legacy-completed.json'));
+  assert.ok(api.files.has('agents/default/artifacts/legacy-completed/output.bin'));
+  assert.ok(!api.files.has('requests/legacy-pending.json'));
+  assert.ok(!api.files.has('responses/legacy-completed.json'));
+  assert.ok(!api.files.has('artifacts/legacy-completed/output.bin'),
+    'legacy remote files are removed only after their agent/default copies are verified');
   assert.ok(api.files.has('README.md'));
   assert.ok(!api.files.has('DESKTOP_COMMANDER_BRIDGE.md'),
     'initialization must remove the obsolete separate bridge guide');
   const generatedReadme = api.files.get('README.md').bytes.toString('utf8');
   assert.ok(generatedReadme.startsWith('# Desktop Commander Bridge\n'));
   assert.ok(generatedReadme.includes('## AI Quick Start'));
+  assert.ok(generatedReadme.includes('agents/<agent-name>/requests/'));
+  assert.ok(generatedReadme.includes('agents/<agent-name>/responses/'));
   assert.ok(generatedReadme.includes('## Tool catalog'));
+  assert.ok(!generatedReadme.includes('mailbox_user_id'));
+  assert.ok(!generatedReadme.includes('## Optional local mailbox'));
   assert.ok(generatedReadme.includes('### read_file'));
   assert.ok(generatedReadme.includes('cloud-folder and GitHub repository transports'));
   assert.ok(!generatedReadme.includes('cloud-storage connector'));
