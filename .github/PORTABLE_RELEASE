@@ -2,3 +2,4 @@
 # This marker is intentionally the final PR change so merge strategies preserve the release trigger.
 # Release request: validated queue reliability, repository-state isolation, and the generated agent guide.
 # Triggered for the 2026-11-10 portable Windows x64 release.
+# Release request: agent-scoped folders, per-agent IDs, legacy migration, and refreshed README.
