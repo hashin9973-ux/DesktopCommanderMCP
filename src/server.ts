@@ -1151,9 +1151,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             {
                 name: "mailbox",
                 description: `
-                        Optional local, app-side messaging. This is separate from agent-scoped bridge folders and is stored only on this device.
-                        Actions: register (username), inbox_unread (requires the ID returned by register), send-as-user (to username, message), send (sender ID or name, recipient, message), list_users, read, rename-user, delete-user.
-                        Normal Desktop Commander tools and agent-scoped bridge requests do not need mailbox identities.
+                        Optional local, app-side messaging, independent of agent-scoped bridge folders. Mail is stored only on this device.
+                        Actions: register (username), inbox_unread (mailbox_user_id), send (mailbox_user_id, to username, message), list_users, and read (optional user/from/to/unreadOnly/limit filters).
+                        The mailbox identity is used only by this separate mailbox tool. Normal Desktop Commander tools and agent-scoped bridge requests identify agents by their folders and do not require a mailbox ID.
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(MailboxArgsSchema),
                 annotations: {
