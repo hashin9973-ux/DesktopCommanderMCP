@@ -21,11 +21,14 @@ interface StoredBridgeSettings {
   githubRepository?: string;
   githubConsentAccepted?: boolean;
   githubConsentRepository?: string;
+  githubConsentRepositoryId?: number;
   githubPublicConsentAccepted?: boolean;
   githubPublicConsentRepository?: string;
+  githubPublicConsentRepositoryId?: number;
   githubPollIntervalMs?: number;
   githubReconcilePollIntervalMs?: number;
   githubWebhookRepository?: string;
+  githubWebhookRepositoryId?: number;
   githubWebhookId?: number;
   githubWebhookSecret?: string;
   maxParallelRequests?: number;
@@ -193,13 +196,40 @@ async function chooseRepository(
   settings: StoredBridgeSettings,
 ): Promise<string> {
   const savedRepository = settings.githubRepository;
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   if (typeof savedRepository === 'string' && savedRepository) {
-    if (!process.stdin.isTTY || !process.stdout.isTTY) return savedRepository;
+    if (!interactive) {
+      try {
+        await GitHubRepositoryClient.connect(savedRepository, token);
+        return savedRepository;
+      } catch (error) {
+        if (error instanceof GitHubApiError && error.status === 404 && !error.rateLimit) {
+          throw new Error(
+            'The previously configured GitHub repository ' + savedRepository + ' no longer exists or is not accessible. ' +
+            'Start GitHub bridge interactively to select or create a replacement, or pass --github-repository owner/name ' +
+            'or --create-github-repository <name>.',
+          );
+        }
+        throw error;
+      }
+    }
+
     const useSaved = await ask('Use the previously configured repository ' + savedRepository + '? [Y/n] ');
-    if (!useSaved || /^y(es)?$/i.test(useSaved)) return savedRepository;
+    if (!useSaved || /^y(es)?$/i.test(useSaved)) {
+      try {
+        await GitHubRepositoryClient.connect(savedRepository, token);
+        return savedRepository;
+      } catch (error) {
+        if (!(error instanceof GitHubApiError && error.status === 404 && !error.rateLimit)) throw error;
+        console.warn(
+          'The previously configured repository ' + savedRepository +
+          ' no longer exists or is not accessible. Choose an existing repository or create a new private one.',
+        );
+      }
+    }
   }
 
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+  if (!interactive) {
     throw new Error(
       'GitHub repository is not configured. Start this mode in a terminal, pass --github-repository owner/name, ' +
       'or pass --create-github-repository <name>.',
@@ -328,7 +358,8 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     let client = await GitHubRepositoryClient.connect(repository, token);
 
     const publicConsentAccepted = settings.githubPublicConsentAccepted === true
-      && settings.githubPublicConsentRepository === repository;
+      && settings.githubPublicConsentRepository === repository
+      && settings.githubPublicConsentRepositoryId === client.repositoryId;
     if (!client.isPrivate && !publicConsentAccepted) {
       console.log('');
       console.log('PUBLIC REPOSITORY WARNING');
@@ -341,10 +372,12 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       if (publicAnswer !== 'PUBLIC') throw new Error('GitHub bridge startup cancelled; public repository consent was not granted.');
       settings.githubPublicConsentAccepted = true;
       settings.githubPublicConsentRepository = repository;
+      settings.githubPublicConsentRepositoryId = client.repositoryId;
     }
 
     const consentAccepted = settings.githubConsentAccepted === true
-      && settings.githubConsentRepository === repository;
+      && settings.githubConsentRepository === repository
+      && settings.githubConsentRepositoryId === client.repositoryId;
     if (!consentAccepted) {
       console.log('');
       console.log('SECURITY WARNING');
@@ -358,17 +391,21 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       if (answer !== 'YES') throw new Error('GitHub bridge startup cancelled; local consent was not granted.');
       settings.githubConsentAccepted = true;
       settings.githubConsentRepository = repository;
+      settings.githubConsentRepositoryId = client.repositoryId;
     }
 
-    const slug = repository.replace('/', '--');
-    const cacheRoot = path.join(stateDir, 'github-cache', slug);
+    // A repository name can be deleted and recreated. Its immutable GitHub ID
+    // prevents stale local request/response caches from being reused by the new
+    // repository that happens to have the same owner/name.
+    const repositoryCacheKey = String(client.repositoryId);
+    const cacheRoot = path.join(stateDir, 'github-cache', repositoryCacheKey);
     const paths = {
       root: cacheRoot,
       requests: path.join(cacheRoot, 'requests'),
       responses: path.join(cacheRoot, 'responses'),
       artifacts: path.join(cacheRoot, 'artifacts'),
     };
-    const workerStateRoot = path.join(stateDir, 'github-worker-state', slug);
+    const workerStateRoot = path.join(stateDir, 'github-worker-state', repositoryCacheKey);
 
     // With webhooks enabled, this is only a slow reconciliation safety net.
     // Until the tunnel is live (or when it fails), use the faster fallback.
@@ -497,12 +534,14 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
 
     const enableWebhook = async (): Promise<void> => {
       try {
-        const sameRepository = settings.githubWebhookRepository === repository;
+        const sameRepository = settings.githubWebhookRepository === repository
+          && settings.githubWebhookRepositoryId === client.repositoryId;
         const webhookSecret = sameRepository && typeof settings.githubWebhookSecret === 'string'
           && settings.githubWebhookSecret.length >= 32
           ? settings.githubWebhookSecret
           : randomBytes(32).toString('hex');
         settings.githubWebhookRepository = repository;
+        settings.githubWebhookRepositoryId = client.repositoryId;
         settings.githubWebhookSecret = webhookSecret;
         await writeJsonAtomic(settingsPath, settings);
 
