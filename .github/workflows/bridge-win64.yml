@@ -175,9 +175,10 @@ jobs:
             )
           } | ConvertTo-Json -Depth 20
 
+          $imageRequestPath = Join-Path $cloudDir "requests\smoke-image.json"
           [System.IO.File]::WriteAllText(
-            (Join-Path $cloudDir "requests\smoke-image.json"),
-            $imageRequest,
+            $imageRequestPath,
+            "{ \"protocol_version\": 1,",
             [System.Text.UTF8Encoding]::new($false)
           )
           [System.IO.File]::WriteAllText(
@@ -191,6 +192,11 @@ jobs:
           $stdout = Join-Path $env:TEMP "dc-bridge-smoke-out.txt"
           $stderr = Join-Path $env:TEMP "dc-bridge-smoke-err.txt"
           $process = Start-Process -FilePath $exe -ArgumentList $processArgs -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          # Simulate a cloud-sync client exposing a partially written file before
+          # the completed request arrives. The worker must defer rejection and
+          # process the finished JSON on a later scan.
+          Start-Sleep -Milliseconds 500
+          [System.IO.File]::WriteAllText($imageRequestPath, $imageRequest, [System.Text.UTF8Encoding]::new($false))
 
           try {
             $imageResponsePath = Join-Path $cloudDir "responses\smoke-image.json"
