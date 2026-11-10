@@ -4,6 +4,7 @@ import { isValidAgentDirectoryName } from './agents.js';
 import { createHash } from 'node:crypto';
 import { writeFileAtomic } from '../utils/atomic-write.js';
 import { createGuideIfMissing } from './runtime.js';
+import { isValidAgentDirectoryName } from './agents.js';
 import {
   GitHubApiError,
   GitHubRepositoryClient,
@@ -572,7 +573,7 @@ export class GitHubBridgeSync {
     }
     for (const agentEntry of agentEntries) {
       if (!agentEntry.isDirectory() || agentEntry.isSymbolicLink()
-        || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(agentEntry.name)) continue;
+        || !isValidAgentDirectoryName(agentEntry.name)) continue;
       const paths = this.agentPaths(agentEntry.name);
       let responseEntries;
       try {
