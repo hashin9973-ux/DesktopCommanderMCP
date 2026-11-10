@@ -698,10 +698,8 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     }
     if (stopping) return;
 
-    child = await startWorker(cacheRoot, workerStateRoot, maxParallelRequests);
-    child.once('error', (error) => {
-      console.error('Could not start the local Desktop Commander worker: ' + error.message);
-    });
+    const initialChild = await startWorker(cacheRoot, workerStateRoot, maxParallelRequests);
+    child = initialChild;
 
     pollTimer = setInterval(() => { void syncPoll(); }, fallbackPollIntervalMs);
     void syncPoll();
@@ -802,7 +800,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     }
 
     await superviseBridgeWorker({
-      initialChild: child,
+      initialChild,
       start: () => startWorker(cacheRoot, workerStateRoot, maxParallelRequests),
       shouldStop: () => stopping,
       signal: tunnelStartupAbort.signal,
