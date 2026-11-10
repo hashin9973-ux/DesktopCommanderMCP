@@ -6,6 +6,7 @@ import path from 'node:path';
 import { GitHubApiError, GitHubRepositoryClient, MAX_GITHUB_BRIDGE_FILE_BYTES } from '../dist/bridge/github.js';
 import { createGuideIfMissing } from '../dist/bridge/runtime.js';
 import { GitHubBridgeSync } from '../dist/bridge/github-sync.js';
+import { resolveRepositoryCacheRoots } from '../dist/bridge/github-runtime.js';
 
 // Test double for GitHub's Contents and Repositories REST APIs. No network calls are made.
 function gitBlobSha(bytes) {
@@ -1017,5 +1018,36 @@ try {
 } finally {
   await fs.rm(temporaryRoot, { recursive: true, force: true });
 }
+
+
+const cacheStateRoot = path.join(temporaryRoot, 'repository-cache-state');
+const freshCache = await resolveRepositoryCacheRoots(cacheStateRoot, 'owner/fresh', 501);
+assert.equal(freshCache.cacheRoot, path.join(cacheStateRoot, 'github-cache', '501'));
+assert.equal(freshCache.workerStateRoot, path.join(cacheStateRoot, 'github-worker-state', '501'));
+assert.equal(
+  (await fs.readFile(path.join(freshCache.cacheRoot, '.github-repository-id'), 'utf8')).trim(),
+  '501',
+  'new caches must persist the immutable repository ID',
+);
+
+const confirmedLegacyCache = path.join(cacheStateRoot, 'github-cache', 'owner--same');
+await fs.mkdir(confirmedLegacyCache, { recursive: true });
+await fs.writeFile(path.join(confirmedLegacyCache, '.github-repository-id'), '502\\n');
+const sameRepositoryCache = await resolveRepositoryCacheRoots(cacheStateRoot, 'owner/same', 502);
+assert.equal(sameRepositoryCache.cacheRoot, confirmedLegacyCache,
+  'an older cache already marked with the same repository ID must be preserved');
+assert.equal(sameRepositoryCache.workerStateRoot, path.join(cacheStateRoot, 'github-worker-state', 'owner--same'));
+
+const recreatedRepositoryCache = await resolveRepositoryCacheRoots(cacheStateRoot, 'owner/same', 503);
+assert.equal(recreatedRepositoryCache.cacheRoot, path.join(cacheStateRoot, 'github-cache', '503'),
+  'a recreated repository with the same name but a different ID must receive a fresh cache');
+
+const unmarkedLegacyCache = path.join(cacheStateRoot, 'github-cache', 'owner--legacy');
+await fs.mkdir(unmarkedLegacyCache, { recursive: true });
+await assert.rejects(
+  () => resolveRepositoryCacheRoots(cacheStateRoot, 'owner/legacy', 504),
+  /older local GitHub bridge cache exists/,
+  'unmarked legacy caches require an explicit interactive decision rather than being reused silently',
+);
 
 console.log('GitHub repository bridge tests passed.');
