@@ -561,6 +561,11 @@ try {
   assert.ok(api.files.has('agents/default/requests/legacy-pending.json'));
   assert.ok(api.files.has('agents/default/responses/legacy-completed.json'));
   assert.ok(api.files.has('agents/default/artifacts/legacy-completed/output.bin'));
+  assert.ok(
+    api.commits.findIndex((commit) => commit.path === 'agents/default/artifacts/legacy-completed/output.bin')
+      < api.commits.findIndex((commit) => commit.path === 'agents/default/responses/legacy-completed.json'),
+    'legacy artifacts must be committed before the migrated response completion marker',
+  );
   assert.ok(!api.files.has('requests/legacy-pending.json'));
   assert.ok(!api.files.has('responses/legacy-completed.json'));
   assert.ok(!api.files.has('artifacts/legacy-completed/output.bin'),
