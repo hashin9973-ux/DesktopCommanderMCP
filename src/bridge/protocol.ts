@@ -7,10 +7,18 @@ export interface BridgeCommand {
 }
 
 export interface BridgeRequest {
-  protocol_version: 1;
+  protocol_version: 1 | 2;
   id: string;
   commands: BridgeCommand[];
   command_delay_ms?: number;
+}
+
+export interface ParseBridgeRequestOptions {
+  /**
+   * Agent-scoped queues derive identity from the containing agents/<path>/request
+   * directory and the filename. Their v2 JSON body must not repeat an id.
+   */
+  agentScoped?: boolean;
 }
 
 const REQUEST_FILE_PATTERN = /^(?:request-)?([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/i;
@@ -83,7 +91,7 @@ function parseCommand(value: unknown, index: number): BridgeCommand {
   return { tool: value.tool, arguments: normalizedArguments };
 }
 
-function parseJsonRequest(idFromFilename: string, content: string): BridgeRequest {
+function parseJsonRequest(idFromFilename: string, content: string, agentScoped: boolean): BridgeRequest {
   let value: unknown;
   try {
     value = JSON.parse(content);
@@ -91,13 +99,22 @@ function parseJsonRequest(idFromFilename: string, content: string): BridgeReques
     throw new Error('Invalid request JSON: ' + (error instanceof Error ? error.message : String(error)));
   }
   if (!isRecord(value)) throw new Error('The JSON request root must be an object.');
-  assertOnlyKeys(value, ['protocol_version', 'id', 'commands', 'command_delay_ms'], 'Request');
-
-  if (value.protocol_version !== 1) {
-    throw new Error('Unsupported protocol_version "' + String(value.protocol_version) + '"; expected 1.');
-  }
-  if (typeof value.id !== 'string' || value.id !== idFromFilename) {
-    throw new Error('Request id must exactly match the filename id "' + idFromFilename + '".');
+  if (agentScoped) {
+    assertOnlyKeys(value, ['protocol_version', 'commands', 'command_delay_ms'], 'Agent request');
+    if (value.protocol_version !== 2) {
+      throw new Error('Unsupported protocol_version "' + String(value.protocol_version) + '" for an agent request; expected 2.');
+    }
+    if (Object.prototype.hasOwnProperty.call(value, 'id')) {
+      throw new Error('Agent protocol v2 derives the request id from the filename; do not include an id field.');
+    }
+  } else {
+    assertOnlyKeys(value, ['protocol_version', 'id', 'commands', 'command_delay_ms'], 'Request');
+    if (value.protocol_version !== 1) {
+      throw new Error('Unsupported protocol_version "' + String(value.protocol_version) + '"; expected 1 for the shared queue.');
+    }
+    if (typeof value.id !== 'string' || value.id !== idFromFilename) {
+      throw new Error('Request id must exactly match the filename id "' + idFromFilename + '".');
+    }
   }
   if (!Array.isArray(value.commands) || value.commands.length === 0) {
     throw new Error('Request commands must be a non-empty array.');
@@ -108,14 +125,14 @@ function parseJsonRequest(idFromFilename: string, content: string): BridgeReques
   }
 
   return {
-    protocol_version: 1,
+    protocol_version: agentScoped ? 2 : 1,
     id: idFromFilename,
     commands: value.commands.map(parseCommand),
     ...(value.command_delay_ms === undefined ? {} : { command_delay_ms: Number(value.command_delay_ms) }),
   };
 }
 
-function parseMarkdownRequest(idFromFilename: string, content: string): BridgeRequest {
+function parseMarkdownRequest(idFromFilename: string, content: string, agentScoped: boolean): BridgeRequest {
   const commands: BridgeCommand[] = [];
   const lines = content.split(/\r?\n/);
   let fenceCharacter: string | undefined;
@@ -129,7 +146,7 @@ function parseMarkdownRequest(idFromFilename: string, content: string): BridgeRe
       if (!opening) continue;
       fenceCharacter = opening[1][0];
       fenceLength = opening[1].length;
-      executableFence = opening[2].trim().toLowerCase() === 'desktop-commander-v1';
+      executableFence = opening[2].trim().toLowerCase() === (agentScoped ? 'desktop-commander-v2' : 'desktop-commander-v1');
       commandLines = [];
       continue;
     }
@@ -160,15 +177,19 @@ function parseMarkdownRequest(idFromFilename: string, content: string): BridgeRe
   if (commands.length === 0) {
     throw new Error('Markdown request contains no executable desktop-commander-v1 fenced blocks.');
   }
-  return { protocol_version: 1, id: idFromFilename, commands };
+  return { protocol_version: agentScoped ? 2 : 1, id: idFromFilename, commands };
 }
-export function parseBridgeRequest(filename: string, content: string): BridgeRequest {
+export function parseBridgeRequest(
+  filename: string,
+  content: string,
+  options: ParseBridgeRequestOptions = {},
+): BridgeRequest {
   const match = REQUEST_FILE_PATTERN.exec(filename);
   if (!match) {
     throw new Error('Request filename must be request-<id>.json or request-<id>.md; id may contain letters, digits, underscores and hyphens.');
   }
   const id = match[1];
   return match[2].toLowerCase() === 'json'
-    ? parseJsonRequest(id, content)
-    : parseMarkdownRequest(id, content);
+    ? parseJsonRequest(id, content, options.agentScoped === true)
+    : parseMarkdownRequest(id, content, options.agentScoped === true);
 }
