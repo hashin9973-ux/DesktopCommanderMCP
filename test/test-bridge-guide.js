@@ -22,6 +22,10 @@ try {
   assert.match(generatedGuide, /only agent-facing guide/);
   assert.doesNotMatch(generatedGuide, /status\/status-|status\/worker\.json/);
   assert.doesNotMatch(generatedGuide, /named requests\/request-<id>|produces responses\/response-<id>/);
+  assert.doesNotMatch(generatedGuide, /## Storage cleanup|## Local security/);
+  assert.doesNotMatch(generatedGuide, /3,000,000,000 bytes|The bridge runs existing Desktop Commander tools on the local computer/);
+  assert.match(generatedGuide, /## Optional local mailbox \(direct MCP and both bridge transports\)/);
+  assert.match(generatedGuide, /mailbox_user_id/);
 
   const oldGeneratedRoot = path.join(tempDir, 'old-generated');
   await fs.mkdir(oldGeneratedRoot, { recursive: true });
