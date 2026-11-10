@@ -592,6 +592,42 @@ try {
     'unchanged completed requests should be skipped without downloading the request or response again');
   assert.equal(api.getRawReadCount('responses/response-sample-01.json'), 0);
 
+  const compactId = 'task-a1';
+  const compactRequestBytes = Buffer.from(JSON.stringify({
+    protocol_version: 1,
+    id: compactId,
+    commands: [{ tool: 'get_config', arguments: {} }],
+  }), 'utf8');
+  api.files.set('requests/' + compactId + '.json', {
+    bytes: compactRequestBytes,
+    sha: gitBlobSha(compactRequestBytes),
+  });
+  await sync.syncOnce();
+  assert.deepEqual(
+    await fs.readFile(path.join(paths.requests, compactId + '.json')),
+    compactRequestBytes,
+    'GitHub sync must stage compact request filenames without a request- prefix',
+  );
+  const compactRequestHash = crypto.createHash('sha256').update(compactRequestBytes).digest('hex');
+  await fs.writeFile(path.join(paths.responses, compactId + '.json'), JSON.stringify({
+    protocol_version: 1,
+    id: compactId,
+    request_hash: compactRequestHash,
+    status: 'completed',
+    started_at: '2026-01-01T00:00:00.000Z',
+    completed_at: '2026-01-01T00:00:01.000Z',
+    results: [],
+    artifacts: [],
+  }));
+  await sync.syncOnce();
+  assert.ok(api.files.has('responses/' + compactId + '.json'),
+    'GitHub sync must publish compact response filenames without a response- prefix');
+  await assert.rejects(
+    () => fs.access(path.join(paths.requests, compactId + '.json')),
+    /ENOENT/,
+    'compact local request staging files should be removed after response publication',
+  );
+
   // Overwriting a request after its response exists must not re-execute it.
   // A changed blob under an already-completed ID should be explicitly diagnosed.
   const reusedRequestBytes = Buffer.from(JSON.stringify({

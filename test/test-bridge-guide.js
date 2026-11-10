@@ -21,7 +21,7 @@ try {
   assert.match(generatedGuide, /responses\/task-a1\.json/);
   assert.match(generatedGuide, /only agent-facing guide/);
   assert.doesNotMatch(generatedGuide, /status\/status-|status\/worker\.json/);
-  assert.doesNotMatch(generatedGuide, /request-<id>|response-<id>/);
+  assert.doesNotMatch(generatedGuide, /named requests\/request-<id>|produces responses\/response-<id>/);
 
   const oldGeneratedRoot = path.join(tempDir, 'old-generated');
   await fs.mkdir(oldGeneratedRoot, { recursive: true });

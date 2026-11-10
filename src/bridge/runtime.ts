@@ -352,7 +352,7 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '',
     'Keep the pipeline full: submit A, submit B, then check responses/A.json. While B is still running, submit C if it is independent. Read each response as soon as it appears; do not block every submission on its own result. Retrieve known response paths directly rather than repeatedly listing the whole response history.',
     '',
-    'Example: upload requests/a1.json, then requests/b2.json; next read responses/a1.json. If it is ready, read it while B continues. Submit request c3 without waiting for B if C is independent, then retrieve responses/b2.json and responses/c3.json. Each request uses protocol_version 1, an id matching its filename, and a commands array containing the relevant tool call.',
+    'Example: upload requests/task-a1.json, then requests/task-b2.json; next read responses/task-a1.json. If it is ready, read it while B continues. Submit requests/task-c3.json without waiting for B if C is independent, then retrieve responses/task-b2.json and responses/task-c3.json. Each request uses protocol_version 1, an id matching its filename, and a commands array containing the relevant tool call.',
     '',
     'Use a single request file with multiple commands only when those commands must run in a known sequence and all later arguments are already known. If a later command needs data returned by an earlier command (for example, a PID or discovered path), wait for that result before submitting the dependent request. Never pretend independent requests are ordered relative to each other.',
     '',
@@ -1340,7 +1340,8 @@ async function cleanStorage(
     const filename = path.basename(candidate.path);
     const id = requestIdFromFilename(filename);
     if (id && path.dirname(candidate.path) === paths.requests) {
-      const responsePath = path.join(paths.responses, 'response-' + id + '.json');
+      const responseFilename = /^request-/i.test(filename) ? 'response-' + id + '.json' : id + '.json';
+      const responsePath = path.join(paths.responses, responseFilename);
       const existing = await readJsonIfExists<BridgeResponse>(responsePath);
       if (!existing && !isActiveNow(candidate.path)) {
         const requestBytes = await fs.readFile(candidate.path).catch(() => null);
