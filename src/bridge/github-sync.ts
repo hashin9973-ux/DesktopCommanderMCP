@@ -424,6 +424,49 @@ export class GitHubBridgeSync {
     };
   }
 
+  private async ensureAgentPaths(agentId: string): Promise<AgentGitHubBridgeCachePaths> {
+    const paths = this.agentPaths(agentId);
+    await fs.mkdir(this.paths.root, { recursive: true });
+    const rootStat = await fs.lstat(this.paths.root);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      throw new Error('The local GitHub bridge cache root must be a real directory.');
+    }
+
+    await fs.mkdir(this.paths.agents, { recursive: true });
+    const agentsStat = await fs.lstat(this.paths.agents);
+    if (!agentsStat.isDirectory() || agentsStat.isSymbolicLink()) {
+      throw new Error('The local GitHub agent cache root must be a real directory.');
+    }
+    const realRoot = await fs.realpath(this.paths.root);
+    const realAgents = await fs.realpath(this.paths.agents);
+    if (path.resolve(realAgents) !== path.resolve(path.join(realRoot, 'agents'))) {
+      throw new Error('The local GitHub agent cache root resolves outside the repository cache.');
+    }
+
+    await fs.mkdir(paths.root, { recursive: true });
+    const agentStat = await fs.lstat(paths.root);
+    if (!agentStat.isDirectory() || agentStat.isSymbolicLink()) {
+      throw new Error('The local cache directory for agent ' + agentId + ' must be a real directory.');
+    }
+    const realAgent = await fs.realpath(paths.root);
+    if (path.resolve(realAgent) !== path.resolve(path.join(realAgents, agentId))) {
+      throw new Error('The local cache directory for agent ' + agentId + ' resolves outside the agent cache root.');
+    }
+
+    for (const directory of [paths.requests, paths.responses, paths.artifacts]) {
+      await fs.mkdir(directory, { recursive: true });
+      const stat = await fs.lstat(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new Error('The local queue directory for agent ' + agentId + ' must be a real directory: ' + directory);
+      }
+      const realDirectory = await fs.realpath(directory);
+      if (path.resolve(realDirectory) !== path.resolve(directory)) {
+        throw new Error('The local queue directory for agent ' + agentId + ' resolves outside its cache: ' + directory);
+      }
+    }
+    return paths;
+  }
+
   private parseQueueEntry(entry: GitHubContentEntry, queueName: 'requests' | 'responses'):
     { agentId: string; requestId: string } | undefined {
     const segments = entry.path.split('/');
@@ -574,7 +617,7 @@ export class GitHubBridgeSync {
     for (const agentEntry of agentEntries) {
       if (!agentEntry.isDirectory() || agentEntry.isSymbolicLink()
         || !isValidAgentDirectoryName(agentEntry.name)) continue;
-      const paths = this.agentPaths(agentEntry.name);
+      const paths = await this.ensureAgentPaths(agentEntry.name);
       let responseEntries;
       try {
         responseEntries = await fs.readdir(paths.responses, { withFileTypes: true });
@@ -648,8 +691,7 @@ export class GitHubBridgeSync {
             this.observedRequestBlobShas.set(requestKey, entry.sha);
             if (remoteResponse) return;
 
-            const paths = this.agentPaths(identity.agentId);
-            await fs.mkdir(paths.requests, { recursive: true });
+            const paths = await this.ensureAgentPaths(identity.agentId);
             const localPath = path.join(paths.requests, entry.name);
             const cached = await readOptional(localPath);
             let requestBytes: Buffer;
@@ -756,7 +798,8 @@ export class GitHubBridgeSync {
       if (!identity) continue;
       const requestKey = identity.agentId + ':' + identity.requestId;
       if (!completedRequestKeys.has(requestKey)) continue;
-      const localPath = path.join(this.agentPaths(identity.agentId).requests, entry.name);
+      const agentPaths = await this.ensureAgentPaths(identity.agentId);
+      const localPath = path.join(agentPaths.requests, entry.name);
       await fs.rm(localPath, { force: true });
     }
   }
