@@ -595,6 +595,47 @@ try {
   assert.equal(api.getRawReadCount('README.md'), 1,
     'routine initialization must use the local generated-guide digest instead of downloading README again');
 
+  // Two agents may use the same request ID without sharing queue state.
+  const sharedId = 'same-id';
+  const agentRequestBytes = new Map();
+  for (const agentId of ['chatgpt', 'claude']) {
+    const bytes = Buffer.from(JSON.stringify({
+      protocol_version: 1,
+      id: sharedId,
+      commands: [{ tool: 'get_config', arguments: {} }],
+    }), 'utf8');
+    agentRequestBytes.set(agentId, bytes);
+    const remotePath = 'agents/' + agentId + '/requests/' + sharedId + '.json';
+    api.files.set(remotePath, { bytes, sha: gitBlobSha(bytes) });
+  }
+  await sync.syncOnce();
+  for (const agentId of ['chatgpt', 'claude']) {
+    const agentRoot = path.join(paths.agents, agentId);
+    assert.deepEqual(
+      await fs.readFile(path.join(agentRoot, 'requests', sharedId + '.json')),
+      agentRequestBytes.get(agentId),
+      'same request ID must be staged independently for ' + agentId,
+    );
+    const responseHash = crypto.createHash('sha256').update(agentRequestBytes.get(agentId)).digest('hex');
+    const localResponsePath = path.join(agentRoot, 'responses', sharedId + '.json');
+    await fs.writeFile(localResponsePath, JSON.stringify({
+      protocol_version: 1,
+      id: sharedId,
+      request_hash: responseHash,
+      status: 'completed',
+      started_at: '2026-01-01T00:00:00.000Z',
+      completed_at: '2026-01-01T00:00:01.000Z',
+      results: [{ index: 0, tool: 'get_config', status: 'succeeded', isError: false }],
+      artifacts: [],
+    }));
+  }
+  await sync.syncOnce();
+  assert.ok(api.files.has('agents/chatgpt/responses/' + sharedId + '.json'));
+  assert.ok(api.files.has('agents/claude/responses/' + sharedId + '.json'),
+    'each agent must receive its own response even when the request IDs match');
+  assert.ok(!api.files.has('agents/chatgpt/requests/' + sharedId + '.json'));
+  assert.ok(!api.files.has('agents/claude/requests/' + sharedId + '.json'));
+
   const requestBytes = Buffer.from(JSON.stringify({
     protocol_version: 1,
     id: 'sample-01',
