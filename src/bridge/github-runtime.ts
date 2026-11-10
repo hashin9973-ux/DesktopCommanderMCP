@@ -801,13 +801,31 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       webhookSetupPromise = enableWebhook();
     }
 
-    const childExitCode = await new Promise<number>((resolve, reject) => {
-      child!.once('error', reject);
-      child!.once('exit', (code) => resolve(code === null ? 1 : code));
+    await superviseBridgeWorker({
+      initialChild: child,
+      start: () => startWorker(cacheRoot, workerStateRoot, maxParallelRequests),
+      shouldStop: () => stopping,
+      signal: tunnelStartupAbort.signal,
+      onChildStarted: (nextChild) => {
+        child = nextChild;
+        console.log('GitHub bridge: local Desktop Commander worker restarted.');
+      },
+      onWorkerExit: ({ code, signal, error, restartDelayMs }) => {
+        console.error(
+          'GitHub bridge: local Desktop Commander worker exited unexpectedly' +
+          (code === null ? '' : ' with code ' + code) +
+          (signal ? ' (signal ' + signal + ')' : '') +
+          (error ? ': ' + error.message : '') +
+          '. Restarting in ' + restartDelayMs + ' ms; pending requests remain in the durable queue.',
+        );
+      },
+      onStartError: (error, retryDelayMs) => {
+        console.error(
+          'GitHub bridge: could not restart the local Desktop Commander worker: ' +
+          errorMessage(error) + '. Retrying in ' + retryDelayMs + ' ms.',
+        );
+      },
     });
-    if (!stopping && childExitCode !== 0) {
-      throw new Error('The local Desktop Commander worker exited with code ' + childExitCode + '.');
-    }
   } finally {
     stopWorker();
     await webhookSetupPromise?.catch(() => undefined);
