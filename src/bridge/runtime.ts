@@ -94,6 +94,7 @@ interface BridgePaths {
   requests: string;
   responses: string;
   artifacts: string;
+  agents: string;
   ledgers: string;
 }
 
@@ -968,14 +969,14 @@ async function commitResponse(
 }
 
 async function writeRejectedResponse(
-  root: string,
+  responsesDirectory: string,
   id: string,
   requestHash: string,
   error: string,
   responseFilename = 'response-' + id + '.json',
 ): Promise<void> {
   await commitResponse(
-    path.join(root, 'responses'),
+    responsesDirectory,
     id,
     requestHash,
     new Date().toISOString(),
@@ -1018,6 +1019,49 @@ async function stableRead(filePath: string): Promise<Buffer | null> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
   }
+}
+
+interface AgentQueueContext {
+  agentPath: string;
+  requestKey: string;
+  paths: BridgePaths;
+}
+
+const AGENT_SEGMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+const RESERVED_AGENT_SEGMENTS = new Set(['request', 'response', 'artifacts', 'events']);
+
+function resolveAgentQueueContext(
+  paths: BridgePaths,
+  filePath: string,
+  requestId: string,
+): AgentQueueContext | undefined {
+  const relative = path.relative(paths.agents, filePath);
+  if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+    return undefined;
+  }
+  const parts = relative.split(path.sep);
+  if (parts.length < 3 || parts[parts.length - 2] !== 'request') return undefined;
+  const agentSegments = parts.slice(0, -2);
+  if (!agentSegments.length || agentSegments.some((segment) =>
+    !AGENT_SEGMENT_PATTERN.test(segment) || RESERVED_AGENT_SEGMENTS.has(segment.toLowerCase()),
+  )) {
+    return undefined;
+  }
+
+  const agentPath = agentSegments.join('/');
+  const agentRoot = path.join(paths.agents, ...agentSegments);
+  const effectivePaths: BridgePaths = {
+    ...paths,
+    requests: path.join(agentRoot, 'request'),
+    responses: path.join(agentRoot, 'response'),
+    artifacts: path.join(agentRoot, 'artifacts'),
+    ledgers: path.join(paths.ledgers, 'agents', ...agentSegments),
+  };
+  return {
+    agentPath,
+    requestKey: 'agent:' + agentPath + ':' + requestId,
+    paths: effectivePaths,
+  };
 }
 
 async function processRequestFile(
