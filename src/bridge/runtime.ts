@@ -1029,11 +1029,12 @@ async function processRequestFile(
   if (!bytes) return;
   const requestHash = createHash('sha256').update(bytes).digest('hex');
 
-  const knownHash = doneRequests.get(id);
+  const requestKey = paths.agentId + ':' + id;
+  const knownHash = doneRequests.get(requestKey);
   if (knownHash) {
     if (knownHash !== requestHash) {
       console.error('Request id conflict: ' + filename + ' was changed after it was processed.');
-      doneRequests.set(id, requestHash);
+      doneRequests.set(requestKey, requestHash);
     }
     return;
   }
@@ -1046,7 +1047,7 @@ async function processRequestFile(
     if (existingResponse.request_hash !== requestHash) {
       console.error('Request id conflict: a different response already exists for ' + id + '.');
     }
-    doneRequests.set(id, requestHash);
+    doneRequests.set(requestKey, requestHash);
     return;
   }
 
@@ -1054,16 +1055,16 @@ async function processRequestFile(
   try {
     request = parseBridgeRequest(filename, bytes.toString('utf8'));
   } catch (error) {
-    const observation = invalidRequestObservations.get(id);
+    const observation = invalidRequestObservations.get(requestKey);
     if (!observation || observation.requestHash !== requestHash) {
-      invalidRequestObservations.set(id, { requestHash, firstSeenAt: Date.now() });
+      invalidRequestObservations.set(requestKey, { requestHash, firstSeenAt: Date.now() });
       console.warn('Request ' + filename + ' is not valid yet; waiting briefly for cloud-folder synchronization to finish.');
       return;
     }
     if (Date.now() - observation.firstSeenAt < REQUEST_PARSE_SETTLE_MS) return;
-    invalidRequestObservations.delete(id);
+    invalidRequestObservations.delete(requestKey);
     await writeRejectedResponse(paths.root, id, requestHash, errorMessage(error), responseFilename);
-    doneRequests.set(id, requestHash);
+    doneRequests.set(requestKey, requestHash);
     console.error('Rejected ' + filename + ': ' + errorMessage(error));
     return;
   }
@@ -1073,7 +1074,7 @@ async function processRequestFile(
   let ledger = await readJsonIfExists<RequestLedger>(ledgerPath);
   if (ledger && ledger.request_hash !== requestHash) {
     await writeRejectedResponse(paths.root, id, requestHash, 'This request id was previously used with different content. Use a new id.', responseFilename);
-    doneRequests.set(id, requestHash);
+    doneRequests.set(requestKey, requestHash);
     return;
   }
 
@@ -1091,7 +1092,7 @@ async function processRequestFile(
     await writeJsonAtomic(ledgerPath, ledger);
   } else if (ledger.commands.length !== request.commands.length) {
     await writeRejectedResponse(paths.root, id, requestHash, 'The saved processing record does not match the command count in this request.', responseFilename);
-    doneRequests.set(id, requestHash);
+    doneRequests.set(requestKey, requestHash);
     return;
   }
 
@@ -1124,7 +1125,7 @@ async function processRequestFile(
       if (ledger.commands[i].result) results.push(ledger.commands[i].result!);
     }
     await commitResponse(paths.responses, id, requestHash, ledger.started_at, results, responseStatus(results, false), undefined, responseFilename);
-    doneRequests.set(id, requestHash);
+    doneRequests.set(requestKey, requestHash);
     await cleanup();
     return;
   }
@@ -1250,7 +1251,7 @@ async function processRequestFile(
   activeResponseFiles.add(responsePath);
   try {
     await commitResponse(paths.responses, id, requestHash, ledger.started_at, results, status, undefined, responseFilename);
-    doneRequests.set(id, requestHash);
+    doneRequests.set(requestKey, requestHash);
   } finally {
     activeResponseFiles.delete(responsePath);
   }
