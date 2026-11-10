@@ -12,13 +12,14 @@ on:
       - 'test/test-local-api.js'
       - 'docs/GITHUB_REPOSITORY_BRIDGE.md'
       - 'docs/LOCAL_OPENAI_COMPATIBLE_API.md'
+      - '.github/PORTABLE_RELEASE'
       - '.github/workflows/bridge-win64.yml'
   pull_request:
     branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-and-smoke-test:
@@ -27,6 +28,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
@@ -172,13 +175,14 @@ jobs:
             )
           } | ConvertTo-Json -Depth 20
 
+          $imageRequestPath = Join-Path $cloudDir "requests\smoke-image.json"
           [System.IO.File]::WriteAllText(
-            (Join-Path $cloudDir "requests\request-smoke-image.json"),
-            $imageRequest,
+            $imageRequestPath,
+            '{ "protocol_version": 1,',
             [System.Text.UTF8Encoding]::new($false)
           )
           [System.IO.File]::WriteAllText(
-            (Join-Path $cloudDir "requests\request-smoke-config.json"),
+            (Join-Path $cloudDir "requests\smoke-config.json"),
             $configRequest,
             [System.Text.UTF8Encoding]::new($false)
           )
@@ -188,10 +192,28 @@ jobs:
           $stdout = Join-Path $env:TEMP "dc-bridge-smoke-out.txt"
           $stderr = Join-Path $env:TEMP "dc-bridge-smoke-err.txt"
           $process = Start-Process -FilePath $exe -ArgumentList $processArgs -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          # Simulate a cloud-sync client exposing a partially written file before
+          # the completed request arrives. Wait until the worker has actually
+          # observed and deferred the incomplete JSON before completing the file.
+          $partialDeadline = (Get-Date).AddSeconds(15)
+          $partialObserved = $false
+          while ((Get-Date) -lt $partialDeadline) {
+            $partialLog = Get-Content $stderr -Raw -ErrorAction SilentlyContinue
+            if ($partialLog -match "is not valid yet") {
+              $partialObserved = $true
+              break
+            }
+            if ($process.HasExited) {
+              throw "Bridge exited before observing the partial request. stdout: $(Get-Content $stdout -Raw -ErrorAction SilentlyContinue) stderr: $partialLog"
+            }
+            Start-Sleep -Milliseconds 100
+          }
+          if (!$partialObserved) { throw "Bridge did not observe the intentionally partial request." }
+          [System.IO.File]::WriteAllText($imageRequestPath, $imageRequest, [System.Text.UTF8Encoding]::new($false))
 
           try {
-            $imageResponsePath = Join-Path $cloudDir "responses\response-smoke-image.json"
-            $configResponsePath = Join-Path $cloudDir "responses\response-smoke-config.json"
+            $imageResponsePath = Join-Path $cloudDir "responses\smoke-image.json"
+            $configResponsePath = Join-Path $cloudDir "responses\smoke-config.json"
 
             # The first request pauses for five seconds between its two commands.
             # The independent request must complete during that pause.
@@ -325,6 +347,12 @@ jobs:
             if ($guideContent.Contains("bridge request parser intentionally rejects the")) {
               throw "Generated bridge README still describes mailbox as bridge-inaccessible."
             }
+            if (!$guideContent.Contains("requests/task-a1.json") -or !$guideContent.Contains("responses/task-a1.json")) {
+              throw "Generated bridge README is missing the compact request/response filename convention."
+            }
+            if ($guideContent.Contains("status/status-") -or $guideContent.Contains("status/worker.json")) {
+              throw "Generated bridge README refers to status files that this bridge does not publish."
+            }
           }
           finally {
             if (!$process.HasExited) {
@@ -333,10 +361,48 @@ jobs:
             }
           }
 
+      - name: Detect one-time portable release request
+        id: portable-release
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          $changed = @(git diff --name-only HEAD^ HEAD)
+          if ($changed -contains ".github/PORTABLE_RELEASE") {
+            "publish=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "publish=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $archive = Join-Path $PWD "build\DesktopCommanderBridge-win-x64-portable.zip"
+          Compress-Archive -Path "build\PortableBridge\*" -DestinationPath $archive -CompressionLevel Optimal
+          if (!(Test-Path $archive)) { throw "Portable ZIP was not created." }
+
       - name: Upload portable executable
         uses: actions/upload-artifact@v7
         with:
           name: DesktopCommanderBridge-win-x64-portable
-          path: build/PortableBridge/
+          path: |
+            build/PortableBridge/
+            build/DesktopCommanderBridge-win-x64-portable.zip
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish portable GitHub release
+        if: github.event_name == 'push' && steps.portable-release.outputs.publish == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = node -p "require('./package.json').version"
+          $tag = "bridge-portable-v$version-$env:GITHUB_RUN_NUMBER"
+          $archive = "build\DesktopCommanderBridge-win-x64-portable.zip"
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $archive --repo $env:GITHUB_REPOSITORY --clobber
+          } else {
+            gh release create $tag $archive --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "Desktop Commander Bridge portable v$version (Windows x64)" --notes "Portable Windows x64 build. Extract the ZIP and run DesktopCommanderBridge.exe. Includes its Node.js runtime, application dependencies, GitHub CLI, and Cloudflare Quick Tunnel client."
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Could not publish the portable GitHub release asset." }

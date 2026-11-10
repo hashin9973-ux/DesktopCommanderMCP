@@ -16,10 +16,15 @@ function createGitHubApiDouble() {
   const files = new Map();
   const commits = [];
   const rawReads = new Map();
+  const directoryListingCalls = [];
   let createdRepositoryPayload;
   const webhooks = new Map();
   let nextWebhookId = 1;
   let responseUploadGate;
+  let staleHeadConflictPath;
+  let truncateRecursiveTree = false;
+  let failNextQueueTreeList = false;
+  let queueTreeListGate;
 
   const jsonResponse = (value, status = 200) => new Response(JSON.stringify(value), {
     status,
@@ -117,6 +122,59 @@ function createGitHubApiDouble() {
       ]);
     }
 
+    if (url.pathname === '/repos/owner/repo/commits/main' && method === 'GET') {
+      return jsonResponse({ commit: { tree: { sha: 'root-tree-sha' } } });
+    }
+
+    if (url.pathname === '/repos/owner/repo/git/trees/root-tree-sha' && method === 'GET') {
+      const recursive = url.searchParams.get('recursive') === '1';
+      if (recursive && queueTreeListGate) {
+        const gate = queueTreeListGate;
+        queueTreeListGate = undefined;
+        gate.signalStarted();
+        await gate.wait;
+      }
+      if (recursive && failNextQueueTreeList) {
+        failNextQueueTreeList = false;
+        return jsonResponse({ message: 'temporary tree listing failure' }, 500);
+      }
+      if (recursive && truncateRecursiveTree) {
+        return jsonResponse({ sha: 'root-tree-sha', truncated: true, tree: [] });
+      }
+      if (recursive) {
+        return jsonResponse({
+          sha: 'root-tree-sha',
+          truncated: false,
+          tree: [...files.entries()].map(([filePath, value]) => ({
+            path: filePath, type: 'blob', mode: '100644', sha: value.sha, size: value.bytes.length,
+          })),
+        });
+      }
+      return jsonResponse({
+        sha: 'root-tree-sha',
+        truncated: false,
+        tree: ['requests', 'responses', 'artifacts'].map((name) => ({
+          path: name, type: 'tree', mode: '040000', sha: name + '-tree-sha',
+        })),
+      });
+    }
+
+    const queueTreeMatch = /^\/repos\/owner\/repo\/git\/trees\/(requests|responses)-tree-sha$/.exec(url.pathname);
+    if (queueTreeMatch && method === 'GET') {
+      const directory = queueTreeMatch[1];
+      return jsonResponse({
+        sha: directory + '-tree-sha',
+        truncated: false,
+        tree: [...files.entries()].flatMap(([filePath, value]) => {
+          const prefix = directory + '/';
+          if (!filePath.startsWith(prefix)) return [];
+          const relative = filePath.slice(prefix.length);
+          if (!relative || relative.includes('/')) return [];
+          return [{ path: relative, type: 'blob', mode: '100644', sha: value.sha, size: value.bytes.length }];
+        }),
+      });
+    }
+
     if (url.pathname === '/repos/owner/repo/contents' && method === 'GET') {
       return directoryListing('');
     }
@@ -149,6 +207,10 @@ function createGitHubApiDouble() {
     }
 
     if (repoPath && method === 'PUT') {
+      if (repoPath === staleHeadConflictPath) {
+        staleHeadConflictPath = undefined;
+        return jsonResponse({ message: 'Update is not a fast forward' }, 422);
+      }
       if (repoPath.startsWith('responses/') && responseUploadGate) {
         const gate = responseUploadGate;
         responseUploadGate = undefined;
@@ -186,6 +248,7 @@ function createGitHubApiDouble() {
   };
 
   function directoryListing(directory) {
+    directoryListingCalls.push(directory);
     const entries = [];
     const prefix = directory ? directory + '/' : '';
     for (const [filePath, value] of files.entries()) {
@@ -208,7 +271,21 @@ function createGitHubApiDouble() {
     files,
     commits,
     getRawReadCount: (filePath) => rawReads.get(filePath) || 0,
+    getDirectoryListingCalls: () => [...directoryListingCalls],
+    resetDirectoryListingCalls: () => { directoryListingCalls.length = 0; },
     getCreatedRepositoryPayload: () => createdRepositoryPayload,
+    conflictNextCreateFile: (filePath) => { staleHeadConflictPath = filePath; },
+    truncateNextRecursiveTree: () => { truncateRecursiveTree = true; },
+    restoreRecursiveTree: () => { truncateRecursiveTree = false; },
+    failNextQueueTreeList: () => { failNextQueueTreeList = true; },
+    pauseNextQueueTreeList: () => {
+      let release;
+      let signalStarted;
+      const started = new Promise((resolve) => { signalStarted = resolve; });
+      const wait = new Promise((resolve) => { release = resolve; });
+      queueTreeListGate = { wait, signalStarted };
+      return { started, release };
+    },
     pauseNextResponseUpload: () => {
       let release;
       let signalStarted;
@@ -241,6 +318,19 @@ assert.equal(listed[1].push, false);
 
 const client = await GitHubRepositoryClient.connect('owner/repo', token, api.fetcher);
 assert.equal(client.defaultBranch, 'main');
+api.conflictNextCreateFile('responses/stale-head-retry.json');
+assert.equal(await client.createFileIfAbsent(
+  'responses/stale-head-retry.json',
+  Buffer.from('retry after stale branch head'),
+  'Test stale branch retry',
+), true, 'a 422 stale-head conflict with an absent target must be retried');
+assert.equal(api.files.get('responses/stale-head-retry.json').bytes.toString('utf8'), 'retry after stale branch head');
+
+api.truncateNextRecursiveTree();
+const recoveredTreeListing = await client.listQueueFiles();
+assert.ok(Array.isArray(recoveredTreeListing.requests));
+assert.ok(Array.isArray(recoveredTreeListing.responses));
+api.restoreRecursiveTree();
 await assert.rejects(
   () => GitHubRepositoryClient.connect('archived/repo', token, api.fetcher),
   /archived/,
@@ -396,7 +486,10 @@ try {
   api.files.set('DESKTOP_COMMANDER_BRIDGE.md', { bytes: legacyGuide, sha: gitBlobSha(legacyGuide) });
 
   const sync = new GitHubBridgeSync(client, paths);
+  api.resetDirectoryListingCalls();
   await sync.initialize();
+  assert.deepEqual(api.getDirectoryListingCalls().filter(Boolean), [],
+    'initialization must not list the requests/responses directories through the 1,000-entry-limited Contents API');
   assert.ok(api.files.has('requests/.gitkeep'));
   assert.ok(api.files.has('responses/.gitkeep'));
   assert.ok(api.files.has('artifacts/.gitkeep'));
@@ -520,6 +613,42 @@ try {
   assert.equal(api.getRawReadCount(requestPath), 1,
     'unchanged completed requests should be skipped without downloading the request or response again');
   assert.equal(api.getRawReadCount('responses/response-sample-01.json'), 0);
+
+  const compactId = 'task-a1';
+  const compactRequestBytes = Buffer.from(JSON.stringify({
+    protocol_version: 1,
+    id: compactId,
+    commands: [{ tool: 'get_config', arguments: {} }],
+  }), 'utf8');
+  api.files.set('requests/' + compactId + '.json', {
+    bytes: compactRequestBytes,
+    sha: gitBlobSha(compactRequestBytes),
+  });
+  await sync.syncOnce();
+  assert.deepEqual(
+    await fs.readFile(path.join(paths.requests, compactId + '.json')),
+    compactRequestBytes,
+    'GitHub sync must stage compact request filenames without a request- prefix',
+  );
+  const compactRequestHash = crypto.createHash('sha256').update(compactRequestBytes).digest('hex');
+  await fs.writeFile(path.join(paths.responses, compactId + '.json'), JSON.stringify({
+    protocol_version: 1,
+    id: compactId,
+    request_hash: compactRequestHash,
+    status: 'completed',
+    started_at: '2026-01-01T00:00:00.000Z',
+    completed_at: '2026-01-01T00:00:01.000Z',
+    results: [],
+    artifacts: [],
+  }));
+  await sync.syncOnce();
+  assert.ok(api.files.has('responses/' + compactId + '.json'),
+    'GitHub sync must publish compact response filenames without a response- prefix');
+  await assert.rejects(
+    () => fs.access(path.join(paths.requests, compactId + '.json')),
+    /ENOENT/,
+    'compact local request staging files should be removed after response publication',
+  );
 
   // Overwriting a request after its response exists must not re-execute it.
   // A changed blob under an already-completed ID should be explicitly diagnosed.
@@ -748,6 +877,49 @@ try {
   await fs.access(path.join(paths.responses, 'response-' + invalidResponseId + '.json'));
   await fs.rm(path.join(paths.responses, 'response-' + invalidResponseId + '.json'), { force: true });
 
+  const listingFailureId = 'listing-failure-01';
+  await fs.writeFile(path.join(paths.responses, 'response-' + listingFailureId + '.json'), JSON.stringify({
+    protocol_version: 1,
+    id: listingFailureId,
+    request_hash: crypto.createHash('sha256').update(listingFailureId).digest('hex'),
+    status: 'completed',
+    started_at: '2026-01-01T00:00:00.000Z',
+    completed_at: '2026-01-01T00:00:01.000Z',
+    results: [],
+    artifacts: [],
+  }));
+  api.failNextQueueTreeList();
+  await assert.rejects(
+    () => sync.syncOnce(),
+    /local response publication was still attempted/,
+    'remote queue discovery errors should still be reported after trying to publish completed local responses',
+  );
+  assert.ok(api.files.has('responses/response-' + listingFailureId + '.json'),
+    'a temporary remote request-listing failure must not block a completed response upload');
+
+  const followupId = 'sync-followup-01';
+  const followupRequestBytes = Buffer.from(JSON.stringify({
+    protocol_version: 1,
+    id: followupId,
+    commands: [{ tool: 'get_config', arguments: {} }],
+  }), 'utf8');
+  const queueListGate = api.pauseNextQueueTreeList();
+  api.failNextQueueTreeList();
+  const failedPassWithQueuedSignal = sync.syncOnce();
+  await queueListGate.started;
+  api.files.set('requests/' + followupId + '.json', {
+    bytes: followupRequestBytes,
+    sha: gitBlobSha(followupRequestBytes),
+  });
+  const queuedFollowupSignal = sync.syncOnce();
+  queueListGate.release();
+  await Promise.all([failedPassWithQueuedSignal, queuedFollowupSignal]);
+  assert.deepEqual(
+    await fs.readFile(path.join(paths.requests, followupId + '.json')),
+    followupRequestBytes,
+    'a queued sync signal must trigger a successful retry even when the preceding pass failed',
+  );
+
   const restartRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-github-bridge-restart-'));
   try {
     const restartedPaths = {
@@ -793,6 +965,11 @@ try {
     historicalReadRequests.add(requestName);
     historicalReadRequests.add(responseName);
   }
+  const largeQueueListing = await client.listQueueFiles();
+  assert.ok(largeQueueListing.requests.length >= historyCount,
+    'Git Trees indexing must discover request files beyond the Contents API 1,000-entry limit');
+  assert.ok(largeQueueListing.responses.length >= historyCount,
+    'Git Trees indexing must discover response files beyond the Contents API 1,000-entry limit');
   const historySync = new GitHubBridgeSync(client, paths);
   await historySync.syncOnce();
   for (const remotePath of historicalReadRequests) {
