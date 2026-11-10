@@ -898,7 +898,7 @@ try {
   assert.ok(autoDumpReference, 'the oversized result must be replaced by a JSON artifact reference');
   const autoDumpContentBytes = autoDumpReference.parts
     ? reconstructArtifact(autoDumpReference)
-    : api.files.get(autoDumpReference.path).bytes;
+    : api.files.get('agents/default/' + autoDumpReference.path).bytes;
   assert.deepEqual(
     JSON.parse(autoDumpContentBytes.toString('utf8')),
     [{ type: 'text', text: autoDumpText }],
