@@ -73,7 +73,7 @@ async function readRepositoryIdentityMarker(directory: string): Promise<string |
   }
 }
 
-async function resolveRepositoryCacheRoots(
+export async function resolveRepositoryCacheRoots(
   stateDir: string,
   repository: string,
   repositoryId: number,
