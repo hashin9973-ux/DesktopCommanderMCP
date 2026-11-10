@@ -638,8 +638,15 @@ try {
   assert.ok(api.files.has('agents/chatgpt/responses/' + sharedId + '.json'));
   assert.ok(api.files.has('agents/claude/responses/' + sharedId + '.json'),
     'each agent must receive its own response even when the request IDs match');
-  assert.ok(!api.files.has('agents/chatgpt/requests/' + sharedId + '.json'));
-  assert.ok(!api.files.has('agents/claude/requests/' + sharedId + '.json'));
+  for (const agentId of ['chatgpt', 'claude']) {
+    assert.ok(api.files.has('agents/' + agentId + '/requests/' + sharedId + '.json'),
+      'remote request history is retained for agent ' + agentId);
+    await assert.rejects(
+      () => fs.access(path.join(paths.agents, agentId, 'requests', sharedId + '.json')),
+      /ENOENT/,
+      'local staged request is removed after publishing that agent response: ' + agentId,
+    );
+  }
 
   const requestBytes = Buffer.from(JSON.stringify({
     protocol_version: 1,
