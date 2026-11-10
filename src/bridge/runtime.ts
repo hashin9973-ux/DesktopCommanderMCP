@@ -1646,19 +1646,13 @@ export async function runBridge(args: string[] = []): Promise<void> {
     settings.directory = realRoot;
     await writeJsonAtomic(settingsPath, settings);
 
-    const paths: BridgePaths = {
+    const agentsRoot = await initializeAgentLayout(realRoot, stateDir);
+    await ensureSafeBridgeDirectory(realRoot, agentsRoot);
+    const paths: BridgeRootPaths = {
       root: realRoot,
-      requests: path.join(realRoot, 'requests'),
-      responses: path.join(realRoot, 'responses'),
-      artifacts: path.join(realRoot, 'artifacts'),
-      ledgers: path.join(stateDir, 'requests'),
+      agents: agentsRoot,
+      stateDirectory: stateDir,
     };
-    await Promise.all([
-      ensureSafeBridgeDirectory(realRoot, paths.requests),
-      ensureSafeBridgeDirectory(realRoot, paths.responses),
-      ensureSafeBridgeDirectory(realRoot, paths.artifacts),
-      fs.mkdir(paths.ledgers, { recursive: true }),
-    ]);
     await createGuideIfMissing(realRoot);
 
     await configManager.loadConfig();
