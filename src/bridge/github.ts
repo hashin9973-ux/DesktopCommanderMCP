@@ -217,6 +217,7 @@ export async function refreshGitHubAccessTokenForWebhooks(
 
 export class GitHubRepositoryClient {
   readonly repository: string;
+  readonly repositoryId: number;
   readonly defaultBranch: string;
   readonly isPrivate: boolean;
   private readonly token: string;
@@ -230,8 +231,10 @@ export class GitHubRepositoryClient {
     token: string,
     fetcher: typeof fetch,
     isPrivate = false,
+    repositoryId = 0,
   ) {
     this.repository = repository;
+    this.repositoryId = repositoryId;
     this.defaultBranch = defaultBranch;
     this.isPrivate = isPrivate;
     this.token = token;
@@ -250,11 +253,15 @@ export class GitHubRepositoryClient {
 
     const client = new GitHubRepositoryClient(repository, '', token, fetcher);
     const metadata = await client.requestJson('/repos/' + repository) as {
+      id?: unknown;
       default_branch?: unknown;
       archived?: unknown;
       private?: unknown;
       permissions?: { push?: unknown };
     };
+    if (!Number.isSafeInteger(metadata.id) || Number(metadata.id) <= 0) {
+      throw new Error('GitHub did not return a valid immutable repository ID for ' + repository + '.');
+    }
     if (typeof metadata.default_branch !== 'string' || !metadata.default_branch) {
       throw new Error('GitHub did not return a default branch for ' + repository + '.');
     }
@@ -264,7 +271,14 @@ export class GitHubRepositoryClient {
     if (metadata.permissions && metadata.permissions.push === false) {
       throw new Error('Your authenticated GitHub account does not have write access to ' + repository + '. Choose a repository where you have write permission.');
     }
-    return new GitHubRepositoryClient(repository, metadata.default_branch, token, fetcher, metadata.private === true);
+    return new GitHubRepositoryClient(
+      repository,
+      metadata.default_branch,
+      token,
+      fetcher,
+      metadata.private === true,
+      Number(metadata.id),
+    );
   }
 
   static async getAccount(
