@@ -98,7 +98,7 @@ function printHelp(): void {
     'Options:',
     '  --github-repository <owner/name>  Connect to an existing writable repository',
     '  --create-github-repository <name> Create a new private repository for your account',
-    '  --poll-interval-ms <n>            Reconciliation poll interval (default 60000 with webhooks; minimum 1000)',
+    '  --poll-interval-ms <n>            Reconciliation poll interval (default 5000; minimum 1000)',
     '  --no-github-webhook               Disable push notifications and use polling only',
     '  --max-parallel <n>                Concurrent request-file limit; 0 means unlimited',
     '  -h, --help                        Show this help',
@@ -377,9 +377,9 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     const pollIntervalMs = options.pollIntervalMs
       ?? (Number.isInteger(savedReconcileInterval) && savedReconcileInterval >= 1_000 && savedReconcileInterval <= 60_000
         ? savedReconcileInterval
-        : Number.isInteger(legacyInterval) && legacyInterval >= 1_000 && legacyInterval <= 60_000 && legacyInterval !== 5_000
+        : Number.isInteger(legacyInterval) && legacyInterval >= 1_000 && legacyInterval <= 60_000
           ? legacyInterval
-          : 60_000);
+          : 5_000);
     const fallbackPollIntervalMs = options.pollIntervalMs
       ?? (Number.isInteger(legacyInterval) && legacyInterval >= 1_000 && legacyInterval <= 60_000
         ? legacyInterval

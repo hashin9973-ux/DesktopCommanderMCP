@@ -16,8 +16,8 @@ export interface GitHubBridgeCachePaths {
   artifacts: string;
 }
 
-const REQUEST_PATTERN = /^request-([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/i;
-const RESPONSE_PATTERN = /^response-([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.json$/i;
+const REQUEST_PATTERN = /^(?:request-)?([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/i;
+const RESPONSE_PATTERN = /^(?:response-)?([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.json$/i;
 
 interface BridgeArtifactPartReference {
   path: string;
@@ -477,10 +477,18 @@ export class GitHubBridgeSync {
   }
 
   private async syncInternal(): Promise<void> {
-    const [remoteRequests, remoteResponses] = await Promise.all([
-      this.client.listDirectory('requests'),
-      this.client.listDirectory('responses'),
-    ]);
+    let remoteRequests: GitHubContentEntry[] = [];
+    let remoteResponses: GitHubContentEntry[] = [];
+    let queueDiscoveryError: unknown;
+    try {
+      const queue = await this.client.listQueueFiles();
+      remoteRequests = queue.requests;
+      remoteResponses = queue.responses;
+    } catch (error) {
+      // Do not let a remote listing outage block publication of results that
+      // the local worker has already completed.
+      queueDiscoveryError = error;
+    }
     const remoteResponseByRequestId = new Map<string, GitHubContentEntry>();
     for (const entry of remoteResponses) {
       if (entry.type !== 'file') continue;
@@ -489,7 +497,7 @@ export class GitHubBridgeSync {
     }
     const completedRequestIds = new Set(remoteResponseByRequestId.keys());
 
-    for (const entry of remoteRequests) {
+    if (!queueDiscoveryError) for (const entry of remoteRequests) {
       if (entry.type !== 'file' || !REQUEST_PATTERN.test(entry.name)) continue;
       if (entry.size > MAX_GITHUB_BRIDGE_FILE_BYTES) {
         throw new Error('Remote request ' + entry.path + ' exceeds the 50 MiB GitHub bridge file limit.');
@@ -589,8 +597,12 @@ export class GitHubBridgeSync {
         // The remote response is durable now. Remove local staging copies so the
         // cache does not grow forever; remote queue history remains untouched.
         await fs.rm(responsePath, { force: true });
-        await fs.rm(path.join(this.paths.requests, 'request-' + requestId + '.json'), { force: true });
-        await fs.rm(path.join(this.paths.requests, 'request-' + requestId + '.md'), { force: true });
+        await Promise.all([
+          fs.rm(path.join(this.paths.requests, requestId + '.json'), { force: true }),
+          fs.rm(path.join(this.paths.requests, requestId + '.md'), { force: true }),
+          fs.rm(path.join(this.paths.requests, 'request-' + requestId + '.json'), { force: true }),
+          fs.rm(path.join(this.paths.requests, 'request-' + requestId + '.md'), { force: true }),
+        ]);
         await fs.rm(path.join(this.paths.artifacts, requestId), { recursive: true, force: true });
       } catch (error) {
         // One malformed or unpublishable response must not block unrelated
@@ -602,6 +614,12 @@ export class GitHubBridgeSync {
       throw new Error(
         'Could not synchronize ' + responseSyncErrors.length + ' local response file(s): ' +
         responseSyncErrors.join('; '),
+      );
+    }
+    if (queueDiscoveryError) {
+      throw new Error(
+        'Could not discover the remote GitHub request queue; local response publication was still attempted: ' +
+        errorMessage(queueDiscoveryError),
       );
     }
 
