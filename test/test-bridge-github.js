@@ -1032,7 +1032,7 @@ assert.equal(
 
 const confirmedLegacyCache = path.join(cacheStateRoot, 'github-cache', 'owner--same');
 await fs.mkdir(confirmedLegacyCache, { recursive: true });
-await fs.writeFile(path.join(confirmedLegacyCache, '.github-repository-id'), '502\\n');
+await fs.writeFile(path.join(confirmedLegacyCache, '.github-repository-id'), '502\n');
 const sameRepositoryCache = await resolveRepositoryCacheRoots(cacheStateRoot, 'owner/same', 502);
 assert.equal(sameRepositoryCache.cacheRoot, confirmedLegacyCache,
   'an older cache already marked with the same repository ID must be preserved');
