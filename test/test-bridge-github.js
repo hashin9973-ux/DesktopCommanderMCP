@@ -918,6 +918,7 @@ try {
     await fs.readFile(path.join(paths.requests, followupId + '.json')),
     followupRequestBytes,
     'a queued sync signal must trigger a successful retry even when the preceding pass failed',
+  );
 
   const restartRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-github-bridge-restart-'));
   try {
