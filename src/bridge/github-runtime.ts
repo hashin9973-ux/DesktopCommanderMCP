@@ -463,14 +463,31 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     console.log('Desktop Commander GitHub Repository Bridge is starting.');
     console.log('Repository: ' + repository);
     console.log('Default branch: ' + client.defaultBranch);
-    console.log('Local worker starts immediately; queue synchronization and webhook setup run in the background.');
+    console.log('Remote queue reconciliation runs before local worker startup; webhook setup runs in the background.');
     console.log('Files are committed directly to the existing default branch. No branches or pull requests are created.');
     console.log('Press Ctrl+C to stop.');
     console.log('');
 
-    child = await startWorker(cacheRoot, workerStateRoot, maxParallelRequests);
+    // Reconcile the remote queue before starting the worker. Otherwise a stale
+    // local request cache could execute a request whose durable response already
+    // exists remotely if the process previously stopped between publish and cleanup.
     process.once('SIGINT', stopWorker);
     process.once('SIGTERM', stopWorker);
+    let initialSyncReady = false;
+    while (!initialSyncReady && !stopping) {
+      try {
+        await ensureQueueInitialized();
+        await sync.syncOnce();
+        lastSyncFailureMessage = undefined;
+        initialSyncReady = true;
+      } catch (error) {
+        reportSyncFailure('Initial GitHub queue reconciliation failed; worker startup is deferred: ', error);
+        await new Promise((resolve) => setTimeout(resolve, fallbackPollIntervalMs));
+      }
+    }
+    if (stopping) return;
+
+    child = await startWorker(cacheRoot, workerStateRoot, maxParallelRequests);
     child.once('error', (error) => {
       console.error('Could not start the local Desktop Commander worker: ' + error.message);
     });

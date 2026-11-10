@@ -341,7 +341,7 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '1. Confirm the local Desktop Commander Bridge is running and first-run consent has been accepted. Make sure the cloud folder or GitHub repository used by this bridge is accessible.',
     '2. Locate the bridge root in the connected cloud folder or GitHub repository. It must contain this README.md and the requests/, responses/, and artifacts/ folders. If several candidate roots exist, verify all three folders before choosing one; never guess.',
     '3. Read this README once at the start of a fresh chat. It is the only operating guide. Do not search for or read other guide files. Keep the bridge root and pending request IDs for the rest of the session.',
-    '4. Choose a short unique ID such as task-a1 or 7c2e91a4. Submit requests/<id>.json with the same value in the JSON id field. Do not add a request- prefix. Use a different ID for every request.',
+    '4. Choose a short unique ID such as task-a1 or 7c2e91a4. Submit requests/<id>.json with the same value in the JSON id field. Do not add a request- prefix. IDs beginning with request- or response- are reserved for legacy compatibility. Use a different ID for every request.',
     '5. The matching result appears at responses/<id>.json. Do not add a response- prefix. Submit independent requests without waiting for earlier results, then retrieve each exact response path.',
     '6. For image, PDF, or binary outputs, use the artifact paths listed in the response and retrieve those files from artifacts/. Do not expect binary bytes to be embedded in response JSON.',
     '',
@@ -1057,7 +1057,9 @@ async function processRequestFile(
   }
 
   const responsePath = path.join(paths.responses, responseFilename);
-  const existingResponse = await readJsonIfExists<BridgeResponse>(responsePath);
+  const alternateResponseFilename = responseFilename === id + '.json' ? 'response-' + id + '.json' : id + '.json';
+  const existingResponse = await readJsonIfExists<BridgeResponse>(responsePath)
+    ?? await readJsonIfExists<BridgeResponse>(path.join(paths.responses, alternateResponseFilename));
   if (existingResponse) {
     if (existingResponse.request_hash !== requestHash) {
       console.error('Request id conflict: a different response already exists for ' + id + '.');
@@ -1358,7 +1360,9 @@ async function cleanStorage(
     if (id && path.dirname(candidate.path) === paths.requests) {
       const responseFilename = /^request-/i.test(filename) ? 'response-' + id + '.json' : id + '.json';
       const responsePath = path.join(paths.responses, responseFilename);
-      const existing = await readJsonIfExists<BridgeResponse>(responsePath);
+      const alternateResponseFilename = responseFilename === id + '.json' ? 'response-' + id + '.json' : id + '.json';
+      const existing = await readJsonIfExists<BridgeResponse>(responsePath)
+        ?? await readJsonIfExists<BridgeResponse>(path.join(paths.responses, alternateResponseFilename));
       if (!existing && !isActiveNow(candidate.path)) {
         const requestBytes = await fs.readFile(candidate.path).catch(() => null);
         if (requestBytes && !isActiveNow(candidate.path)) {
