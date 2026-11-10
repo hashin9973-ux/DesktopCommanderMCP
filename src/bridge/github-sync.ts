@@ -411,7 +411,7 @@ export class GitHubBridgeSync {
   ) {}
 
   private agentPaths(agentId: string): AgentGitHubBridgeCachePaths {
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(agentId)) {
+    if (!isValidAgentDirectoryName(agentId)) {
       throw new Error('Invalid agent folder name in GitHub bridge queue: ' + agentId);
     }
     const root = path.join(this.paths.agents, agentId);
@@ -427,7 +427,7 @@ export class GitHubBridgeSync {
     { agentId: string; requestId: string } | undefined {
     const segments = entry.path.split('/');
     if (segments.length !== 4 || segments[0] !== 'agents' || segments[2] !== queueName) return undefined;
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(segments[1])) return undefined;
+    if (!isValidAgentDirectoryName(segments[1])) return undefined;
     const match = (queueName === 'requests' ? REQUEST_PATTERN : RESPONSE_PATTERN).exec(segments[3]);
     return match ? { agentId: segments[1], requestId: match[1] } : undefined;
   }
