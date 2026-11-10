@@ -342,7 +342,7 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '2. Create or choose your own folder under agents/ using a short stable name such as chatgpt, claude, codex, or planner. The folder name identifies your agent; no separate registration or agent ID is needed.',
     '3. Use only your own agents/<agent-name>/ folder. It contains requests/, responses/, and artifacts/. Do not place requests in another agent folder.',
     '4. Read this README once at the start of a fresh chat. It is the only operating guide. Keep your agent folder and pending request IDs for the rest of the session.',
-    '5. Choose a short request ID such as task-a1 or 7c2e91a4. Submit agents/<agent-name>/requests/<id>.json with the same value in the JSON id field. IDs need only be unique within your agent folder.',
+    '5. Choose a short request ID such as task-a1 or 7c2e91a4. Submit agents/<agent-name>/requests/<id>.json with the same value in the JSON id field. Request IDs need only be unique within your agent folder.',
     '6. The result appears at agents/<agent-name>/responses/<id>.json. Retrieve artifacts from your own agents/<agent-name>/artifacts/ folder.',
     '',
     'The bridge must be running on the computer that should execute the tools. The storage connector only submits requests and retrieves results; it does not execute commands. Folder ownership is the agent identity and queue boundary.',
