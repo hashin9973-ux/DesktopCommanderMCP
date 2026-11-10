@@ -338,7 +338,7 @@ export class GitHubRepositoryClient {
         method: 'POST',
         body: JSON.stringify({
           name,
-          description: 'Private Desktop Commander Bridge request and response mailbox',
+          description: 'Private Desktop Commander agent request and response queues',
           private: true,
           auto_init: true,
           has_issues: false,
