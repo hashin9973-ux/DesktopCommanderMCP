@@ -691,8 +691,12 @@ try {
   }
   assert.equal(api.getRawReadCount(cachedRequestPath), 0,
     'a verified local cache entry must not be downloaded again after restart');
-  assert.equal(stagingLogs.filter((message) => message.includes('request-' + cachedRequestId) && message.includes('staged locally')).length, 1,
-    'a cached request should produce one staging checkpoint when first observed');
+  assert.equal(stagingLogs.filter((message) =>
+    message.includes('agents/default/requests/request-' + cachedRequestId)
+    && message.includes('staged ')
+    && message.includes('locally for execution'),
+  ).length, 1,
+    'a cached request should produce one agent-scoped staging checkpoint when first observed');
 
   const artifactPath = 'artifacts/sample-01/output.bin';
   const artifactBytes = Buffer.from([0, 1, 2, 3, 255]);
