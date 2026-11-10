@@ -178,7 +178,7 @@ jobs:
           $imageRequestPath = Join-Path $cloudDir "requests\smoke-image.json"
           [System.IO.File]::WriteAllText(
             $imageRequestPath,
-            "{ \"protocol_version\": 1,",
+            '{ "protocol_version": 1,',
             [System.Text.UTF8Encoding]::new($false)
           )
           [System.IO.File]::WriteAllText(
