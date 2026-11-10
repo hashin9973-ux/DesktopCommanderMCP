@@ -43,6 +43,7 @@ function createGitHubApiDouble() {
 
     if (url.pathname === '/repos/owner/repo' && method === 'GET') {
       return jsonResponse({
+        id: 1001,
         full_name: 'owner/repo',
         default_branch: 'main',
         archived: false,
@@ -53,6 +54,7 @@ function createGitHubApiDouble() {
 
     if (url.pathname === '/repos/archived/repo' && method === 'GET') {
       return jsonResponse({
+        id: 1002,
         full_name: 'archived/repo',
         default_branch: 'main',
         archived: true,
@@ -62,6 +64,7 @@ function createGitHubApiDouble() {
 
     if (url.pathname === '/repos/read-only/repo' && method === 'GET') {
       return jsonResponse({
+        id: 1003,
         full_name: 'read-only/repo',
         default_branch: 'main',
         archived: false,
@@ -72,6 +75,7 @@ function createGitHubApiDouble() {
 
     if (url.pathname === '/repos/public/repo' && method === 'GET') {
       return jsonResponse({
+        id: 1004,
         full_name: 'public/repo',
         default_branch: 'main',
         archived: false,
@@ -318,6 +322,7 @@ assert.equal(listed[1].push, false);
 
 const client = await GitHubRepositoryClient.connect('owner/repo', token, api.fetcher);
 assert.equal(client.defaultBranch, 'main');
+assert.equal(client.repositoryId, 1001, 'the connected repository exposes its immutable GitHub ID');
 api.conflictNextCreateFile('responses/stale-head-retry.json');
 assert.equal(await client.createFileIfAbsent(
   'responses/stale-head-retry.json',
@@ -341,12 +346,26 @@ await assert.rejects(
 );
 const publicClient = await GitHubRepositoryClient.connect('public/repo', token, api.fetcher);
 assert.equal(publicClient.isPrivate, false, 'public repository visibility must be returned for startup consent');
+assert.equal(publicClient.repositoryId, 1004);
+
+await assert.rejects(
+  () => GitHubRepositoryClient.connect('owner/repo', token, async () => new Response(JSON.stringify({
+    default_branch: 'main',
+    archived: false,
+    private: true,
+    permissions: { push: true },
+  }), { status: 200, headers: { 'content-type': 'application/json' } })),
+  /valid immutable repository ID/,
+  'repository metadata without an immutable ID must not create an unisolated cache identity',
+);
+
 
 let rateLimitCalls = 0;
 const rateLimitedClient = await GitHubRepositoryClient.connect('owner/repo', token, async () => {
   rateLimitCalls++;
   if (rateLimitCalls === 1) {
     return new Response(JSON.stringify({
+      id: 1001,
       default_branch: 'main',
       archived: false,
       private: true,
@@ -385,6 +404,7 @@ const webhookRateLimitedClient = await GitHubRepositoryClient.connect('owner/rep
   webhookRateLimitCalls++;
   if (webhookRateLimitCalls === 1) {
     return new Response(JSON.stringify({
+      id: 1001,
       default_branch: 'main',
       archived: false,
       private: true,
@@ -416,6 +436,7 @@ const primaryRateLimitedClient = await GitHubRepositoryClient.connect('owner/rep
   primaryLimitCalls++;
   if (primaryLimitCalls === 1) {
     return new Response(JSON.stringify({
+      id: 1001,
       default_branch: 'main',
       archived: false,
       private: true,
