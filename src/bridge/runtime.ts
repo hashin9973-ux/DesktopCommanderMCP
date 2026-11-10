@@ -1569,7 +1569,7 @@ async function runBridgeRuntime(rootPaths: BridgeRootPaths, settings: BridgeSett
   console.log('Desktop Commander Bridge is running.');
   console.log('Bridge root: ' + rootPaths.root);
   console.log('Agent queues: ' + path.join(rootPaths.agents, '<agent-name>'));
-  console.log('Per-agent folders: requests/, responses/, artifacts/');
+  console.log('Agent queues: agents/<agent-name>/{requests,responses,artifacts}/');
   console.log('Parallel request limit: ' + (settings.maxParallelRequests === 0 ? 'unlimited' : settings.maxParallelRequests));
   console.log('Delay between commands in one request: ' + settings.commandDelayMs + ' ms');
   console.log('Polling fallback: ' + settings.pollIntervalMs + ' ms');
