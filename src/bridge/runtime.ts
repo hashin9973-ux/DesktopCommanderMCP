@@ -445,7 +445,7 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
       const isGeneratedGuide =
         (existing.startsWith('# Desktop Commander Bridge') || existing.startsWith('# Desktop Commander Cloud-Folder Bridge'))
         && existing.includes('This README is the AI-facing operating guide');
-      if (isGeneratedGuide && !existing.includes(BRIDGE_GUIDE_MARKER)) {
+      if (isGeneratedGuide && existing !== guide) {
         await writeFileAtomic(guidePath, guide);
         console.log('Updated generated agent guide: ' + guidePath);
       } else {
@@ -454,19 +454,9 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     }
   }
 
-  // Add new guidance without regenerating or replacing a pre-existing guide.
-  // Custom README files and guides that already contain this section are left alone.
-  try {
-    const appendResult = await appendMailboxGuideSection(guidePath);
-    if (appendResult === 'appended') {
-      console.log('Appended optional local mailbox guidance to ' + guidePath);
-    } else if (appendResult === 'not_bridge_guide') {
-      console.log('Unrecognized README.md preserved without changes: ' + guidePath);
-    }
-  } catch (error) {
-    // Guide maintenance is best-effort; it must not prevent the bridge from starting.
-    console.warn('Could not append mailbox guidance to ' + guidePath + ': ' + errorMessage(error));
-  }
+  // The generated README is the complete agent-facing guide. Agent
+  // folder names provide identity; mailbox_user_id is not part of the bridge.
+
 }
 
 class ResourceLocks {
