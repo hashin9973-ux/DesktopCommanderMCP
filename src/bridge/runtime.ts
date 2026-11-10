@@ -1398,13 +1398,15 @@ export function createBridgePollingTimer(scanRequests: () => void, intervalMs: n
   return setInterval(scanRequests, intervalMs);
 }
 
-async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): Promise<void> {
+async function runBridgeRuntime(rootPaths: BridgeRootPaths, settings: BridgeSettings): Promise<void> {
   const activeFiles = new Set<string>();
   const activeResponseFiles = new Set<string>();
   const activeJobs = new Map<string, Promise<void>>();
   const activeRequestIds = new Set<string>();
   const doneRequests = new Map<string, string>();
   const invalidRequestObservations = new Map<string, { requestHash: string; firstSeenAt: number }>();
+  const agentPathsByName = new Map<string, BridgePaths>();
+  const requestWatchers = new Map<string, FSWatcher>();
   const fileSupportPromise = preloadFileSupport()
     .then(() => true)
     .catch((error) => {
@@ -1412,12 +1414,36 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
       return false;
     });
 
-  let watcher: FSWatcher | undefined;
+  let agentsWatcher: FSWatcher | undefined;
   let stopped = false;
   let scanning = false;
   let scanAgain = false;
   let cleanupRunning = false;
   let cleanupRequested = false;
+
+  const addRequestWatcher = (directory: string): void => {
+    if (requestWatchers.has(directory)) return;
+    try {
+      const handle = watch(directory, { persistent: true }, () => { void scanRequests(); });
+      handle.on('error', (error) => {
+        console.warn('Request watcher failed for ' + directory + '; fallback polling remains active: ' + error.message);
+        handle.close();
+        requestWatchers.delete(directory);
+      });
+      requestWatchers.set(directory, handle);
+    } catch (error) {
+      console.warn('Filesystem notifications unavailable for ' + directory + '; fallback polling remains active: ' + errorMessage(error));
+    }
+  };
+
+  const discoverAgents = async (): Promise<BridgePaths[]> => {
+    const discovered = await discoverAgentQueuePaths(rootPaths.agents, rootPaths.stateDirectory) as BridgePaths[];
+    for (const paths of discovered) {
+      agentPathsByName.set(paths.agentId, paths);
+      addRequestWatcher(paths.requests);
+    }
+    return discovered;
+  };
 
   const cleanup = async (): Promise<void> => {
     if (cleanupRunning) {
@@ -1428,10 +1454,12 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
     try {
       do {
         cleanupRequested = false;
-        try {
-          await cleanStorage(paths, settings.maxStorageBytes, activeFiles, activeResponseFiles);
-        } catch (error) {
-          console.warn('Storage cleanup failed: ' + errorMessage(error));
+        for (const paths of agentPathsByName.values()) {
+          try {
+            await cleanStorage(paths, settings.maxStorageBytes, activeFiles, activeResponseFiles);
+          } catch (error) {
+            console.warn('Storage cleanup failed for agent ' + paths.agentId + ': ' + errorMessage(error));
+          }
         }
       } while (cleanupRequested);
     } finally {
@@ -1449,30 +1477,35 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
     try {
       do {
         scanAgain = false;
-        const entries = await fs.readdir(paths.requests, { withFileTypes: true });
-        const candidates: Array<{ path: string; id: string; mtimeMs: number }> = [];
-        const presentRequestIds = new Set<string>();
-        for (const entry of entries) {
-          const id = entry.isFile() ? requestIdFromFilename(entry.name) : undefined;
-          if (!id) continue;
-          presentRequestIds.add(id);
-          const fullPath = path.join(paths.requests, entry.name);
-          if (activeJobs.has(fullPath) || activeRequestIds.has(id)) continue;
-          const stat = await fs.stat(fullPath).catch(() => null);
-          if (stat?.isFile()) candidates.push({ path: fullPath, id, mtimeMs: stat.mtimeMs });
+        const agents = await discoverAgents();
+        const candidates: Array<{ paths: BridgePaths; path: string; id: string; key: string; mtimeMs: number }> = [];
+        const presentRequestKeys = new Set<string>();
+        for (const paths of agents) {
+          const entries = await fs.readdir(paths.requests, { withFileTypes: true });
+          for (const entry of entries) {
+            const id = entry.isFile() ? requestIdFromFilename(entry.name) : undefined;
+            if (!id) continue;
+            const key = paths.agentId + ':' + id;
+            presentRequestKeys.add(key);
+            const fullPath = path.join(paths.requests, entry.name);
+            if (activeJobs.has(fullPath) || activeRequestIds.has(key)) continue;
+            const stat = await fs.stat(fullPath).catch(() => null);
+            if (stat?.isFile()) candidates.push({ paths, path: fullPath, id, key, mtimeMs: stat.mtimeMs });
+          }
         }
-        for (const id of invalidRequestObservations.keys()) {
-          if (!presentRequestIds.has(id)) invalidRequestObservations.delete(id);
+
+        for (const key of invalidRequestObservations.keys()) {
+          if (!presentRequestKeys.has(key)) invalidRequestObservations.delete(key);
         }
         candidates.sort((a, b) => a.mtimeMs - b.mtimeMs || a.path.localeCompare(b.path));
 
         for (const candidate of candidates) {
           if (settings.maxParallelRequests > 0 && activeJobs.size >= settings.maxParallelRequests) break;
-          if (activeJobs.has(candidate.path) || activeRequestIds.has(candidate.id)) continue;
+          if (activeJobs.has(candidate.path) || activeRequestIds.has(candidate.key)) continue;
           activeFiles.add(candidate.path);
-          activeRequestIds.add(candidate.id);
+          activeRequestIds.add(candidate.key);
           const task = processRequestFile(
-            paths,
+            candidate.paths,
             candidate.path,
             settings,
             fileSupportPromise,
@@ -1482,10 +1515,10 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
             invalidRequestObservations,
             cleanup,
           ).catch((error) => {
-            console.error('Request processing failed (' + path.basename(candidate.path) + '): ' + errorMessage(error));
+            console.error('Request processing failed (' + candidate.paths.agentId + '/' + path.basename(candidate.path) + '): ' + errorMessage(error));
           }).finally(() => {
             activeFiles.delete(candidate.path);
-            activeRequestIds.delete(candidate.id);
+            activeRequestIds.delete(candidate.key);
             activeJobs.delete(candidate.path);
             void scanRequests();
           });
@@ -1494,7 +1527,7 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
       } while (scanAgain && !stopped);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        console.error('Could not scan request directory: ' + errorMessage(error));
+        console.error('Could not scan agent request folders: ' + errorMessage(error));
       }
     } finally {
       scanning = false;
@@ -1503,15 +1536,16 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
   };
 
   try {
-    watcher = watch(paths.requests, { persistent: true }, () => { void scanRequests(); });
-    watcher.on('error', (error) => console.warn('Request folder watcher error; fallback polling remains active: ' + error.message));
+    agentsWatcher = watch(rootPaths.agents, { persistent: true }, () => { void scanRequests(); });
+    agentsWatcher.on('error', (error) => {
+      console.warn('Agent-folder watcher error; fallback polling remains active: ' + error.message);
+    });
   } catch (error) {
-    console.warn('Filesystem notifications unavailable; fallback polling remains active: ' + errorMessage(error));
+    console.warn('Agent-folder notifications unavailable; fallback polling remains active: ' + errorMessage(error));
   }
 
-  // Keep request polling referenced so it survives a failed or closed fs.watch handle.
-  // This is the recovery path for cloud-synced folders whose filesystem notifications
-  // are unreliable or unavailable.
+  // Polling is the durable discovery fallback for cloud-sync providers and
+  // newly created agent folders. Per-agent watchers reduce normal latency.
   const pollTimer = createBridgePollingTimer(() => { void scanRequests(); }, settings.pollIntervalMs);
   const cleanupTimer = setInterval(() => { void cleanup(); }, 60_000);
   cleanupTimer.unref();
@@ -1521,7 +1555,9 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
   const stop = () => {
     if (stopped) return;
     stopped = true;
-    watcher?.close();
+    agentsWatcher?.close();
+    for (const watcher of requestWatchers.values()) watcher.close();
+    requestWatchers.clear();
     clearInterval(pollTimer);
     clearInterval(cleanupTimer);
     resolveStop();
@@ -1531,14 +1567,13 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
 
   console.log('');
   console.log('Desktop Commander Bridge is running.');
-  console.log('Cloud folder: ' + paths.root);
-  console.log('Requests: ' + paths.requests);
-  console.log('Responses: ' + paths.responses);
-  console.log('Artifacts: ' + paths.artifacts);
+  console.log('Bridge root: ' + rootPaths.root);
+  console.log('Agent queues: ' + path.join(rootPaths.agents, '<agent-name>'));
+  console.log('Per-agent folders: requests/, responses/, artifacts/');
   console.log('Parallel request limit: ' + (settings.maxParallelRequests === 0 ? 'unlimited' : settings.maxParallelRequests));
   console.log('Delay between commands in one request: ' + settings.commandDelayMs + ' ms');
   console.log('Polling fallback: ' + settings.pollIntervalMs + ' ms');
-  console.log('Storage limit: ' + settings.maxStorageBytes + ' bytes');
+  console.log('Storage limit per agent: ' + settings.maxStorageBytes + ' bytes');
   console.log('Press Ctrl+C to stop.');
   console.log('');
 
