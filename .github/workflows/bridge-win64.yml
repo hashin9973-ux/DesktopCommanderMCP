@@ -193,9 +193,22 @@ jobs:
           $stderr = Join-Path $env:TEMP "dc-bridge-smoke-err.txt"
           $process = Start-Process -FilePath $exe -ArgumentList $processArgs -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           # Simulate a cloud-sync client exposing a partially written file before
-          # the completed request arrives. The worker must defer rejection and
-          # process the finished JSON on a later scan.
-          Start-Sleep -Milliseconds 500
+          # the completed request arrives. Wait until the worker has actually
+          # observed and deferred the incomplete JSON before completing the file.
+          $partialDeadline = (Get-Date).AddSeconds(15)
+          $partialObserved = $false
+          while ((Get-Date) -lt $partialDeadline) {
+            $partialLog = Get-Content $stderr -Raw -ErrorAction SilentlyContinue
+            if ($partialLog -match "is not valid yet") {
+              $partialObserved = $true
+              break
+            }
+            if ($process.HasExited) {
+              throw "Bridge exited before observing the partial request. stdout: $(Get-Content $stdout -Raw -ErrorAction SilentlyContinue) stderr: $partialLog"
+            }
+            Start-Sleep -Milliseconds 100
+          }
+          if (!$partialObserved) { throw "Bridge did not observe the intentionally partial request." }
           [System.IO.File]::WriteAllText($imageRequestPath, $imageRequest, [System.Text.UTF8Encoding]::new($false))
 
           try {
