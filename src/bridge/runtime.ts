@@ -1033,7 +1033,7 @@ async function processRequestFile(
   const knownHash = doneRequests.get(requestKey);
   if (knownHash) {
     if (knownHash !== requestHash) {
-      console.error('Request id conflict: ' + filename + ' was changed after it was processed.');
+      console.error('Agent ' + paths.agentId + ' request ID conflict: ' + filename + ' was changed after it was processed.');
       doneRequests.set(requestKey, requestHash);
     }
     return;
@@ -1045,7 +1045,7 @@ async function processRequestFile(
     ?? await readJsonIfExists<BridgeResponse>(path.join(paths.responses, alternateResponseFilename));
   if (existingResponse) {
     if (existingResponse.request_hash !== requestHash) {
-      console.error('Request id conflict: a different response already exists for ' + id + '.');
+      console.error('Agent ' + paths.agentId + ' request ID conflict: a different response already exists for ' + id + '.');
     }
     doneRequests.set(requestKey, requestHash);
     return;
@@ -1058,14 +1058,14 @@ async function processRequestFile(
     const observation = invalidRequestObservations.get(requestKey);
     if (!observation || observation.requestHash !== requestHash) {
       invalidRequestObservations.set(requestKey, { requestHash, firstSeenAt: Date.now() });
-      console.warn('Request ' + filename + ' is not valid yet; waiting briefly for cloud-folder synchronization to finish.');
+      console.warn('Agent ' + paths.agentId + ' request ' + filename + ' is not valid yet; waiting briefly for cloud-folder synchronization to finish.');
       return;
     }
     if (Date.now() - observation.firstSeenAt < REQUEST_PARSE_SETTLE_MS) return;
     invalidRequestObservations.delete(requestKey);
     await writeRejectedResponse(paths.root, id, requestHash, errorMessage(error), responseFilename);
     doneRequests.set(requestKey, requestHash);
-    console.error('Rejected ' + filename + ': ' + errorMessage(error));
+    console.error('Agent ' + paths.agentId + ' rejected ' + filename + ': ' + errorMessage(error));
     return;
   }
   invalidRequestObservations.delete(requestKey);
@@ -1255,7 +1255,7 @@ async function processRequestFile(
   } finally {
     activeResponseFiles.delete(responsePath);
   }
-  console.log('Request ' + id + ': ' + status + ' (' + results.length + ' command result(s)).');
+  console.log('Agent ' + paths.agentId + ' request ' + id + ': ' + status + ' (' + results.length + ' command result(s)).');
   await cleanup();
 }
 
