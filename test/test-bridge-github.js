@@ -133,53 +133,62 @@ function createGitHubApiDouble() {
       return jsonResponse({ commit: { tree: { sha: 'root-tree-sha' } } });
     }
 
-    if (url.pathname === '/repos/owner/repo/git/trees/root-tree-sha' && method === 'GET') {
+    const treeMatch = /^\/repos\/owner\/repo\/git\/trees\/([^/]+)$/.exec(url.pathname);
+    if (treeMatch && method === 'GET') {
+      const treeSha = decodeURIComponent(treeMatch[1]);
+      const prefixPath = treeSha === 'root-tree-sha' ? '' : treeSha.startsWith('tree:') ? treeSha.slice(5) : undefined;
+      if (prefixPath === undefined) return notFound();
       const recursive = url.searchParams.get('recursive') === '1';
-      if (recursive && queueTreeListGate) {
+      if (treeSha === 'root-tree-sha' && recursive && queueTreeListGate) {
         const gate = queueTreeListGate;
         queueTreeListGate = undefined;
         gate.signalStarted();
         await gate.wait;
       }
-      if (recursive && failNextQueueTreeList) {
+      if (treeSha === 'root-tree-sha' && recursive && failNextQueueTreeList) {
         failNextQueueTreeList = false;
         return jsonResponse({ message: 'temporary tree listing failure' }, 500);
       }
-      if (recursive && truncateRecursiveTree) {
-        return jsonResponse({ sha: 'root-tree-sha', truncated: true, tree: [] });
+      if (treeSha === 'root-tree-sha' && recursive && truncateRecursiveTree) {
+        return jsonResponse({ sha: treeSha, truncated: true, tree: [] });
       }
+
+      const matchingFiles = [...files.entries()].filter(([filePath]) =>
+        !prefixPath || filePath.startsWith(prefixPath + '/'),
+      );
       if (recursive) {
         return jsonResponse({
-          sha: 'root-tree-sha',
+          sha: treeSha,
           truncated: false,
-          tree: [...files.entries()].map(([filePath, value]) => ({
-            path: filePath, type: 'blob', mode: '100644', sha: value.sha, size: value.bytes.length,
+          tree: matchingFiles.map(([filePath, value]) => ({
+            path: prefixPath ? filePath.slice(prefixPath.length + 1) : filePath,
+            type: 'blob',
+            mode: '100644',
+            sha: value.sha,
+            size: value.bytes.length,
           })),
         });
       }
-      return jsonResponse({
-        sha: 'root-tree-sha',
-        truncated: false,
-        tree: ['requests', 'responses', 'artifacts'].map((name) => ({
-          path: name, type: 'tree', mode: '040000', sha: name + '-tree-sha',
-        })),
-      });
-    }
 
-    const queueTreeMatch = /^\/repos\/owner\/repo\/git\/trees\/(requests|responses)-tree-sha$/.exec(url.pathname);
-    if (queueTreeMatch && method === 'GET') {
-      const directory = queueTreeMatch[1];
-      return jsonResponse({
-        sha: directory + '-tree-sha',
-        truncated: false,
-        tree: [...files.entries()].flatMap(([filePath, value]) => {
-          const prefix = directory + '/';
-          if (!filePath.startsWith(prefix)) return [];
-          const relative = filePath.slice(prefix.length);
-          if (!relative || relative.includes('/')) return [];
-          return [{ path: relative, type: 'blob', mode: '100644', sha: value.sha, size: value.bytes.length }];
-        }),
-      });
+      const children = new Map();
+      for (const [filePath, value] of matchingFiles) {
+        const relative = prefixPath ? filePath.slice(prefixPath.length + 1) : filePath;
+        if (!relative) continue;
+        const separator = relative.indexOf('/');
+        const childName = separator === -1 ? relative : relative.slice(0, separator);
+        if (children.has(childName)) continue;
+        if (separator === -1) {
+          children.set(childName, {
+            path: childName, type: 'blob', mode: '100644', sha: value.sha, size: value.bytes.length,
+          });
+        } else {
+          const childPrefix = prefixPath ? prefixPath + '/' + childName : childName;
+          children.set(childName, {
+            path: childName, type: 'tree', mode: '040000', sha: 'tree:' + childPrefix,
+          });
+        }
+      }
+      return jsonResponse({ sha: treeSha, truncated: false, tree: [...children.values()] });
     }
 
     if (url.pathname === '/repos/owner/repo/contents' && method === 'GET') {
@@ -218,7 +227,7 @@ function createGitHubApiDouble() {
         staleHeadConflictPath = undefined;
         return jsonResponse({ message: 'Update is not a fast forward' }, 422);
       }
-      if (repoPath.startsWith('responses/') && responseUploadGate) {
+      if (repoPath.includes('/responses/') && responseUploadGate) {
         const gate = responseUploadGate;
         responseUploadGate = undefined;
         gate.signalStarted();
