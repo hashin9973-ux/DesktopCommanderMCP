@@ -462,6 +462,88 @@ export class GitHubRepositoryClient {
     }
   }
 
+  async listQueueFiles(): Promise<{ requests: GitHubContentEntry[]; responses: GitHubContentEntry[] }> {
+    const commit = await this.requestJson(
+      '/repos/' + this.repository + '/commits/' + encodeURIComponent(this.defaultBranch),
+    ) as { commit?: { tree?: { sha?: unknown } } };
+    const treeSha = commit.commit?.tree?.sha;
+    if (typeof treeSha !== 'string' || !treeSha) {
+      throw new Error('GitHub did not return the default-branch tree SHA for ' + this.repository + '.');
+    }
+
+    type TreeEntry = { path?: unknown; sha?: unknown; size?: unknown; type?: unknown; mode?: unknown };
+    const treeUrl = '/repos/' + this.repository + '/git/trees/';
+    const fullTree = await this.requestJson(treeUrl + encodeURIComponent(treeSha) + '?recursive=1') as {
+      tree?: unknown;
+      truncated?: unknown;
+    };
+    if (!Array.isArray(fullTree.tree)) {
+      throw new Error('GitHub returned an invalid recursive repository tree.');
+    }
+
+    let queueEntries: Array<{ path: string; sha: string; size: number }> = [];
+    if (fullTree.truncated !== true) {
+      queueEntries = (fullTree.tree as TreeEntry[]).flatMap((entry) => {
+        if (entry.type !== 'blob' || entry.mode === '120000'
+          || typeof entry.path !== 'string' || typeof entry.sha !== 'string') return [];
+        if (!entry.path.startsWith('requests/') && !entry.path.startsWith('responses/')) return [];
+        const relative = entry.path.slice(entry.path.indexOf('/') + 1);
+        if (!relative || relative.includes('/')) return [];
+        return [{
+          path: entry.path,
+          sha: entry.sha,
+          size: typeof entry.size === 'number' ? entry.size : 0,
+        }];
+      });
+    } else {
+      // A large repository can truncate its recursive root tree. Resolve only
+      // requests/ and responses/ from the non-recursive root, then recurse each
+      // queue subtree independently so unrelated repository history is cheap.
+      const rootTree = await this.requestJson(treeUrl + encodeURIComponent(treeSha)) as { tree?: unknown };
+      if (!Array.isArray(rootTree.tree)) {
+        throw new Error('GitHub returned an invalid root Git tree while recovering a truncated listing.');
+      }
+      const queueDirectories = (rootTree.tree as TreeEntry[]).filter((entry) =>
+        entry.type === 'tree'
+        && (entry.path === 'requests' || entry.path === 'responses')
+        && typeof entry.sha === 'string',
+      );
+      for (const directory of queueDirectories) {
+        const name = String(directory.path);
+        const subtree = await this.requestJson(
+          treeUrl + encodeURIComponent(String(directory.sha)) + '?recursive=1',
+        ) as { tree?: unknown; truncated?: unknown };
+        if (subtree.truncated === true || !Array.isArray(subtree.tree)) {
+          throw new Error(
+            'GitHub queue directory ' + name +
+            ' exceeds the Git Trees API listing limit. Archive old queue entries or shard the queue before continuing.',
+          );
+        }
+        for (const entry of subtree.tree as TreeEntry[]) {
+          if (entry.type !== 'blob' || entry.mode === '120000'
+            || typeof entry.path !== 'string' || typeof entry.sha !== 'string') continue;
+          if (!entry.path || entry.path.includes('/')) continue;
+          queueEntries.push({
+            path: name + '/' + entry.path,
+            sha: entry.sha,
+            size: typeof entry.size === 'number' ? entry.size : 0,
+          });
+        }
+      }
+    }
+
+    const toEntries = (directory: 'requests' | 'responses'): GitHubContentEntry[] =>
+      queueEntries.filter((entry) => entry.path.startsWith(directory + '/'))
+        .map((entry) => ({
+          name: path.posix.basename(entry.path),
+          path: entry.path,
+          sha: entry.sha,
+          size: entry.size,
+          type: 'file',
+        }));
+    return { requests: toEntries('requests'), responses: toEntries('responses') };
+  }
+
   async readFile(filePath: string): Promise<Buffer> {
     const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
     const response = await this.request(
@@ -503,7 +585,7 @@ export class GitHubRepositoryClient {
         try {
           existing = await this.readFile(filePath);
         } catch (readError) {
-          if (error.status === 409
+          if ((error.status === 409 || error.status === 422)
             && readError instanceof GitHubApiError
             && readError.status === 404
             && attempt < 2) {

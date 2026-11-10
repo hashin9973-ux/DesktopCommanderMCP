@@ -98,7 +98,7 @@ function printHelp(): void {
     'Options:',
     '  --github-repository <owner/name>  Connect to an existing writable repository',
     '  --create-github-repository <name> Create a new private repository for your account',
-    '  --poll-interval-ms <n>            Reconciliation poll interval (default 60000 with webhooks; minimum 1000)',
+    '  --poll-interval-ms <n>            Reconciliation poll interval (default 5000; minimum 1000)',
     '  --no-github-webhook               Disable push notifications and use polling only',
     '  --max-parallel <n>                Concurrent request-file limit; 0 means unlimited',
     '  -h, --help                        Show this help',
@@ -375,11 +375,12 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     const savedReconcileInterval = Number(settings.githubReconcilePollIntervalMs);
     const legacyInterval = Number(settings.githubPollIntervalMs);
     const pollIntervalMs = options.pollIntervalMs
-      ?? (Number.isInteger(savedReconcileInterval) && savedReconcileInterval >= 1_000 && savedReconcileInterval <= 60_000
+      ?? (Number.isInteger(savedReconcileInterval) && savedReconcileInterval >= 1_000
+        && savedReconcileInterval <= 60_000 && savedReconcileInterval !== 60_000
         ? savedReconcileInterval
-        : Number.isInteger(legacyInterval) && legacyInterval >= 1_000 && legacyInterval <= 60_000 && legacyInterval !== 5_000
+        : Number.isInteger(legacyInterval) && legacyInterval >= 1_000 && legacyInterval <= 60_000
           ? legacyInterval
-          : 60_000);
+          : 5_000);
     const fallbackPollIntervalMs = options.pollIntervalMs
       ?? (Number.isInteger(legacyInterval) && legacyInterval >= 1_000 && legacyInterval <= 60_000
         ? legacyInterval
@@ -462,14 +463,31 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     console.log('Desktop Commander GitHub Repository Bridge is starting.');
     console.log('Repository: ' + repository);
     console.log('Default branch: ' + client.defaultBranch);
-    console.log('Local worker starts immediately; queue synchronization and webhook setup run in the background.');
+    console.log('Remote queue reconciliation runs before local worker startup; webhook setup runs in the background.');
     console.log('Files are committed directly to the existing default branch. No branches or pull requests are created.');
     console.log('Press Ctrl+C to stop.');
     console.log('');
 
-    child = await startWorker(cacheRoot, workerStateRoot, maxParallelRequests);
+    // Reconcile the remote queue before starting the worker. Otherwise a stale
+    // local request cache could execute a request whose durable response already
+    // exists remotely if the process previously stopped between publish and cleanup.
     process.once('SIGINT', stopWorker);
     process.once('SIGTERM', stopWorker);
+    let initialSyncReady = false;
+    while (!initialSyncReady && !stopping) {
+      try {
+        await ensureQueueInitialized();
+        await sync.syncOnce();
+        lastSyncFailureMessage = undefined;
+        initialSyncReady = true;
+      } catch (error) {
+        reportSyncFailure('Initial GitHub queue reconciliation failed; worker startup is deferred: ', error);
+        await new Promise((resolve) => setTimeout(resolve, fallbackPollIntervalMs));
+      }
+    }
+    if (stopping) return;
+
+    child = await startWorker(cacheRoot, workerStateRoot, maxParallelRequests);
     child.once('error', (error) => {
       console.error('Could not start the local Desktop Commander worker: ' + error.message);
     });
