@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { isValidAgentDirectoryName } from './agents.js';
 import { createHash } from 'node:crypto';
 import { writeFileAtomic } from '../utils/atomic-write.js';
 import { createGuideIfMissing } from './runtime.js';
