@@ -99,6 +99,8 @@ try {
 
   assert.equal(isValidAgentDirectoryName('agent-01'), true);
   assert.equal(isValidAgentDirectoryName('chatgpt.web'), true);
+  assert.equal(isValidAgentDirectoryName('chatgpt.'), false,
+    'trailing dots are not portable across Windows filesystems');
   assert.equal(isValidAgentDirectoryName('Agent'), false,
     'agent folder names are lowercase for cross-platform identity consistency');
   assert.equal(isValidAgentDirectoryName('../chatgpt'), false);
