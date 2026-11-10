@@ -24,6 +24,7 @@ function createGitHubApiDouble() {
   let staleHeadConflictPath;
   let truncateRecursiveTree = false;
   let failNextQueueTreeList = false;
+  let queueTreeListGate;
 
   const jsonResponse = (value, status = 200) => new Response(JSON.stringify(value), {
     status,
@@ -127,6 +128,12 @@ function createGitHubApiDouble() {
 
     if (url.pathname === '/repos/owner/repo/git/trees/root-tree-sha' && method === 'GET') {
       const recursive = url.searchParams.get('recursive') === '1';
+      if (recursive && queueTreeListGate) {
+        const gate = queueTreeListGate;
+        queueTreeListGate = undefined;
+        gate.signalStarted();
+        await gate.wait;
+      }
       if (recursive && failNextQueueTreeList) {
         failNextQueueTreeList = false;
         return jsonResponse({ message: 'temporary tree listing failure' }, 500);
@@ -271,6 +278,14 @@ function createGitHubApiDouble() {
     truncateNextRecursiveTree: () => { truncateRecursiveTree = true; },
     restoreRecursiveTree: () => { truncateRecursiveTree = false; },
     failNextQueueTreeList: () => { failNextQueueTreeList = true; },
+    pauseNextQueueTreeList: () => {
+      let release;
+      let signalStarted;
+      const started = new Promise((resolve) => { signalStarted = resolve; });
+      const wait = new Promise((resolve) => { release = resolve; });
+      queueTreeListGate = { wait, signalStarted };
+      return { started, release };
+    },
     pauseNextResponseUpload: () => {
       let release;
       let signalStarted;
@@ -881,6 +896,28 @@ try {
   );
   assert.ok(api.files.has('responses/response-' + listingFailureId + '.json'),
     'a temporary remote request-listing failure must not block a completed response upload');
+
+  const followupId = 'sync-followup-01';
+  const followupRequestBytes = Buffer.from(JSON.stringify({
+    protocol_version: 1,
+    id: followupId,
+    commands: [{ tool: 'get_config', arguments: {} }],
+  }), 'utf8');
+  const queueListGate = api.pauseNextQueueTreeList();
+  api.failNextQueueTreeList();
+  const failedPassWithQueuedSignal = sync.syncOnce();
+  await queueListGate.started;
+  api.files.set('requests/' + followupId + '.json', {
+    bytes: followupRequestBytes,
+    sha: gitBlobSha(followupRequestBytes),
+  });
+  const queuedFollowupSignal = sync.syncOnce();
+  queueListGate.release();
+  await Promise.all([failedPassWithQueuedSignal, queuedFollowupSignal]);
+  assert.deepEqual(
+    await fs.readFile(path.join(paths.requests, followupId + '.json')),
+    followupRequestBytes,
+    'a queued sync signal must trigger a successful retry even when the preceding pass failed',
 
   const restartRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-github-bridge-restart-'));
   try {

@@ -466,10 +466,19 @@ export class GitHubBridgeSync {
     }
 
     const running = (async () => {
+      let lastError: unknown;
       do {
         this.syncRequestedWhileRunning = false;
-        await this.syncInternal();
+        try {
+          await this.syncInternal();
+          lastError = undefined;
+        } catch (error) {
+          // A webhook or response-folder event may have arrived during a failed
+          // pass. Honor that queued signal and retry before surfacing the error.
+          lastError = error;
+        }
       } while (this.syncRequestedWhileRunning);
+      if (lastError) throw lastError;
     })().finally(() => {
       this.syncPromise = undefined;
     });
