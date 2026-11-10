@@ -1392,7 +1392,7 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
                                 status: registered.existing ? 'already_registered' : 'registered',
                                 username: registered.user.username,
                                 mailbox_user_id: registered.user.id,
-                                message: 'Save this mailbox_user_id and include it in every tool call to receive unread-mail notices.',
+                                message: 'Use this ID only with the separate mailbox inbox_unread and send actions. Normal tools and agent-scoped bridge requests do not need it.',
                             }, null, 2) }] };
                             break;
                         }
