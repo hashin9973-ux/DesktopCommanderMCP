@@ -396,6 +396,99 @@ async function startWorker(
   return child;
 }
 
+interface BridgeWorkerSupervisorOptions {
+  initialChild: ChildProcess;
+  start: () => Promise<ChildProcess>;
+  shouldStop: () => boolean;
+  signal: AbortSignal;
+  onChildStarted?: (child: ChildProcess) => void;
+  onWorkerExit?: (details: {
+    code: number | null;
+    signal: NodeJS.Signals | null;
+    error?: Error;
+    restartDelayMs: number;
+  }) => void;
+  onStartError?: (error: unknown, retryDelayMs: number) => void;
+  sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
+}
+
+function waitForWorkerClose(child: ChildProcess): Promise<{
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  error?: Error;
+}> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({
+      code: child.exitCode,
+      signal: child.signalCode,
+    });
+  }
+
+  return new Promise((resolve) => {
+    let spawnError: Error | undefined;
+    child.once('error', (error) => { spawnError = error; });
+    child.once('close', (code, signal) => resolve({
+      code,
+      signal,
+      ...(spawnError ? { error: spawnError } : {}),
+    }));
+  });
+}
+
+function sleepUnlessAborted(milliseconds: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, milliseconds);
+    signal.addEventListener('abort', finish, { once: true });
+  });
+}
+
+/**
+ * Keep the GitHub bridge parent alive when its local execution worker exits.
+ * A worker restart reuses the same per-repository cache and durable request
+ * ledgers, so already-started commands are not blindly re-executed.
+ */
+export async function superviseBridgeWorker(options: BridgeWorkerSupervisorOptions): Promise<void> {
+  let activeChild: ChildProcess | undefined = options.initialChild;
+  let restartDelayMs = 1_000;
+  const sleep = options.sleep || sleepUnlessAborted;
+
+  while (!options.shouldStop() && !options.signal.aborted) {
+    if (!activeChild) {
+      try {
+        activeChild = await options.start();
+        options.onChildStarted?.(activeChild);
+        if (options.shouldStop() || options.signal.aborted) {
+          if (activeChild.exitCode === null && !activeChild.killed) activeChild.kill('SIGTERM');
+          return;
+        }
+      } catch (error) {
+        options.onStartError?.(error, restartDelayMs);
+        await sleep(restartDelayMs, options.signal);
+        restartDelayMs = Math.min(restartDelayMs * 2, 30_000);
+        continue;
+      }
+    }
+
+    const child = activeChild;
+    const startedAt = Date.now();
+    const exit = await waitForWorkerClose(child);
+    activeChild = undefined;
+    if (options.shouldStop() || options.signal.aborted) return;
+
+    if (Date.now() - startedAt >= 60_000) restartDelayMs = 1_000;
+    options.onWorkerExit?.({ ...exit, restartDelayMs });
+    await sleep(restartDelayMs, options.signal);
+    if (options.shouldStop() || options.signal.aborted) return;
+    restartDelayMs = Math.min(restartDelayMs * 2, 30_000);
+  }
+}
+
 export async function runGitHubBridge(args: string[] = []): Promise<void> {
   const options = parseOptions(args);
   if (options.help) {
