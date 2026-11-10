@@ -18,6 +18,14 @@ assert.equal(parsedJson.commands.length, 2);
 assert.equal(parsedJson.commands[0].tool, 'list_directory');
 assert.equal(parsedJson.commands[1].tool, 'get_config');
 assert.equal(parsedJson.command_delay_ms, 0);
+const compactJson = JSON.stringify({
+  protocol_version: 1,
+  id: 'task-a1',
+  commands: [{ tool: 'get_config', arguments: {} }],
+});
+const compactRequest = parseBridgeRequest('task-a1.json', compactJson);
+assert.equal(compactRequest.id, 'task-a1', 'short names without request- prefixes must be accepted');
+assert.equal(compactRequest.commands[0].tool, 'get_config');
 assert.ok(BRIDGE_TOOL_NAMES.includes('mailbox'), 'mailbox is a supported bridge tool');
 
 const mailboxId = 'f5f9ecf0-1b22-4d15-9911-ec2b39d4c8bf';

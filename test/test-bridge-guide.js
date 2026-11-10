@@ -6,10 +6,33 @@ import {
   appendMailboxGuideSection,
   MAILBOX_GUIDE_HEADING,
 } from '../dist/bridge/guide.js';
+import { createGuideIfMissing } from '../dist/bridge/runtime.js';
 
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-bridge-guide-'));
 
 try {
+  const generatedRoot = path.join(tempDir, 'generated');
+  await fs.mkdir(generatedRoot, { recursive: true });
+  await createGuideIfMissing(generatedRoot);
+  const generatedFiles = await fs.readdir(generatedRoot);
+  assert.deepEqual(generatedFiles, ['README.md'], 'README.md must be the only generated agent-facing guide file');
+  const generatedGuide = await fs.readFile(path.join(generatedRoot, 'README.md'), 'utf8');
+  assert.match(generatedGuide, /requests\/task-a1\.json/);
+  assert.match(generatedGuide, /responses\/task-a1\.json/);
+  assert.match(generatedGuide, /only agent-facing guide/);
+  assert.doesNotMatch(generatedGuide, /status\/status-|status\/worker\.json/);
+  assert.doesNotMatch(generatedGuide, /request-<id>|response-<id>/);
+
+  const oldGeneratedRoot = path.join(tempDir, 'old-generated');
+  await fs.mkdir(oldGeneratedRoot, { recursive: true });
+  await fs.writeFile(path.join(oldGeneratedRoot, 'README.md'),
+    '# Desktop Commander Bridge\n\nThis README is the AI-facing operating guide for Desktop Commander file-queue bridges.\n',
+    'utf8');
+  await createGuideIfMissing(oldGeneratedRoot);
+  const upgradedGuide = await fs.readFile(path.join(oldGeneratedRoot, 'README.md'), 'utf8');
+  assert.match(upgradedGuide, /desktop-commander:bridge-guide:v2/);
+  assert.match(upgradedGuide, /requests\/task-a1\.json/);
+
   const guidePath = path.join(tempDir, 'README.md');
   const original = [
     '# Desktop Commander Cloud-Folder Bridge',

@@ -20,6 +20,9 @@ function createGitHubApiDouble() {
   const webhooks = new Map();
   let nextWebhookId = 1;
   let responseUploadGate;
+  let staleHeadConflictPath;
+  let truncateRecursiveTree = false;
+  let failNextQueueTreeList = false;
 
   const jsonResponse = (value, status = 200) => new Response(JSON.stringify(value), {
     status,
@@ -117,6 +120,53 @@ function createGitHubApiDouble() {
       ]);
     }
 
+    if (url.pathname === '/repos/owner/repo/commits/main' && method === 'GET') {
+      return jsonResponse({ commit: { tree: { sha: 'root-tree-sha' } } });
+    }
+
+    if (url.pathname === '/repos/owner/repo/git/trees/root-tree-sha' && method === 'GET') {
+      const recursive = url.searchParams.get('recursive') === '1';
+      if (recursive && failNextQueueTreeList) {
+        failNextQueueTreeList = false;
+        return jsonResponse({ message: 'temporary tree listing failure' }, 500);
+      }
+      if (recursive && truncateRecursiveTree) {
+        return jsonResponse({ sha: 'root-tree-sha', truncated: true, tree: [] });
+      }
+      if (recursive) {
+        return jsonResponse({
+          sha: 'root-tree-sha',
+          truncated: false,
+          tree: [...files.entries()].map(([filePath, value]) => ({
+            path: filePath, type: 'blob', mode: '100644', sha: value.sha, size: value.bytes.length,
+          })),
+        });
+      }
+      return jsonResponse({
+        sha: 'root-tree-sha',
+        truncated: false,
+        tree: ['requests', 'responses', 'artifacts'].map((name) => ({
+          path: name, type: 'tree', mode: '040000', sha: name + '-tree-sha',
+        })),
+      });
+    }
+
+    const queueTreeMatch = /^\/repos\/owner\/repo\/git\/trees\/(requests|responses)-tree-sha$/.exec(url.pathname);
+    if (queueTreeMatch && method === 'GET') {
+      const directory = queueTreeMatch[1];
+      return jsonResponse({
+        sha: directory + '-tree-sha',
+        truncated: false,
+        tree: [...files.entries()].flatMap(([filePath, value]) => {
+          const prefix = directory + '/';
+          if (!filePath.startsWith(prefix)) return [];
+          const relative = filePath.slice(prefix.length);
+          if (!relative || relative.includes('/')) return [];
+          return [{ path: relative, type: 'blob', mode: '100644', sha: value.sha, size: value.bytes.length }];
+        }),
+      });
+    }
+
     if (url.pathname === '/repos/owner/repo/contents' && method === 'GET') {
       return directoryListing('');
     }
@@ -149,6 +199,10 @@ function createGitHubApiDouble() {
     }
 
     if (repoPath && method === 'PUT') {
+      if (repoPath === staleHeadConflictPath) {
+        staleHeadConflictPath = undefined;
+        return jsonResponse({ message: 'Update is not a fast forward' }, 422);
+      }
       if (repoPath.startsWith('responses/') && responseUploadGate) {
         const gate = responseUploadGate;
         responseUploadGate = undefined;
@@ -209,6 +263,10 @@ function createGitHubApiDouble() {
     commits,
     getRawReadCount: (filePath) => rawReads.get(filePath) || 0,
     getCreatedRepositoryPayload: () => createdRepositoryPayload,
+    conflictNextCreateFile: (filePath) => { staleHeadConflictPath = filePath; },
+    truncateNextRecursiveTree: () => { truncateRecursiveTree = true; },
+    restoreRecursiveTree: () => { truncateRecursiveTree = false; },
+    failNextQueueTreeList: () => { failNextQueueTreeList = true; },
     pauseNextResponseUpload: () => {
       let release;
       let signalStarted;
@@ -241,6 +299,19 @@ assert.equal(listed[1].push, false);
 
 const client = await GitHubRepositoryClient.connect('owner/repo', token, api.fetcher);
 assert.equal(client.defaultBranch, 'main');
+api.conflictNextCreateFile('responses/stale-head-retry.json');
+assert.equal(await client.createFileIfAbsent(
+  'responses/stale-head-retry.json',
+  Buffer.from('retry after stale branch head'),
+  'Test stale branch retry',
+), true, 'a 422 stale-head conflict with an absent target must be retried');
+assert.equal(api.files.get('responses/stale-head-retry.json').bytes.toString('utf8'), 'retry after stale branch head');
+
+api.truncateNextRecursiveTree();
+const recoveredTreeListing = await client.listQueueFiles();
+assert.ok(Array.isArray(recoveredTreeListing.requests));
+assert.ok(Array.isArray(recoveredTreeListing.responses));
+api.restoreRecursiveTree();
 await assert.rejects(
   () => GitHubRepositoryClient.connect('archived/repo', token, api.fetcher),
   /archived/,
@@ -748,6 +819,26 @@ try {
   await fs.access(path.join(paths.responses, 'response-' + invalidResponseId + '.json'));
   await fs.rm(path.join(paths.responses, 'response-' + invalidResponseId + '.json'), { force: true });
 
+  const listingFailureId = 'listing-failure-01';
+  await fs.writeFile(path.join(paths.responses, 'response-' + listingFailureId + '.json'), JSON.stringify({
+    protocol_version: 1,
+    id: listingFailureId,
+    request_hash: crypto.createHash('sha256').update(listingFailureId).digest('hex'),
+    status: 'completed',
+    started_at: '2026-01-01T00:00:00.000Z',
+    completed_at: '2026-01-01T00:00:01.000Z',
+    results: [],
+    artifacts: [],
+  }));
+  api.failNextQueueTreeList();
+  await assert.rejects(
+    () => sync.syncOnce(),
+    /local response publication was still attempted/,
+    'remote queue discovery errors should still be reported after trying to publish completed local responses',
+  );
+  assert.ok(api.files.has('responses/response-' + listingFailureId + '.json'),
+    'a temporary remote request-listing failure must not block a completed response upload');
+
   const restartRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-github-bridge-restart-'));
   try {
     const restartedPaths = {
@@ -793,6 +884,11 @@ try {
     historicalReadRequests.add(requestName);
     historicalReadRequests.add(responseName);
   }
+  const largeQueueListing = await client.listQueueFiles();
+  assert.equal(largeQueueListing.requests.length, historyCount,
+    'Git Trees indexing must discover request files beyond the Contents API 1,000-entry limit');
+  assert.equal(largeQueueListing.responses.length, historyCount,
+    'Git Trees indexing must discover response files beyond the Contents API 1,000-entry limit');
   const historySync = new GitHubBridgeSync(client, paths);
   await historySync.syncOnce();
   for (const remotePath of historicalReadRequests) {
