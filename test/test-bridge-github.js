@@ -16,6 +16,7 @@ function createGitHubApiDouble() {
   const files = new Map();
   const commits = [];
   const rawReads = new Map();
+  const directoryListingCalls = [];
   let createdRepositoryPayload;
   const webhooks = new Map();
   let nextWebhookId = 1;
@@ -240,6 +241,7 @@ function createGitHubApiDouble() {
   };
 
   function directoryListing(directory) {
+    directoryListingCalls.push(directory);
     const entries = [];
     const prefix = directory ? directory + '/' : '';
     for (const [filePath, value] of files.entries()) {
@@ -262,6 +264,8 @@ function createGitHubApiDouble() {
     files,
     commits,
     getRawReadCount: (filePath) => rawReads.get(filePath) || 0,
+    getDirectoryListingCalls: () => [...directoryListingCalls],
+    resetDirectoryListingCalls: () => { directoryListingCalls.length = 0; },
     getCreatedRepositoryPayload: () => createdRepositoryPayload,
     conflictNextCreateFile: (filePath) => { staleHeadConflictPath = filePath; },
     truncateNextRecursiveTree: () => { truncateRecursiveTree = true; },
@@ -467,7 +471,10 @@ try {
   api.files.set('DESKTOP_COMMANDER_BRIDGE.md', { bytes: legacyGuide, sha: gitBlobSha(legacyGuide) });
 
   const sync = new GitHubBridgeSync(client, paths);
+  api.resetDirectoryListingCalls();
   await sync.initialize();
+  assert.deepEqual(api.getDirectoryListingCalls().filter(Boolean), [],
+    'initialization must not list the requests/responses directories through the 1,000-entry-limited Contents API');
   assert.ok(api.files.has('requests/.gitkeep'));
   assert.ok(api.files.has('responses/.gitkeep'));
   assert.ok(api.files.has('artifacts/.gitkeep'));

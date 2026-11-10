@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { writeFileAtomic } from '../utils/atomic-write.js';
 import { createGuideIfMissing } from './runtime.js';
 import {
+  GitHubApiError,
   GitHubRepositoryClient,
   MAX_GITHUB_BRIDGE_FILE_BYTES,
   type GitHubContentEntry,
@@ -409,22 +410,22 @@ export class GitHubBridgeSync {
       fs.mkdir(this.paths.artifacts, { recursive: true }),
     ]);
 
-    // Directory reads are cheaper than attempting duplicate writes and then
-    // reading the same files back after GitHub rejects each create.
+    // Do not list queue directories through the Contents API: GitHub caps
+    // directory listings at 1,000 entries. Probe each sentinel by exact path.
     const queueDirectories = ['requests', 'responses', 'artifacts'];
-    const listings = await Promise.all(
-      queueDirectories.map((directory) => this.client.listDirectory(directory)),
-    );
-    for (let index = 0; index < queueDirectories.length; index++) {
-      const directory = queueDirectories[index];
-      const entries = listings[index];
-      if (entries.some((entry) => entry.type === 'file' && entry.name === '.gitkeep')) continue;
-      await this.client.createFileIfAbsent(
-        directory + '/.gitkeep',
-        Buffer.from('Desktop Commander bridge queue directory.\n', 'utf8'),
-        'Initialize Desktop Commander bridge queue',
-      );
-    }
+    await Promise.all(queueDirectories.map(async (directory) => {
+      const sentinelPath = directory + '/.gitkeep';
+      try {
+        await this.client.readFile(sentinelPath);
+      } catch (error) {
+        if (!(error instanceof GitHubApiError) || error.status !== 404) throw error;
+        await this.client.createFileIfAbsent(
+          sentinelPath,
+          Buffer.from('Desktop Commander bridge queue directory.\n', 'utf8'),
+          'Initialize Desktop Commander bridge queue',
+        );
+      }
+    }));
 
     // Publishing the generated guide is a one-time/version-change operation.
     // Persist its digest in the local cache so routine restarts do not make
