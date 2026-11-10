@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { isValidAgentDirectoryName } from './agents.js';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -612,7 +613,7 @@ export class GitHubRepositoryClient {
         for (const agentDirectory of agentsTree.tree as TreeEntry[]) {
           const agentName = agentDirectory.path;
           if (agentDirectory.type !== 'tree' || typeof agentName !== 'string'
-            || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(agentName)
+            || !isValidAgentDirectoryName(agentName)
             || typeof agentDirectory.sha !== 'string') continue;
 
           const agentTree = await this.requestJson(
