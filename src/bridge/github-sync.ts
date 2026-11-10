@@ -431,31 +431,68 @@ export class GitHubBridgeSync {
     return match ? { agentId: segments[1], requestId: match[1] } : undefined;
   }
 
-  async initialize(): Promise<void> {
-    await Promise.all([
-      fs.mkdir(this.paths.root, { recursive: true }),
-      fs.mkdir(this.paths.agents, { recursive: true }),
-    ]);
+  private async migrateLegacyRemoteQueue(): Promise<void> {
+    const legacy = await this.client.listQueueFiles();
+    const transfers: Array<{ source: string; destination: string }> = [];
 
-    // The only bridge-owned queue root is agents/. The old flat folders are
-    // not recreated. Remove their empty sentinels so an upgraded repository
-    // visibly reflects the new layout.
-    try {
-      await this.client.readFile('agents/.gitkeep');
-    } catch (error) {
-      if (!(error instanceof GitHubApiError) || error.status !== 404) throw error;
+    for (const entry of [...legacy.requests, ...legacy.responses]) {
+      if (!entry.path.startsWith('requests/') && !entry.path.startsWith('responses/')) continue;
+      const queue = entry.path.split('/')[0];
+      const destination = 'agents/default/' + queue + '/' + entry.name;
+      transfers.push({ source: entry.path, destination });
+    }
+
+    for (const entry of legacy.legacyArtifacts) {
+      const match = /^artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)$/i.exec(entry.path);
+      if (!match) continue;
+      transfers.push({
+        source: entry.path,
+        destination: 'agents/default/artifacts/' + match[1] + '/' + match[2],
+      });
+    }
+
+    // Copy, verify exact bytes, and only then delete the legacy source. A
+    // conflict aborts migration without overwriting either copy.
+    for (const transfer of transfers) {
+      if (transfer.source === transfer.destination) continue;
+      const sourceBytes = await this.client.readFile(transfer.source);
       await this.client.createFileIfAbsent(
-        'agents/.gitkeep',
-        Buffer.from('Agent-scoped Desktop Commander bridge queues.\n', 'utf8'),
-        'Initialize Desktop Commander agent queue root',
+        transfer.destination,
+        sourceBytes,
+        'Migrate legacy Desktop Commander queue item to agent/default',
+      );
+      const destinationBytes = await this.client.readFile(transfer.destination);
+      if (!destinationBytes.equals(sourceBytes)) {
+        throw new Error(
+          'Legacy GitHub queue migration could not verify ' + transfer.destination +
+          '. The original ' + transfer.source + ' was preserved.',
+        );
+      }
+      await this.client.deleteFileIfPresent(
+        transfer.source,
+        'Remove verified legacy Desktop Commander queue item after migration',
       );
     }
+
+    // The old flat sentinels are removed only after all real queue items have
+    // been copied and verified inside agents/default.
     for (const directory of ['requests', 'responses', 'artifacts']) {
       await this.client.deleteFileIfPresent(
         directory + '/.gitkeep',
         'Remove obsolete flat Desktop Commander bridge directory sentinel',
       );
     }
+  }
+
+  async initialize(): Promise<void> {
+    await Promise.all([
+      fs.mkdir(this.paths.root, { recursive: true }),
+      fs.mkdir(this.paths.agents, { recursive: true }),
+    ]);
+
+    // Move any existing flat queue into the explicit default agent. This
+    // preserves pending work and historical response/artifact data.
+    await this.migrateLegacyRemoteQueue();
 
     // Publish the single current README whenever its generated content changes.
     // The local digest avoids an unnecessary remote README fetch on each poll.
