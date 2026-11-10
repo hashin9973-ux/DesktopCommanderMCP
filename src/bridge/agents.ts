@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-export const AGENT_DIRECTORY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+export const AGENT_DIRECTORY_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 export const LEGACY_DEFAULT_AGENT = 'default';
 
 const WINDOWS_RESERVED_AGENT_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
@@ -80,7 +80,9 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
 
   // Move existing flat queues into one explicit default-agent namespace. This
   // preserves pending work and completed results without exposing flat queues.
-  for (const queueName of ['requests', 'responses', 'artifacts']) {
+  // Requests move first, then their artifacts, and responses last because a
+  // response file is the durable completion marker consumed by the agent.
+  for (const queueName of ['requests', 'artifacts', 'responses']) {
     const legacyPath = path.join(bridgeRoot, queueName);
     if (!await pathExists(legacyPath)) continue;
     const destination = path.join(agentsRoot, LEGACY_DEFAULT_AGENT, queueName);
