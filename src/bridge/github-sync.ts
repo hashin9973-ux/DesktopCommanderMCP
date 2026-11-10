@@ -503,6 +503,16 @@ export class GitHubBridgeSync {
       });
     }
 
+    // A response is the durable completion marker. Move requests first,
+    // artifacts next, and responses last so an agent never observes a migrated
+    // response before its referenced artifacts are available.
+    const migrationOrder = (source: string): number =>
+      source.startsWith('requests/') ? 0 : source.startsWith('artifacts/') ? 1 : 2;
+    transfers.sort((left, right) =>
+      migrationOrder(left.source) - migrationOrder(right.source)
+      || left.source.localeCompare(right.source),
+    );
+
     // Copy, verify exact bytes, and only then delete the legacy source. A
     // conflict aborts migration without overwriting either copy.
     for (const transfer of transfers) {
