@@ -437,9 +437,16 @@ export class GitHubBridgeSync {
     if (!agentsStat.isDirectory() || agentsStat.isSymbolicLink()) {
       throw new Error('The local GitHub agent cache root must be a real directory.');
     }
+    const samePath = (left: string, right: string): boolean => {
+      const resolvedLeft = path.resolve(left);
+      const resolvedRight = path.resolve(right);
+      return process.platform === 'win32'
+        ? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase()
+        : resolvedLeft === resolvedRight;
+    };
     const realRoot = await fs.realpath(this.paths.root);
     const realAgents = await fs.realpath(this.paths.agents);
-    if (path.resolve(realAgents) !== path.resolve(path.join(realRoot, 'agents'))) {
+    if (!samePath(realAgents, path.join(realRoot, 'agents'))) {
       throw new Error('The local GitHub agent cache root resolves outside the repository cache.');
     }
 
@@ -449,7 +456,7 @@ export class GitHubBridgeSync {
       throw new Error('The local cache directory for agent ' + agentId + ' must be a real directory.');
     }
     const realAgent = await fs.realpath(paths.root);
-    if (path.resolve(realAgent) !== path.resolve(path.join(realAgents, agentId))) {
+    if (!samePath(realAgent, path.join(realAgents, agentId))) {
       throw new Error('The local cache directory for agent ' + agentId + ' resolves outside the agent cache root.');
     }
 
@@ -460,7 +467,7 @@ export class GitHubBridgeSync {
         throw new Error('The local queue directory for agent ' + agentId + ' must be a real directory: ' + directory);
       }
       const realDirectory = await fs.realpath(directory);
-      if (path.resolve(realDirectory) !== path.resolve(directory)) {
+      if (!samePath(realDirectory, directory)) {
         throw new Error('The local queue directory for agent ' + agentId + ' resolves outside its cache: ' + directory);
       }
     }
