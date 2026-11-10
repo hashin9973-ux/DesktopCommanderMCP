@@ -14,7 +14,9 @@ export interface BridgeRequest {
 }
 
 const REQUEST_FILE_PATTERN = /^(?:request-)?([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/i;
-const HIDDEN_TOOLS = new Set(['track_ui_event']);
+// Agents are identified by agents/<agent-name>; mailbox_user_id is not part of
+// the file-queue protocol.
+const HIDDEN_TOOLS = new Set(['track_ui_event', 'mailbox']);
 export const BRIDGE_TOOL_NAMES = Object.keys(toolArgSchemas)
   .filter((name) => !HIDDEN_TOOLS.has(name))
   .sort();
@@ -49,17 +51,7 @@ function parseCommand(value: unknown, index: number): BridgeCommand {
   }
 
   const schema = toolArgSchemas[value.tool];
-  // MCP advertises mailbox_user_id as an optional common argument on every
-  // tool. Preserve that behavior for bridge requests without making it part
-  // of each tool's individual argument schema.
   const schemaArguments = { ...value.arguments };
-  const sharedMailboxId = value.tool === 'mailbox' ? undefined : schemaArguments.mailbox_user_id;
-  if (sharedMailboxId !== undefined) {
-    if (typeof sharedMailboxId !== 'string') {
-      throw new Error('Command ' + (index + 1) + ' mailbox_user_id must be a string.');
-    }
-    delete schemaArguments.mailbox_user_id;
-  }
 
   const unsupported = detectUnsupportedParams(schemaArguments, schema);
   if (unsupported.length) {
@@ -78,9 +70,7 @@ function parseCommand(value: unknown, index: number): BridgeCommand {
   if (!isRecord(parsed.data)) {
     throw new Error('Command ' + (index + 1) + ' (' + value.tool + ') did not produce an object argument set.');
   }
-  const normalizedArguments = { ...parsed.data };
-  if (typeof sharedMailboxId === 'string') normalizedArguments.mailbox_user_id = sharedMailboxId;
-  return { tool: value.tool, arguments: normalizedArguments };
+  return { tool: value.tool, arguments: { ...parsed.data } };
 }
 
 function parseJsonRequest(idFromFilename: string, content: string): BridgeRequest {
