@@ -4,6 +4,12 @@ import path from 'node:path';
 export const AGENT_DIRECTORY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 export const LEGACY_DEFAULT_AGENT = 'default';
 
+const WINDOWS_RESERVED_AGENT_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+
+export function isValidAgentDirectoryName(value: string): boolean {
+  return AGENT_DIRECTORY_PATTERN.test(value) && !WINDOWS_RESERVED_AGENT_NAMES.test(value);
+}
+
 export interface AgentQueuePaths {
   agentId: string;
   root: string;
@@ -73,8 +79,7 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
   }
 
   // Move existing flat queues into one explicit default-agent namespace. This
-  // preserves pending work and completed results while ensuring new requests
-  // are never written into the old root-level folders.
+  // preserves pending work and completed results without exposing flat queues.
   for (const queueName of ['requests', 'responses', 'artifacts']) {
     const legacyPath = path.join(bridgeRoot, queueName);
     if (!await pathExists(legacyPath)) continue;
@@ -101,7 +106,7 @@ export async function discoverAgentQueuePaths(
   const entries = await fs.readdir(agentsRoot, { withFileTypes: true });
   const result: AgentQueuePaths[] = [];
   for (const entry of entries) {
-    if (!entry.isDirectory() || entry.isSymbolicLink() || !AGENT_DIRECTORY_PATTERN.test(entry.name)) continue;
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !isValidAgentDirectoryName(entry.name)) continue;
     const root = path.join(agentsRoot, entry.name);
     const requests = path.join(root, 'requests');
     const responses = path.join(root, 'responses');
