@@ -575,9 +575,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     const cacheRoot = cacheRoots.cacheRoot;
     const paths = {
       root: cacheRoot,
-      requests: path.join(cacheRoot, 'requests'),
-      responses: path.join(cacheRoot, 'responses'),
-      artifacts: path.join(cacheRoot, 'artifacts'),
+      agents: path.join(cacheRoot, 'agents'),
     };
     const workerStateRoot = cacheRoots.workerStateRoot;
 
@@ -650,24 +648,20 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       }
     };
 
-    // Prepare only local folders before starting the worker. GitHub directory
-    // creation, guide publication, and historical sync run after startup.
-    await Promise.all([
-      fs.mkdir(paths.requests, { recursive: true }),
-      fs.mkdir(paths.responses, { recursive: true }),
-      fs.mkdir(paths.artifacts, { recursive: true }),
-    ]);
+    // Prepare only the agent namespace before starting the worker. The
+    // recursive watcher observes responses from every agent and subagent.
+    await fs.mkdir(paths.agents, { recursive: true });
 
     try {
-      responseWatcher = watch(paths.responses, { persistent: true }, () => { void syncPoll(); });
+      responseWatcher = watch(paths.agents, { persistent: true, recursive: true }, () => { void syncPoll(); });
       responseWatcherHealthy = true;
       responseWatcher.on('error', (error) => {
         responseWatcherHealthy = false;
-        console.warn('Local GitHub response-folder watcher failed; switching to polling: ' + error.message);
+        console.warn('Local GitHub agent-queue watcher failed; switching to polling: ' + error.message);
         switchToFallbackPolling();
       });
     } catch (error) {
-      console.warn('Could not watch local GitHub responses; polling will also upload completed responses: ' + errorMessage(error));
+      console.warn('Could not watch local GitHub agent queues; polling will also upload completed responses: ' + errorMessage(error));
     }
 
     console.log('');

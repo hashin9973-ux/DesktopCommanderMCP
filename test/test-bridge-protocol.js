@@ -26,21 +26,18 @@ const compactJson = JSON.stringify({
 const compactRequest = parseBridgeRequest('task-a1.json', compactJson);
 assert.equal(compactRequest.id, 'task-a1', 'short names without request- prefixes must be accepted');
 assert.equal(compactRequest.commands[0].tool, 'get_config');
-assert.ok(BRIDGE_TOOL_NAMES.includes('mailbox'), 'mailbox is a supported bridge tool');
+assert.ok(!BRIDGE_TOOL_NAMES.includes('mailbox'),
+  'agents are identified by their folder; the legacy mailbox tool is not part of the bridge protocol');
 
-const mailboxId = 'f5f9ecf0-1b22-4d15-9911-ec2b39d4c8bf';
-const mailboxRequest = parseBridgeRequest('request-mailbox-01.json', JSON.stringify({
-  protocol_version: 1,
-  id: 'mailbox-01',
-  commands: [
-    { tool: 'mailbox', arguments: { action: 'register', username: 'Bridge Alice' } },
-    { tool: 'get_config', arguments: { mailbox_user_id: mailboxId } },
-  ],
-}));
-assert.equal(mailboxRequest.commands[0].tool, 'mailbox');
-assert.equal(mailboxRequest.commands[0].arguments.action, 'register');
-assert.equal(mailboxRequest.commands[1].arguments.mailbox_user_id, mailboxId,
-  'the common mailbox_user_id argument must be preserved on non-mailbox bridge calls');
+assert.throws(
+  () => parseBridgeRequest('mailbox-01.json', JSON.stringify({
+    protocol_version: 1,
+    id: 'mailbox-01',
+    commands: [{ tool: 'mailbox', arguments: { action: 'register', username: 'Agent' } }],
+  })),
+  /unknown or unavailable tool/,
+  'file-queue agents must not need mailbox registration or mailbox IDs',
+);
 
 const tick = String.fromCharCode(96);
 const markdown = [
@@ -98,7 +95,8 @@ assert.throws(
     id: 'bad-mailbox-id',
     commands: [{ tool: 'get_config', arguments: { mailbox_user_id: 42 } }],
   })),
-  /mailbox_user_id must be a string/,
+  /unsupported argument/,
+  'mailbox_user_id is no longer a shared bridge argument; the agent folder is the identity',
 );
 assert.throws(
   () => parseBridgeRequest('request-bad-delay.json', JSON.stringify({

@@ -30,7 +30,7 @@ const SERVER_INSTRUCTIONS = `Desktop Commander provides tools for working with t
 - Terminal process tools support shell commands, REPLs, and long-running processes. start_process creates a process session; interact_with_process sends input; read_process_output reads later output; force_terminate ends a session.
 - Search tools are session-based. start_search creates a search session; get_more_search_results reads its results; stop_search ends it early.
 - Absolute paths are generally the most reliable because relative paths depend on the active working directory.
-- allowedDirectories and each tool's schema, annotations, and documented constraints define the operational boundaries.\n- Optional local mailbox identities can be registered with the mailbox tool; include mailbox_user_id in tool calls to receive unread-message notices. Mail stays on this device.`;
+- allowedDirectories and each tool's schema, annotations, and documented constraints define the operational boundaries.`;
 
 import {
     StartProcessArgsSchema,
@@ -1151,9 +1151,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             {
                 name: "mailbox",
                 description: `
-                        Local, app-side messaging between registered AI/user identities. Mail is stored on this device and is not synchronized through the cloud-folder bridge.
-                        Actions: register (username), inbox_unread (requires mailbox_user_id), send (requires mailbox_user_id, to username, message), list_users, read (optional user/from/to/unreadOnly/limit filters).
-                        Register once, then include the returned mailbox_user_id in every tool call to receive an unread-message notice appended to ordinary tool results. Identity is optional and never required for normal tool use.
+                        Optional local, app-side messaging, independent of agent-scoped bridge folders. Mail is stored only on this device.
+                        Actions: register (username), inbox_unread (mailbox_user_id), send (mailbox_user_id, to username, message), list_users, and read (optional user/from/to/unreadOnly/limit filters).
+                        The mailbox identity is used only by this separate mailbox tool. Normal Desktop Commander tools and agent-scoped bridge requests identify agents by their folders and do not require a mailbox ID.
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(MailboxArgsSchema),
                 annotations: {
@@ -1165,23 +1165,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
         ];
 
-        // mailbox_user_id is an optional common argument. It is deliberately
-        // advertised on every tool so clients can opt into result notifications.
-        const filteredTools = allTools
-            .filter(tool => shouldIncludeTool(tool.name))
-            .map((tool: any) => ({
-                ...tool,
-                inputSchema: {
-                    ...tool.inputSchema,
-                    properties: {
-                        ...(tool.inputSchema?.properties ?? {}),
-                        mailbox_user_id: {
-                            type: "string",
-                            description: "Optional local mailbox identity. Include this on each tool call to receive unread-message notices in results.",
-                        },
-                    },
-                },
-            }));
+        // Agent identity is determined by the bridge folder namespace. Do not
+        // inject a mailbox identity into unrelated tool schemas.
+        const filteredTools = allTools.filter(tool => shouldIncludeTool(tool.name));
 
         // logToStderr('debug', `Returning ${filteredTools.length} tools (filtered from ${allTools.length} total) for client: ${currentClient?.name || 'unknown'}`);
 
@@ -1227,7 +1213,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         const call = isUiOriginCall
             ? runInUiOriginCallContext(() => handleCallToolRequest(request))
             : handleCallToolRequest(request);
-        return call.then(result => addMailboxNotice(result, request.params.name, args));
+        return call;
     });
 });
 
@@ -1253,17 +1239,7 @@ export async function executeToolForBridge(name: string, args: unknown): Promise
         return { content: [{ type: 'text', text: 'Error: Bridge requests cannot use origin "ui".' }], isError: true };
     }
 
-    // mailbox_user_id is a common optional argument on every MCP tool. It is
-    // carried in the bridge request as well, but is not part of each tool's
-    // individual schema (MailboxArgsSchema owns it for mailbox actions).
-    const sharedMailboxId = name === 'mailbox' ? undefined : rawRecord?.mailbox_user_id;
-    if (sharedMailboxId !== undefined && typeof sharedMailboxId !== 'string') {
-        return { content: [{ type: 'text', text: 'Error: mailbox_user_id must be a string.' }], isError: true };
-    }
     const schemaArgs = rawRecord ? { ...rawRecord } : rawArgs;
-    if (name !== 'mailbox' && schemaArgs && typeof schemaArgs === 'object' && !Array.isArray(schemaArgs)) {
-        delete (schemaArgs as Record<string, unknown>).mailbox_user_id;
-    }
 
     const unsupported = detectUnsupportedParams(schemaArgs, schema);
     if (unsupported.length > 0) {
@@ -1285,7 +1261,6 @@ export async function executeToolForBridge(name: string, args: unknown): Promise
     }
 
     const normalizedArgs = { ...(parsed.data as Record<string, unknown>) };
-    if (typeof sharedMailboxId === 'string') normalizedArgs.mailbox_user_id = sharedMailboxId;
 
     const result = await bridgeExecutionContext.run(true, () => runWithToolCallPaths(() => {
         addToolCallPaths(...pathArguments(normalizedArgs));
@@ -1294,7 +1269,7 @@ export async function executeToolForBridge(name: string, args: unknown): Promise
             params: { name, arguments: normalizedArgs },
         } as CallToolRequest);
     }));
-    return addMailboxNotice(result, name, normalizedArgs);
+    return result;
 }
 
 export async function validateBridgeArtifactPath(filePath: string): Promise<string> {
@@ -1302,24 +1277,6 @@ export async function validateBridgeArtifactPath(filePath: string): Promise<stri
         addToolCallPaths(filePath);
         return validatePath(filePath);
     });
-}
-
-async function addMailboxNotice(result: ServerResult, toolName: string, args: unknown): Promise<ServerResult> {
-    if (toolName === 'track_ui_event' || !args || typeof args !== 'object') return result;
-    const callArgs = args as Record<string, unknown>;
-    if (toolName === 'mailbox' && callArgs.action === 'inbox_unread') return result;
-    const identity = callArgs.mailbox_user_id;
-    if (typeof identity !== 'string' || !identity.trim()) return result;
-    try {
-        const unread = await mailboxStore.unreadCount(identity);
-        if (unread > 0) {
-            const notice = `${unread} new message${unread === 1 ? '' : 's'}. Use mailbox with action="inbox_unread" and mailbox_user_id="${identity}" to read.`;
-            result.content = [{ type: 'text', text: notice }, ...(result.content ?? [])];
-        }
-    } catch {
-        // Mailbox is optional: an unavailable mailbox must never break other tools.
-    }
-    return result;
 }
 
 async function handleCallToolRequest(request: CallToolRequest): Promise<ServerResult> {
@@ -1435,7 +1392,7 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
                                 status: registered.existing ? 'already_registered' : 'registered',
                                 username: registered.user.username,
                                 mailbox_user_id: registered.user.id,
-                                message: 'Save this mailbox_user_id and include it in every tool call to receive unread-mail notices.',
+                                message: 'Use this ID only with the separate mailbox inbox_unread and send actions. Normal tools and agent-scoped bridge requests do not need it.',
                             }, null, 2) }] };
                             break;
                         }
@@ -1670,7 +1627,7 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         try {
             const argSchema = toolArgSchemas[name];
             if (argSchema && result && Array.isArray((result as any).content)) {
-                const unsupported = detectUnsupportedParams(args, argSchema).filter(parameter => parameter !== 'mailbox_user_id');
+                const unsupported = detectUnsupportedParams(args, argSchema);
                 if (unsupported.length > 0) {
                     const warning = buildUnsupportedParamsWarning(
                         name, unsupported, getSupportedParams(argSchema)

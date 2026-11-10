@@ -1,8 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { isValidAgentDirectoryName } from './agents.js';
 import { createHash } from 'node:crypto';
 import { writeFileAtomic } from '../utils/atomic-write.js';
 import { createGuideIfMissing } from './runtime.js';
+
 import {
   GitHubApiError,
   GitHubRepositoryClient,
@@ -11,6 +13,11 @@ import {
 } from './github.js';
 
 export interface GitHubBridgeCachePaths {
+  root: string;
+  agents: string;
+}
+
+interface AgentGitHubBridgeCachePaths {
   root: string;
   requests: string;
   responses: string;
@@ -107,7 +114,7 @@ function resolveArtifactPath(root: string, requestId: string, artifactPath: stri
 }
 
 async function ensureSafeArtifactDirectory(
-  paths: GitHubBridgeCachePaths,
+  paths: AgentGitHubBridgeCachePaths,
   requestId: string,
 ): Promise<void> {
   const realRoot = await fs.realpath(paths.root);
@@ -133,7 +140,7 @@ async function ensureSafeArtifactDirectory(
 }
 
 async function writeBufferArtifact(
-  paths: GitHubBridgeCachePaths,
+  paths: AgentGitHubBridgeCachePaths,
   requestId: string,
   artifactPath: string,
   bytes: Buffer,
@@ -174,7 +181,7 @@ async function writeBufferArtifact(
 async function externalizeOversizedResponse(
   response: BridgeResponseReference,
   requestId: string,
-  paths: GitHubBridgeCachePaths,
+  paths: AgentGitHubBridgeCachePaths,
 ): Promise<boolean> {
   if (serializeResponse(response).length <= MAX_GITHUB_INLINE_RESPONSE_BYTES) return false;
 
@@ -247,7 +254,7 @@ async function externalizeOversizedResponse(
 }
 
 async function splitLargeLocalArtifact(
-  paths: GitHubBridgeCachePaths,
+  paths: AgentGitHubBridgeCachePaths,
   requestId: string,
   artifact: BridgeArtifactReference,
 ): Promise<{ artifact: BridgeArtifactReference; changed: boolean }> {
@@ -316,7 +323,7 @@ async function splitLargeLocalArtifact(
 async function prepareResponseArtifacts(
   response: BridgeResponseReference,
   requestId: string,
-  paths: GitHubBridgeCachePaths,
+  paths: AgentGitHubBridgeCachePaths,
 ): Promise<boolean> {
   const results = response.results || [];
   const references = [
@@ -354,7 +361,8 @@ async function prepareResponseArtifacts(
 
 async function uploadResponseArtifact(
   client: GitHubRepositoryClient,
-  paths: GitHubBridgeCachePaths,
+  paths: AgentGitHubBridgeCachePaths,
+  agentId: string,
   requestId: string,
   artifact: BridgeArtifactReference,
 ): Promise<void> {
@@ -383,9 +391,9 @@ async function uploadResponseArtifact(
     wholeHash.update(bytes);
     totalBytes += bytes.length;
     await client.createFileIfAbsent(
-      part.path,
+      'agents/' + agentId + '/' + part.path,
       bytes,
-      'Store Desktop Commander bridge artifact ' + requestId,
+      'Store Desktop Commander bridge artifact ' + agentId + '/' + requestId,
     );
   }
   if (totalBytes !== artifact.bytes || wholeHash.digest('hex') !== artifact.sha256) {
@@ -397,39 +405,173 @@ export class GitHubBridgeSync {
   private syncPromise?: Promise<void>;
   private syncRequestedWhileRunning = false;
   private readonly observedRequestBlobShas = new Map<string, string>();
+
   constructor(
     private readonly client: GitHubRepositoryClient,
     private readonly paths: GitHubBridgeCachePaths,
   ) {}
 
+  private agentPaths(agentId: string): AgentGitHubBridgeCachePaths {
+    if (!isValidAgentDirectoryName(agentId)) {
+      throw new Error('Invalid agent folder name in GitHub bridge queue: ' + agentId);
+    }
+    const root = path.join(this.paths.agents, agentId);
+    return {
+      root,
+      requests: path.join(root, 'requests'),
+      responses: path.join(root, 'responses'),
+      artifacts: path.join(root, 'artifacts'),
+    };
+  }
+
+  private async ensureAgentPaths(agentId: string): Promise<AgentGitHubBridgeCachePaths> {
+    const paths = this.agentPaths(agentId);
+    await fs.mkdir(this.paths.root, { recursive: true });
+    const rootStat = await fs.lstat(this.paths.root);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      throw new Error('The local GitHub bridge cache root must be a real directory.');
+    }
+
+    await fs.mkdir(this.paths.agents, { recursive: true });
+    const agentsStat = await fs.lstat(this.paths.agents);
+    if (!agentsStat.isDirectory() || agentsStat.isSymbolicLink()) {
+      throw new Error('The local GitHub agent cache root must be a real directory.');
+    }
+    const samePath = (left: string, right: string): boolean => {
+      const resolvedLeft = path.resolve(left);
+      const resolvedRight = path.resolve(right);
+      return process.platform === 'win32'
+        ? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase()
+        : resolvedLeft === resolvedRight;
+    };
+    const realRoot = await fs.realpath(this.paths.root);
+    const realAgents = await fs.realpath(this.paths.agents);
+    if (!samePath(realAgents, path.join(realRoot, 'agents'))) {
+      throw new Error('The local GitHub agent cache root resolves outside the repository cache.');
+    }
+
+    await fs.mkdir(paths.root, { recursive: true });
+    const agentStat = await fs.lstat(paths.root);
+    if (!agentStat.isDirectory() || agentStat.isSymbolicLink()) {
+      throw new Error('The local cache directory for agent ' + agentId + ' must be a real directory.');
+    }
+    const realAgent = await fs.realpath(paths.root);
+    if (!samePath(realAgent, path.join(realAgents, agentId))) {
+      throw new Error('The local cache directory for agent ' + agentId + ' resolves outside the agent cache root.');
+    }
+
+    for (const directory of [paths.requests, paths.responses, paths.artifacts]) {
+      await fs.mkdir(directory, { recursive: true });
+      const stat = await fs.lstat(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new Error('The local queue directory for agent ' + agentId + ' must be a real directory: ' + directory);
+      }
+      const realDirectory = await fs.realpath(directory);
+      if (!samePath(realDirectory, path.join(realAgent, path.basename(directory)))) {
+        throw new Error('The local queue directory for agent ' + agentId + ' resolves outside its cache: ' + directory);
+      }
+    }
+    return paths;
+  }
+
+  private parseQueueEntry(entry: GitHubContentEntry, queueName: 'requests' | 'responses'):
+    { agentId: string; requestId: string } | undefined {
+    const segments = entry.path.split('/');
+    if (segments.length !== 4 || segments[0] !== 'agents' || segments[2] !== queueName) return undefined;
+    if (!isValidAgentDirectoryName(segments[1])) return undefined;
+    const match = (queueName === 'requests' ? REQUEST_PATTERN : RESPONSE_PATTERN).exec(segments[3]);
+    return match ? { agentId: segments[1], requestId: match[1] } : undefined;
+  }
+
+  private async migrateLegacyRemoteQueue(): Promise<void> {
+    const legacy = await this.client.listQueueFiles();
+    const transfers: Array<{ source: string; destination: string }> = [];
+
+    for (const entry of [...legacy.requests, ...legacy.responses]) {
+      if (!entry.path.startsWith('requests/') && !entry.path.startsWith('responses/')) continue;
+      const queue = entry.path.split('/')[0];
+      const destination = 'agents/default/' + queue + '/' + entry.name;
+      transfers.push({ source: entry.path, destination });
+    }
+
+    for (const entry of legacy.legacyArtifacts) {
+      const match = /^artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)$/i.exec(entry.path);
+      if (!match) continue;
+      transfers.push({
+        source: entry.path,
+        destination: 'agents/default/artifacts/' + match[1] + '/' + match[2],
+      });
+    }
+
+    // A response is the durable completion marker. Move requests first,
+    // artifacts next, and responses last so an agent never observes a migrated
+    // response before its referenced artifacts are available.
+    const migrationOrder = (source: string): number =>
+      source.startsWith('requests/') ? 0 : source.startsWith('artifacts/') ? 1 : 2;
+    transfers.sort((left, right) =>
+      migrationOrder(left.source) - migrationOrder(right.source)
+      || left.source.localeCompare(right.source),
+    );
+
+    // Copy, verify exact bytes, and only then delete the legacy source. A
+    // conflict aborts migration without overwriting either copy.
+    for (const transfer of transfers) {
+      if (transfer.source === transfer.destination) continue;
+      const sourceBytes = await this.client.readFile(transfer.source);
+      await this.client.createFileIfAbsent(
+        transfer.destination,
+        sourceBytes,
+        'Migrate legacy Desktop Commander queue item to agent/default',
+      );
+      const destinationBytes = await this.client.readFile(transfer.destination);
+      if (!destinationBytes.equals(sourceBytes)) {
+        throw new Error(
+          'Legacy GitHub queue migration could not verify ' + transfer.destination +
+          '. The original ' + transfer.source + ' was preserved.',
+        );
+      }
+      await this.client.deleteFileIfPresent(
+        transfer.source,
+        'Remove verified legacy Desktop Commander queue item after migration',
+      );
+    }
+
+    // The old flat sentinels are removed only after all real queue items have
+    // been copied and verified inside agents/default.
+    for (const directory of ['requests', 'responses', 'artifacts']) {
+      await this.client.deleteFileIfPresent(
+        directory + '/.gitkeep',
+        'Remove obsolete flat Desktop Commander bridge directory sentinel',
+      );
+    }
+  }
+
   async initialize(): Promise<void> {
     await Promise.all([
       fs.mkdir(this.paths.root, { recursive: true }),
-      fs.mkdir(this.paths.requests, { recursive: true }),
-      fs.mkdir(this.paths.responses, { recursive: true }),
-      fs.mkdir(this.paths.artifacts, { recursive: true }),
+      fs.mkdir(this.paths.agents, { recursive: true }),
     ]);
+    const rootStat = await fs.lstat(this.paths.root);
+    const agentsStat = await fs.lstat(this.paths.agents);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()
+      || !agentsStat.isDirectory() || agentsStat.isSymbolicLink()) {
+      throw new Error('The local GitHub bridge cache and agents paths must be real directories.');
+    }
 
-    // Do not list queue directories through the Contents API: GitHub caps
-    // directory listings at 1,000 entries. Probe each sentinel by exact path.
-    const queueDirectories = ['requests', 'responses', 'artifacts'];
-    await Promise.all(queueDirectories.map(async (directory) => {
-      const sentinelPath = directory + '/.gitkeep';
-      try {
-        await this.client.readFile(sentinelPath);
-      } catch (error) {
-        if (!(error instanceof GitHubApiError) || error.status !== 404) throw error;
-        await this.client.createFileIfAbsent(
-          sentinelPath,
-          Buffer.from('Desktop Commander bridge queue directory.\n', 'utf8'),
-          'Initialize Desktop Commander bridge queue',
-        );
-      }
-    }));
+    // Move any existing flat queue into the explicit default agent. This
+    // preserves pending work and historical response/artifact data.
+    await this.migrateLegacyRemoteQueue();
 
-    // Publishing the generated guide is a one-time/version-change operation.
-    // Persist its digest in the local cache so routine restarts do not make
-    // extra root-list, README-download, and README-update API round trips.
+    // Keep the agents root tracked even before the first named agent submits
+    // a request. This is the only root-level queue marker in the new layout.
+    await this.client.createFileIfAbsent(
+      'agents/.gitkeep',
+      Buffer.from('Desktop Commander agent-scoped queues.\n', 'utf8'),
+      'Create Desktop Commander agent queue root',
+    );
+
+    // Publish the single current README whenever its generated content changes.
+    // The local digest avoids an unnecessary remote README fetch on each poll.
     const guideDirectory = await fs.mkdtemp(path.join(this.paths.root, '.github-guide-'));
     let guideDigest: string;
     let readme: Buffer;
@@ -459,8 +601,6 @@ export class GitHubBridgeSync {
 
   async syncOnce(): Promise<void> {
     if (this.syncPromise) {
-      // A webhook or local response event can arrive after the current pass has
-      // already listed its inputs. Remember that signal and run one more pass.
       this.syncRequestedWhileRunning = true;
       return this.syncPromise;
     }
@@ -473,8 +613,6 @@ export class GitHubBridgeSync {
           await this.syncInternal();
           lastError = undefined;
         } catch (error) {
-          // A webhook or response-folder event may have arrived during a failed
-          // pass. Honor that queued signal and retry before surfacing the error.
           lastError = error;
         }
       } while (this.syncRequestedWhileRunning);
@@ -486,6 +624,55 @@ export class GitHubBridgeSync {
     return running;
   }
 
+  private async listLocalResponses(): Promise<Array<{
+    agentId: string;
+    paths: AgentGitHubBridgeCachePaths;
+    name: string;
+    responsePath: string;
+    requestId: string;
+  }>> {
+    const results: Array<{
+      agentId: string;
+      paths: AgentGitHubBridgeCachePaths;
+      name: string;
+      responsePath: string;
+      requestId: string;
+    }> = [];
+    let agentEntries;
+    try {
+      agentEntries = await fs.readdir(this.paths.agents, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return results;
+      throw error;
+    }
+    for (const agentEntry of agentEntries) {
+      if (!agentEntry.isDirectory() || agentEntry.isSymbolicLink()
+        || !isValidAgentDirectoryName(agentEntry.name)) continue;
+      const paths = await this.ensureAgentPaths(agentEntry.name);
+      let responseEntries;
+      try {
+        responseEntries = await fs.readdir(paths.responses, { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+      for (const entry of responseEntries) {
+        const match = entry.isFile() ? RESPONSE_PATTERN.exec(entry.name) : null;
+        if (!match) continue;
+        results.push({
+          agentId: agentEntry.name,
+          paths,
+          name: entry.name,
+          responsePath: path.join(paths.responses, entry.name),
+          requestId: match[1],
+        });
+      }
+    }
+    return results.sort((a, b) =>
+      a.agentId.localeCompare(b.agentId) || a.name.localeCompare(b.name),
+    );
+  }
+
   private async syncInternal(): Promise<void> {
     let remoteRequests: GitHubContentEntry[] = [];
     let remoteResponses: GitHubContentEntry[] = [];
@@ -495,25 +682,24 @@ export class GitHubBridgeSync {
       remoteRequests = queue.requests;
       remoteResponses = queue.responses;
     } catch (error) {
-      // Do not let a remote listing outage block publication of results that
-      // the local worker has already completed.
       queueDiscoveryError = error;
     }
-    const remoteResponseByRequestId = new Map<string, GitHubContentEntry>();
+
+    const remoteResponseByRequestKey = new Map<string, GitHubContentEntry>();
     for (const entry of remoteResponses) {
       if (entry.type !== 'file') continue;
-      const match = RESPONSE_PATTERN.exec(entry.name);
-      if (match) remoteResponseByRequestId.set(match[1], entry);
+      const identity = this.parseQueueEntry(entry, 'responses');
+      if (identity) remoteResponseByRequestKey.set(identity.agentId + ':' + identity.requestId, entry);
     }
-    const completedRequestIds = new Set(remoteResponseByRequestId.keys());
+    const completedRequestKeys = new Set(remoteResponseByRequestKey.keys());
 
     const requestSyncErrors: string[] = [];
     if (!queueDiscoveryError) {
       const pendingRequests = remoteRequests.filter((entry) =>
-        entry.type === 'file' && REQUEST_PATTERN.test(entry.name),
+        entry.type === 'file' && this.parseQueueEntry(entry, 'requests') !== undefined,
       );
-      // Bound concurrent reads: parallel staging is faster for independent
-      // requests without flooding the GitHub API or local filesystem.
+      // Batch remote reads so independent agents can make progress concurrently
+      // without flooding the GitHub API or the local disk.
       for (let offset = 0; offset < pendingRequests.length; offset += 8) {
         const batch = pendingRequests.slice(offset, offset + 8);
         await Promise.all(batch.map(async (entry) => {
@@ -521,110 +707,102 @@ export class GitHubBridgeSync {
             if (entry.size > MAX_GITHUB_BRIDGE_FILE_BYTES) {
               throw new Error('Remote request ' + entry.path + ' exceeds the 50 MiB GitHub bridge file limit.');
             }
-            const match = REQUEST_PATTERN.exec(entry.name);
-            if (!match) return;
-            const requestId = match[1];
-            const remoteResponse = remoteResponseByRequestId.get(requestId);
-            const previouslyObservedSha = this.observedRequestBlobShas.get(requestId);
+            const identity = this.parseQueueEntry(entry, 'requests');
+            if (!identity) return;
+            const requestKey = identity.agentId + ':' + identity.requestId;
+            const remoteResponse = remoteResponseByRequestKey.get(requestKey);
+            const previouslyObservedSha = this.observedRequestBlobShas.get(requestKey);
             const firstObservation = previouslyObservedSha === undefined;
             if (previouslyObservedSha && previouslyObservedSha !== entry.sha && remoteResponse) {
               console.warn(
-                'GitHub bridge: ignored updated ' + entry.name + ' because response ' + requestId +
-                ' already exists. Request IDs cannot be reused; submit this work with a new ID.',
+                'GitHub bridge: ignored updated ' + entry.path + ' because its matching response already exists. ' +
+                'Request IDs are scoped to one agent folder and cannot be reused.',
               );
             }
-            this.observedRequestBlobShas.set(requestId, entry.sha);
+            this.observedRequestBlobShas.set(requestKey, entry.sha);
             if (remoteResponse) return;
 
-            const localPath = path.join(this.paths.requests, entry.name);
+            const paths = await this.ensureAgentPaths(identity.agentId);
+            const localPath = path.join(paths.requests, entry.name);
             const cached = await readOptional(localPath);
             let requestBytes: Buffer;
             if (cached) {
               if (gitBlobSha(cached) !== entry.sha) {
-                throw new Error('Local GitHub queue cache conflicts with remote request ' + entry.name + '; the local file was not overwritten.');
+                throw new Error('Local cache conflicts with remote request ' + entry.path + '; the local file was not overwritten.');
               }
               requestBytes = cached;
             } else {
               requestBytes = await this.client.readFile(entry.path);
               if (gitBlobSha(requestBytes) !== entry.sha) {
-                throw new Error('GitHub request ' + entry.path + ' changed while it was being downloaded. The next poll will retry.');
+                throw new Error('GitHub request ' + entry.path + ' changed while being downloaded. The next poll will retry.');
               }
             }
-
             if (!cached) await writeFileAtomic(localPath, requestBytes);
             if (firstObservation) {
-              console.log('GitHub bridge: ' + entry.name + ' is staged locally for execution.');
+              console.log('GitHub bridge: staged ' + entry.path + ' locally for execution.');
             }
           } catch (error) {
-            requestSyncErrors.push(entry.name + ': ' + errorMessage(error));
+            requestSyncErrors.push(entry.path + ': ' + errorMessage(error));
           }
         }));
       }
     }
-    // Artifacts must reach GitHub before the response file signals completion.
-    const localResponses = (await fs.readdir(this.paths.responses, { withFileTypes: true }))
-      .filter((entry) => entry.isFile() && RESPONSE_PATTERN.test(entry.name))
-      .sort((a, b) => a.name.localeCompare(b.name));
 
+    const localResponses = await this.listLocalResponses();
     const responseSyncErrors: string[] = [];
     for (const entry of localResponses) {
-      const match = RESPONSE_PATTERN.exec(entry.name);
-      if (!match) continue;
-      const requestId = match[1];
-      const responsePath = path.join(this.paths.responses, entry.name);
+      const requestKey = entry.agentId + ':' + entry.requestId;
+      const responsePath = entry.responsePath;
       try {
         const sourceResponseBytes = await fs.readFile(responsePath);
         let response: BridgeResponseReference;
         try {
           response = JSON.parse(sourceResponseBytes.toString('utf8')) as BridgeResponseReference;
         } catch {
-          throw new Error('Local bridge response ' + entry.name + ' is not valid JSON.');
+          throw new Error('Local bridge response ' + entry.agentId + '/' + entry.name + ' is not valid JSON.');
         }
-        if (response.id !== requestId || typeof response.request_hash !== 'string') {
-          throw new Error('Local bridge response ' + entry.name + ' has an invalid id or request hash.');
+        if (response.id !== entry.requestId || typeof response.request_hash !== 'string') {
+          throw new Error('Local bridge response ' + entry.agentId + '/' + entry.name + ' has an invalid id or request hash.');
         }
-        await ensureSafeArtifactDirectory(this.paths, requestId);
+        await fs.mkdir(entry.paths.artifacts, { recursive: true });
+        await ensureSafeArtifactDirectory(entry.paths, entry.requestId);
 
-        let responseChanged = await externalizeOversizedResponse(response, requestId, this.paths);
-        responseChanged = (await prepareResponseArtifacts(response, requestId, this.paths)) || responseChanged;
+        let responseChanged = await externalizeOversizedResponse(response, entry.requestId, entry.paths);
+        responseChanged = (await prepareResponseArtifacts(response, entry.requestId, entry.paths)) || responseChanged;
         const responseBytes = serializeResponse(response);
         if (responseBytes.length > MAX_GITHUB_BRIDGE_FILE_BYTES) {
-          throw new Error('Response ' + entry.name + ' exceeds the 50 MiB GitHub bridge file limit after preparing its artifacts.');
+          throw new Error('Response ' + entry.name + ' exceeds the 50 MiB GitHub bridge file limit after preparing artifacts.');
         }
         if (responseChanged) await writeFileAtomic(responsePath, responseBytes);
 
-        // Keep artifact parts below the 50 MiB Contents API file limit, while
-        // avoiding a commit/push for every small slice of a large artifact.
         for (const artifact of response.artifacts || []) {
-          await uploadResponseArtifact(this.client, this.paths, requestId, artifact);
+          await uploadResponseArtifact(this.client, entry.paths, entry.agentId, entry.requestId, artifact);
         }
 
+        const remoteResponsePath = 'agents/' + entry.agentId + '/responses/' + entry.name;
         await this.client.createFileIfAbsent(
-          'responses/' + entry.name,
+          remoteResponsePath,
           responseBytes,
-          'Publish Desktop Commander bridge response ' + requestId,
+          'Publish Desktop Commander response ' + entry.agentId + '/' + entry.requestId,
         );
         console.log(
-          'GitHub bridge: published responses/' + entry.name + ' to GitHub' +
+          'GitHub bridge: published ' + remoteResponsePath +
           (typeof response.status === 'string' ? ' (' + response.status + ')' : '') + '.',
         );
 
-        // The remote response is durable now. Remove local staging copies so the
-        // cache does not grow forever; remote queue history remains untouched.
         await fs.rm(responsePath, { force: true });
         await Promise.all([
-          fs.rm(path.join(this.paths.requests, requestId + '.json'), { force: true }),
-          fs.rm(path.join(this.paths.requests, requestId + '.md'), { force: true }),
-          fs.rm(path.join(this.paths.requests, 'request-' + requestId + '.json'), { force: true }),
-          fs.rm(path.join(this.paths.requests, 'request-' + requestId + '.md'), { force: true }),
+          fs.rm(path.join(entry.paths.requests, entry.requestId + '.json'), { force: true }),
+          fs.rm(path.join(entry.paths.requests, entry.requestId + '.md'), { force: true }),
+          fs.rm(path.join(entry.paths.requests, 'request-' + entry.requestId + '.json'), { force: true }),
+          fs.rm(path.join(entry.paths.requests, 'request-' + entry.requestId + '.md'), { force: true }),
         ]);
-        await fs.rm(path.join(this.paths.artifacts, requestId), { recursive: true, force: true });
+        await fs.rm(path.join(entry.paths.artifacts, entry.requestId), { recursive: true, force: true });
       } catch (error) {
-        // One malformed or unpublishable response must not block unrelated
-        // completed responses in the same local queue snapshot.
-        responseSyncErrors.push(entry.name + ': ' + errorMessage(error));
+        responseSyncErrors.push(entry.agentId + '/' + entry.name + ': ' + errorMessage(error));
       }
     }
+
     if (responseSyncErrors.length > 0) {
       throw new Error(
         'Could not synchronize ' + responseSyncErrors.length + ' local response file(s): ' +
@@ -639,17 +817,21 @@ export class GitHubBridgeSync {
     }
     if (queueDiscoveryError) {
       throw new Error(
-        'Could not discover the remote GitHub request queue; local response publication was still attempted: ' +
+        'Could not discover the remote GitHub agent queues; local response publication was still attempted: ' +
         errorMessage(queueDiscoveryError),
       );
     }
 
-    // A response may already have been published by a previous run. Do not
-    // stage its request again or re-execute it after a restart.
+    // Completed request files are never staged again after a restart. This
+    // comparison is agent-scoped, so two agents may use the same request ID.
     for (const entry of remoteRequests) {
-      const match = entry.type === 'file' ? REQUEST_PATTERN.exec(entry.name) : null;
-      if (!match || !completedRequestIds.has(match[1])) continue;
-      await fs.rm(path.join(this.paths.requests, entry.name), { force: true });
+      const identity = entry.type === 'file' ? this.parseQueueEntry(entry, 'requests') : undefined;
+      if (!identity) continue;
+      const requestKey = identity.agentId + ':' + identity.requestId;
+      if (!completedRequestKeys.has(requestKey)) continue;
+      const agentPaths = await this.ensureAgentPaths(identity.agentId);
+      const localPath = path.join(agentPaths.requests, entry.name);
+      await fs.rm(localPath, { force: true });
     }
   }
 }

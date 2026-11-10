@@ -2,10 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  appendMailboxGuideSection,
-  MAILBOX_GUIDE_HEADING,
-} from '../dist/bridge/guide.js';
+import { BRIDGE_TOOL_NAMES } from '../dist/bridge/protocol.js';
 import { createGuideIfMissing } from '../dist/bridge/runtime.js';
 
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-bridge-guide-'));
@@ -14,101 +11,59 @@ try {
   const generatedRoot = path.join(tempDir, 'generated');
   await fs.mkdir(generatedRoot, { recursive: true });
   await createGuideIfMissing(generatedRoot);
-  const generatedFiles = await fs.readdir(generatedRoot);
-  assert.deepEqual(generatedFiles, ['README.md'], 'README.md must be the only generated agent-facing guide file');
-  const generatedGuide = await fs.readFile(path.join(generatedRoot, 'README.md'), 'utf8');
-  assert.match(generatedGuide, /requests\/task-a1\.json/);
-  assert.match(generatedGuide, /responses\/task-a1\.json/);
-  assert.match(generatedGuide, /only agent-facing guide/);
-  assert.doesNotMatch(generatedGuide, /status\/status-|status\/worker\.json/);
-  assert.doesNotMatch(generatedGuide, /named requests\/request-<id>|produces responses\/response-<id>/);
-  assert.doesNotMatch(generatedGuide, /## Storage cleanup|## Local security/);
-  assert.doesNotMatch(generatedGuide, /3,000,000,000 bytes|The bridge runs existing Desktop Commander tools on the local computer/);
-  assert.match(generatedGuide, /## Optional local mailbox \(direct MCP and both bridge transports\)/);
-  assert.match(generatedGuide, /mailbox_user_id/);
+  assert.deepEqual(await fs.readdir(generatedRoot), ['README.md'],
+    'README.md must be the only generated agent-facing guide file');
 
+  const generatedGuidePath = path.join(generatedRoot, 'README.md');
+  const generatedGuide = await fs.readFile(generatedGuidePath, 'utf8');
+  assert.match(generatedGuide, /desktop-commander:bridge-guide:v3/);
+  assert.match(generatedGuide, /agents\/<agent-name>\//);
+  assert.match(generatedGuide, /agents\/chatgpt\/requests\/task-a1\.json/);
+  assert.match(generatedGuide, /agents\/<agent-name>\/responses\/<id>\.json/);
+  assert.match(generatedGuide, /agents\/<agent-name>\/artifacts/);
+  assert.match(generatedGuide, /folder name identifies your agent/);
+  assert.match(generatedGuide, /Request IDs need only be unique within your agent folder/);
+  assert.match(generatedGuide, /only agent-facing guide/);
+  assert.doesNotMatch(generatedGuide, /(?:^|\n)- requests\//);
+  assert.doesNotMatch(generatedGuide, /(?:^|\n)- responses\//);
+  assert.doesNotMatch(generatedGuide, /(?:^|\n)- artifacts\//);
+  assert.doesNotMatch(generatedGuide, /mailbox_user_id|mailbox identity|## Optional local mailbox/);
+  assert.ok(!BRIDGE_TOOL_NAMES.includes('mailbox'),
+    'the generated bridge catalog must not advertise mailbox identity registration');
+
+  // Existing generated README content must be replaced when the guide changes,
+  // even if it already contains a version marker from an earlier release.
   const oldGeneratedRoot = path.join(tempDir, 'old-generated');
   await fs.mkdir(oldGeneratedRoot, { recursive: true });
-  await fs.writeFile(path.join(oldGeneratedRoot, 'README.md'),
-    '# Desktop Commander Bridge\n\nThis README is the AI-facing operating guide for Desktop Commander file-queue bridges.\n',
-    'utf8');
+  const staleGeneratedGuide = [
+    '# Desktop Commander Bridge',
+    '',
+    '<!-- desktop-commander:bridge-guide:v2 -->',
+    '',
+    'This README is the AI-facing operating guide for Desktop Commander file-queue bridges.',
+    '',
+    'Old structure: requests/ and responses/.',
+    '',
+  ].join('\n');
+  await fs.writeFile(path.join(oldGeneratedRoot, 'README.md'), staleGeneratedGuide, 'utf8');
   await createGuideIfMissing(oldGeneratedRoot);
   const upgradedGuide = await fs.readFile(path.join(oldGeneratedRoot, 'README.md'), 'utf8');
-  assert.match(upgradedGuide, /desktop-commander:bridge-guide:v2/);
-  assert.match(upgradedGuide, /requests\/task-a1\.json/);
+  assert.notEqual(upgradedGuide, staleGeneratedGuide,
+    'an existing generated README with the previous marker must be refreshed');
+  assert.match(upgradedGuide, /desktop-commander:bridge-guide:v3/);
+  assert.match(upgradedGuide, /agents\/<agent-name>/);
+  assert.doesNotMatch(upgradedGuide, /Old structure: requests\//);
 
-  const guidePath = path.join(tempDir, 'README.md');
-  const original = [
-    '# Desktop Commander Cloud-Folder Bridge',
-    '',
-    'Existing generated guide content that must remain byte-for-byte unchanged.',
-    '',
-    '## Tool catalog',
-    '',
-    '### read_file',
-    '',
-    'Existing argument schema.',
-    '',
-  ].join('\n');
-
-  await fs.writeFile(guidePath, original, 'utf8');
-  assert.equal(await appendMailboxGuideSection(guidePath), 'appended');
-
-  const appended = await fs.readFile(guidePath, 'utf8');
-  assert.ok(appended.startsWith(original), 'existing guide content must be preserved exactly');
-  assert.equal(appended.split(MAILBOX_GUIDE_HEADING).length - 1, 1);
-  assert.match(appended, /shared by direct MCP clients and both file-queue bridge transports/);
-  assert.match(appended, /message text, usernames, and mailbox IDs included in a bridge request or returned in a response/);
-  assert.doesNotMatch(appended, /bridge request parser intentionally rejects the `mailbox` tool/);
-
-  assert.equal(await appendMailboxGuideSection(guidePath), 'already_present');
-  assert.equal(await fs.readFile(guidePath, 'utf8'), appended, 'a second run must not change the guide');
-
-  // Existing installations may already have a stale MCP-only mailbox section.
-  // Replace only that section and preserve the guide content around it.
-  const legacyPath = path.join(tempDir, 'legacy-README.md');
-  const beforeLegacySection = '# Desktop Commander Cloud-Folder Bridge\n\nIntro text.\n\n';
-  const afterLegacySection = '\n## Tool catalog\n\n### read_file\n\nOld catalog remains.\n';
-  const legacy = beforeLegacySection + [
-    '## Optional local mailbox (direct MCP only)',
-    '',
-    '<!-- desktop-commander:local-mailbox-guide:v1 -->',
-    '',
-    'Old text: the bridge parser rejects the mailbox tool.',
-    '',
-  ].join('\n') + afterLegacySection + [
-    '',
-    '### Additional mailbox privacy boundary',
-    '',
-    '<!-- desktop-commander:local-mailbox-guide-supplement:v1 -->',
-    '',
-    'Old text: no mailbox access from the bridge.',
-  ].join('\n');
-  await fs.writeFile(legacyPath, legacy, 'utf8');
-  assert.equal(await appendMailboxGuideSection(legacyPath), 'updated');
-
-  const upgradedLegacy = await fs.readFile(legacyPath, 'utf8');
-  assert.ok(upgradedLegacy.startsWith(beforeLegacySection), 'prefix before the old section must remain unchanged');
-  assert.ok(upgradedLegacy.endsWith(afterLegacySection), 'content after the old section must remain unchanged');
-  assert.equal(upgradedLegacy.split(MAILBOX_GUIDE_HEADING).length - 1, 1);
-  assert.match(upgradedLegacy, /shared by direct MCP clients and both file-queue bridge transports/);
-  assert.doesNotMatch(upgradedLegacy, /direct MCP only/);
-  assert.doesNotMatch(upgradedLegacy, /bridge parser rejects the mailbox tool/);
-  assert.doesNotMatch(upgradedLegacy, /no mailbox access from the bridge/);
-
-  assert.equal(await appendMailboxGuideSection(legacyPath), 'already_present');
-  assert.equal(await fs.readFile(legacyPath, 'utf8'), upgradedLegacy,
-    'the upgraded mailbox section must be idempotent');
-
-  const customPath = path.join(tempDir, 'custom-readme.md');
+  // Custom user-authored README files are deliberately preserved.
+  const customRoot = path.join(tempDir, 'custom');
+  await fs.mkdir(customRoot, { recursive: true });
   const customReadme = '# My own bridge notes\n\nKeep this file unchanged.\n';
-  await fs.writeFile(customPath, customReadme, 'utf8');
-  assert.equal(await appendMailboxGuideSection(customPath), 'not_bridge_guide');
-  assert.equal(await fs.readFile(customPath, 'utf8'), customReadme);
+  await fs.writeFile(path.join(customRoot, 'README.md'), customReadme, 'utf8');
+  await createGuideIfMissing(customRoot);
+  assert.equal(await fs.readFile(path.join(customRoot, 'README.md'), 'utf8'), customReadme,
+    'custom README files must not be overwritten');
 
-  assert.equal(await appendMailboxGuideSection(path.join(tempDir, 'missing.md')), 'missing');
-
-  console.log('Bridge guide append tests passed.');
+  console.log('Agent-scoped bridge README tests passed.');
 } finally {
   await fs.rm(tempDir, { recursive: true, force: true });
 }

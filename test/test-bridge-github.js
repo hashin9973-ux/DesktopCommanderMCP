@@ -133,53 +133,62 @@ function createGitHubApiDouble() {
       return jsonResponse({ commit: { tree: { sha: 'root-tree-sha' } } });
     }
 
-    if (url.pathname === '/repos/owner/repo/git/trees/root-tree-sha' && method === 'GET') {
+    const treeMatch = /^\/repos\/owner\/repo\/git\/trees\/([^/]+)$/.exec(url.pathname);
+    if (treeMatch && method === 'GET') {
+      const treeSha = decodeURIComponent(treeMatch[1]);
+      const prefixPath = treeSha === 'root-tree-sha' ? '' : treeSha.startsWith('tree:') ? treeSha.slice(5) : undefined;
+      if (prefixPath === undefined) return notFound();
       const recursive = url.searchParams.get('recursive') === '1';
-      if (recursive && queueTreeListGate) {
+      if (treeSha === 'root-tree-sha' && recursive && queueTreeListGate) {
         const gate = queueTreeListGate;
         queueTreeListGate = undefined;
         gate.signalStarted();
         await gate.wait;
       }
-      if (recursive && failNextQueueTreeList) {
+      if (treeSha === 'root-tree-sha' && recursive && failNextQueueTreeList) {
         failNextQueueTreeList = false;
         return jsonResponse({ message: 'temporary tree listing failure' }, 500);
       }
-      if (recursive && truncateRecursiveTree) {
-        return jsonResponse({ sha: 'root-tree-sha', truncated: true, tree: [] });
+      if (treeSha === 'root-tree-sha' && recursive && truncateRecursiveTree) {
+        return jsonResponse({ sha: treeSha, truncated: true, tree: [] });
       }
+
+      const matchingFiles = [...files.entries()].filter(([filePath]) =>
+        !prefixPath || filePath.startsWith(prefixPath + '/'),
+      );
       if (recursive) {
         return jsonResponse({
-          sha: 'root-tree-sha',
+          sha: treeSha,
           truncated: false,
-          tree: [...files.entries()].map(([filePath, value]) => ({
-            path: filePath, type: 'blob', mode: '100644', sha: value.sha, size: value.bytes.length,
+          tree: matchingFiles.map(([filePath, value]) => ({
+            path: prefixPath ? filePath.slice(prefixPath.length + 1) : filePath,
+            type: 'blob',
+            mode: '100644',
+            sha: value.sha,
+            size: value.bytes.length,
           })),
         });
       }
-      return jsonResponse({
-        sha: 'root-tree-sha',
-        truncated: false,
-        tree: ['requests', 'responses', 'artifacts'].map((name) => ({
-          path: name, type: 'tree', mode: '040000', sha: name + '-tree-sha',
-        })),
-      });
-    }
 
-    const queueTreeMatch = /^\/repos\/owner\/repo\/git\/trees\/(requests|responses)-tree-sha$/.exec(url.pathname);
-    if (queueTreeMatch && method === 'GET') {
-      const directory = queueTreeMatch[1];
-      return jsonResponse({
-        sha: directory + '-tree-sha',
-        truncated: false,
-        tree: [...files.entries()].flatMap(([filePath, value]) => {
-          const prefix = directory + '/';
-          if (!filePath.startsWith(prefix)) return [];
-          const relative = filePath.slice(prefix.length);
-          if (!relative || relative.includes('/')) return [];
-          return [{ path: relative, type: 'blob', mode: '100644', sha: value.sha, size: value.bytes.length }];
-        }),
-      });
+      const children = new Map();
+      for (const [filePath, value] of matchingFiles) {
+        const relative = prefixPath ? filePath.slice(prefixPath.length + 1) : filePath;
+        if (!relative) continue;
+        const separator = relative.indexOf('/');
+        const childName = separator === -1 ? relative : relative.slice(0, separator);
+        if (children.has(childName)) continue;
+        if (separator === -1) {
+          children.set(childName, {
+            path: childName, type: 'blob', mode: '100644', sha: value.sha, size: value.bytes.length,
+          });
+        } else {
+          const childPrefix = prefixPath ? prefixPath + '/' + childName : childName;
+          children.set(childName, {
+            path: childName, type: 'tree', mode: '040000', sha: 'tree:' + childPrefix,
+          });
+        }
+      }
+      return jsonResponse({ sha: treeSha, truncated: false, tree: [...children.values()] });
     }
 
     if (url.pathname === '/repos/owner/repo/contents' && method === 'GET') {
@@ -218,7 +227,7 @@ function createGitHubApiDouble() {
         staleHeadConflictPath = undefined;
         return jsonResponse({ message: 'Update is not a fast forward' }, 422);
       }
-      if (repoPath.startsWith('responses/') && responseUploadGate) {
+      if (repoPath.includes('/responses/') && responseUploadGate) {
         const gate = responseUploadGate;
         responseUploadGate = undefined;
         gate.signalStarted();
@@ -326,13 +335,13 @@ assert.equal(listed[1].push, false);
 const client = await GitHubRepositoryClient.connect('owner/repo', token, api.fetcher);
 assert.equal(client.defaultBranch, 'main');
 assert.equal(client.repositoryId, 1001, 'the connected repository exposes its immutable GitHub ID');
-api.conflictNextCreateFile('responses/stale-head-retry.json');
+api.conflictNextCreateFile('agents/default/responses/stale-head-retry.json');
 assert.equal(await client.createFileIfAbsent(
-  'responses/stale-head-retry.json',
+  'agents/default/responses/stale-head-retry.json',
   Buffer.from('retry after stale branch head'),
   'Test stale branch retry',
 ), true, 'a 422 stale-head conflict with an absent target must be retried');
-assert.equal(api.files.get('responses/stale-head-retry.json').bytes.toString('utf8'), 'retry after stale branch head');
+assert.equal(api.files.get('agents/default/responses/stale-head-retry.json').bytes.toString('utf8'), 'retry after stale branch head');
 
 api.truncateNextRecursiveTree();
 const recoveredTreeListing = await client.listQueueFiles();
@@ -496,9 +505,13 @@ await assert.rejects(
 const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-github-bridge-'));
 const paths = {
   root: temporaryRoot,
-  requests: path.join(temporaryRoot, 'requests'),
-  responses: path.join(temporaryRoot, 'responses'),
-  artifacts: path.join(temporaryRoot, 'artifacts'),
+  agents: path.join(temporaryRoot, 'agents'),
+};
+const defaultPaths = {
+  root: path.join(paths.agents, 'default'),
+  requests: path.join(paths.agents, 'default', 'requests'),
+  responses: path.join(paths.agents, 'default', 'responses'),
+  artifacts: path.join(paths.agents, 'default', 'artifacts'),
 };
 
 try {
@@ -509,21 +522,65 @@ try {
   api.files.set('README.md', { bytes: existingReadme, sha: gitBlobSha(existingReadme) });
   api.files.set('DESKTOP_COMMANDER_BRIDGE.md', { bytes: legacyGuide, sha: gitBlobSha(legacyGuide) });
 
+  const legacyRequestBytes = Buffer.from(JSON.stringify({
+    protocol_version: 1,
+    id: 'legacy-pending',
+    commands: [{ tool: 'get_config', arguments: {} }],
+  }), 'utf8');
+  const legacyResponseBytes = Buffer.from(JSON.stringify({
+    protocol_version: 1,
+    id: 'legacy-completed',
+    request_hash: crypto.createHash('sha256').update('legacy-completed').digest('hex'),
+    status: 'completed',
+    results: [],
+    artifacts: [{ path: 'artifacts/legacy-completed/output.bin', bytes: 4, sha256: 'legacy-hash' }],
+  }), 'utf8');
+  const legacyArtifactBytes = Buffer.from([4, 3, 2, 1]);
+  for (const directory of ['requests', 'responses', 'artifacts']) {
+    const sentinel = Buffer.from('legacy queue sentinel\n');
+    api.files.set(directory + '/.gitkeep', { bytes: sentinel, sha: gitBlobSha(sentinel) });
+  }
+  api.files.set('requests/legacy-pending.json', {
+    bytes: legacyRequestBytes, sha: gitBlobSha(legacyRequestBytes),
+  });
+  api.files.set('responses/legacy-completed.json', {
+    bytes: legacyResponseBytes, sha: gitBlobSha(legacyResponseBytes),
+  });
+  api.files.set('artifacts/legacy-completed/output.bin', {
+    bytes: legacyArtifactBytes, sha: gitBlobSha(legacyArtifactBytes),
+  });
+
   const sync = new GitHubBridgeSync(client, paths);
   api.resetDirectoryListingCalls();
   await sync.initialize();
   assert.deepEqual(api.getDirectoryListingCalls().filter(Boolean), [],
     'initialization must not list the requests/responses directories through the 1,000-entry-limited Contents API');
-  assert.ok(api.files.has('requests/.gitkeep'));
-  assert.ok(api.files.has('responses/.gitkeep'));
-  assert.ok(api.files.has('artifacts/.gitkeep'));
+  assert.ok(api.files.has('agents/.gitkeep'));
+  assert.ok(!api.files.has('requests/.gitkeep') && !api.files.has('responses/.gitkeep'));
+  assert.ok(!api.files.has('artifacts/.gitkeep'));
+  assert.ok(api.files.has('agents/default/requests/legacy-pending.json'));
+  assert.ok(api.files.has('agents/default/responses/legacy-completed.json'));
+  assert.ok(api.files.has('agents/default/artifacts/legacy-completed/output.bin'));
+  assert.ok(
+    api.commits.findIndex((commit) => commit.path === 'agents/default/artifacts/legacy-completed/output.bin')
+      < api.commits.findIndex((commit) => commit.path === 'agents/default/responses/legacy-completed.json'),
+    'legacy artifacts must be committed before the migrated response completion marker',
+  );
+  assert.ok(!api.files.has('requests/legacy-pending.json'));
+  assert.ok(!api.files.has('responses/legacy-completed.json'));
+  assert.ok(!api.files.has('artifacts/legacy-completed/output.bin'),
+    'legacy remote files are removed only after their agent/default copies are verified');
   assert.ok(api.files.has('README.md'));
   assert.ok(!api.files.has('DESKTOP_COMMANDER_BRIDGE.md'),
     'initialization must remove the obsolete separate bridge guide');
   const generatedReadme = api.files.get('README.md').bytes.toString('utf8');
   assert.ok(generatedReadme.startsWith('# Desktop Commander Bridge\n'));
   assert.ok(generatedReadme.includes('## AI Quick Start'));
+  assert.ok(generatedReadme.includes('agents/<agent-name>/requests/'));
+  assert.ok(generatedReadme.includes('agents/<agent-name>/responses/'));
   assert.ok(generatedReadme.includes('## Tool catalog'));
+  assert.ok(!generatedReadme.includes('mailbox_user_id'));
+  assert.ok(!generatedReadme.includes('## Optional local mailbox'));
   assert.ok(generatedReadme.includes('### read_file'));
   assert.ok(generatedReadme.includes('cloud-folder and GitHub repository transports'));
   assert.ok(!generatedReadme.includes('cloud-storage connector'));
@@ -543,17 +600,65 @@ try {
   assert.equal(api.getRawReadCount('README.md'), 1,
     'routine initialization must use the local generated-guide digest instead of downloading README again');
 
+  // Two agents may use the same request ID without sharing queue state.
+  const sharedId = 'same-id';
+  const agentRequestBytes = new Map();
+  for (const agentId of ['chatgpt', 'claude']) {
+    const bytes = Buffer.from(JSON.stringify({
+      protocol_version: 1,
+      id: sharedId,
+      commands: [{ tool: 'get_config', arguments: {} }],
+    }), 'utf8');
+    agentRequestBytes.set(agentId, bytes);
+    const remotePath = 'agents/' + agentId + '/requests/' + sharedId + '.json';
+    api.files.set(remotePath, { bytes, sha: gitBlobSha(bytes) });
+  }
+  await sync.syncOnce();
+  for (const agentId of ['chatgpt', 'claude']) {
+    const agentRoot = path.join(paths.agents, agentId);
+    assert.deepEqual(
+      await fs.readFile(path.join(agentRoot, 'requests', sharedId + '.json')),
+      agentRequestBytes.get(agentId),
+      'same request ID must be staged independently for ' + agentId,
+    );
+    const responseHash = crypto.createHash('sha256').update(agentRequestBytes.get(agentId)).digest('hex');
+    const localResponsePath = path.join(agentRoot, 'responses', sharedId + '.json');
+    await fs.writeFile(localResponsePath, JSON.stringify({
+      protocol_version: 1,
+      id: sharedId,
+      request_hash: responseHash,
+      status: 'completed',
+      started_at: '2026-01-01T00:00:00.000Z',
+      completed_at: '2026-01-01T00:00:01.000Z',
+      results: [{ index: 0, tool: 'get_config', status: 'succeeded', isError: false }],
+      artifacts: [],
+    }));
+  }
+  await sync.syncOnce();
+  assert.ok(api.files.has('agents/chatgpt/responses/' + sharedId + '.json'));
+  assert.ok(api.files.has('agents/claude/responses/' + sharedId + '.json'),
+    'each agent must receive its own response even when the request IDs match');
+  for (const agentId of ['chatgpt', 'claude']) {
+    assert.ok(api.files.has('agents/' + agentId + '/requests/' + sharedId + '.json'),
+      'remote request history is retained for agent ' + agentId);
+    await assert.rejects(
+      () => fs.access(path.join(paths.agents, agentId, 'requests', sharedId + '.json')),
+      /ENOENT/,
+      'local staged request is removed after publishing that agent response: ' + agentId,
+    );
+  }
+
   const requestBytes = Buffer.from(JSON.stringify({
     protocol_version: 1,
     id: 'sample-01',
     commands: [{ tool: 'get_config', arguments: {} }],
   }), 'utf8');
-  const requestPath = 'requests/request-sample-01.json';
+  const requestPath = 'agents/default/requests/request-sample-01.json';
   api.files.set(requestPath, { bytes: requestBytes, sha: gitBlobSha(requestBytes) });
 
   await sync.syncOnce();
   assert.deepEqual(
-    await fs.readFile(path.join(paths.requests, 'request-sample-01.json')),
+    await fs.readFile(path.join(defaultPaths.requests, 'request-sample-01.json')),
     requestBytes,
     'new GitHub requests should be staged in the local worker queue',
   );
@@ -564,14 +669,14 @@ try {
     'unchanged staged requests should not be downloaded again on every poll');
 
   const cachedRequestId = 'cached-at-startup';
-  const cachedRequestPath = 'requests/request-' + cachedRequestId + '.json';
+  const cachedRequestPath = 'agents/default/requests/request-' + cachedRequestId + '.json';
   const cachedRequestBytes = Buffer.from('already staged request bytes');
   api.files.set(cachedRequestPath, {
     bytes: cachedRequestBytes,
     sha: gitBlobSha(cachedRequestBytes),
   });
   await fs.writeFile(
-    path.join(paths.requests, 'request-' + cachedRequestId + '.json'),
+    path.join(defaultPaths.requests, 'request-' + cachedRequestId + '.json'),
     cachedRequestBytes,
   );
   const cachedStartupSync = new GitHubBridgeSync(client, paths);
@@ -586,12 +691,16 @@ try {
   }
   assert.equal(api.getRawReadCount(cachedRequestPath), 0,
     'a verified local cache entry must not be downloaded again after restart');
-  assert.equal(stagingLogs.filter((message) => message.includes('request-' + cachedRequestId) && message.includes('staged locally')).length, 1,
-    'a cached request should produce one staging checkpoint when first observed');
+  assert.equal(stagingLogs.filter((message) =>
+    message.includes('agents/default/requests/request-' + cachedRequestId)
+    && message.includes('staged ')
+    && message.includes('locally for execution'),
+  ).length, 1,
+    'a cached request should produce one agent-scoped staging checkpoint when first observed');
 
   const artifactPath = 'artifacts/sample-01/output.bin';
   const artifactBytes = Buffer.from([0, 1, 2, 3, 255]);
-  const localArtifactPath = path.join(paths.root, ...artifactPath.split('/'));
+  const localArtifactPath = path.join(defaultPaths.root, ...artifactPath.split('/'));
   await fs.mkdir(path.dirname(localArtifactPath), { recursive: true });
   await fs.writeFile(localArtifactPath, artifactBytes);
 
@@ -611,16 +720,16 @@ try {
       sha256: crypto.createHash('sha256').update(artifactBytes).digest('hex'),
     }],
   };
-  const responsePath = path.join(paths.responses, 'response-sample-01.json');
-  await fs.mkdir(paths.responses, { recursive: true });
+  const responsePath = path.join(defaultPaths.responses, 'response-sample-01.json');
+  await fs.mkdir(defaultPaths.responses, { recursive: true });
   await fs.writeFile(responsePath, JSON.stringify(response));
 
   await sync.syncOnce();
-  assert.deepEqual(api.files.get(artifactPath).bytes, artifactBytes);
-  assert.ok(api.files.has('responses/response-sample-01.json'));
+  assert.deepEqual(api.files.get('agents/default/' + artifactPath).bytes, artifactBytes);
+  assert.ok(api.files.has('agents/default/responses/response-sample-01.json'));
   assert.ok(
-    api.commits.findIndex((commit) => commit.path === artifactPath)
-      < api.commits.findIndex((commit) => commit.path === 'responses/response-sample-01.json'),
+    api.commits.findIndex((commit) => commit.path === 'agents/default/' + artifactPath)
+      < api.commits.findIndex((commit) => commit.path === 'agents/default/responses/response-sample-01.json'),
     'artifacts must be committed before the response completion marker',
   );
   await assert.rejects(
@@ -629,14 +738,14 @@ try {
     'published response staging files should be removed locally',
   );
   await assert.rejects(
-    () => fs.access(path.join(paths.requests, 'request-sample-01.json')),
+    () => fs.access(path.join(defaultPaths.requests, 'request-sample-01.json')),
     /ENOENT/,
     'published request staging files should be removed locally',
   );
   await sync.syncOnce();
   assert.equal(api.getRawReadCount(requestPath), 1,
     'unchanged completed requests should be skipped without downloading the request or response again');
-  assert.equal(api.getRawReadCount('responses/response-sample-01.json'), 0);
+  assert.equal(api.getRawReadCount('agents/default/responses/response-sample-01.json'), 0);
 
   const compactId = 'task-a1';
   const compactRequestBytes = Buffer.from(JSON.stringify({
@@ -644,18 +753,18 @@ try {
     id: compactId,
     commands: [{ tool: 'get_config', arguments: {} }],
   }), 'utf8');
-  api.files.set('requests/' + compactId + '.json', {
+  api.files.set('agents/default/requests/' + compactId + '.json', {
     bytes: compactRequestBytes,
     sha: gitBlobSha(compactRequestBytes),
   });
   await sync.syncOnce();
   assert.deepEqual(
-    await fs.readFile(path.join(paths.requests, compactId + '.json')),
+    await fs.readFile(path.join(defaultPaths.requests, compactId + '.json')),
     compactRequestBytes,
     'GitHub sync must stage compact request filenames without a request- prefix',
   );
   const compactRequestHash = crypto.createHash('sha256').update(compactRequestBytes).digest('hex');
-  await fs.writeFile(path.join(paths.responses, compactId + '.json'), JSON.stringify({
+  await fs.writeFile(path.join(defaultPaths.responses, compactId + '.json'), JSON.stringify({
     protocol_version: 1,
     id: compactId,
     request_hash: compactRequestHash,
@@ -666,10 +775,10 @@ try {
     artifacts: [],
   }));
   await sync.syncOnce();
-  assert.ok(api.files.has('responses/' + compactId + '.json'),
+  assert.ok(api.files.has('agents/default/responses/' + compactId + '.json'),
     'GitHub sync must publish compact response filenames without a response- prefix');
   await assert.rejects(
-    () => fs.access(path.join(paths.requests, compactId + '.json')),
+    () => fs.access(path.join(defaultPaths.requests, compactId + '.json')),
     /ENOENT/,
     'compact local request staging files should be removed after response publication',
   );
@@ -710,23 +819,23 @@ try {
     artifacts: [],
   });
   await fs.writeFile(
-    path.join(paths.responses, 'response-sample-02.json'),
+    path.join(defaultPaths.responses, 'response-sample-02.json'),
     JSON.stringify(concurrentResponse('sample-02')),
   );
   const firstConcurrentSync = sync.syncOnce();
   await uploadGate.started;
   await fs.writeFile(
-    path.join(paths.responses, 'response-sample-03.json'),
+    path.join(defaultPaths.responses, 'response-sample-03.json'),
     JSON.stringify(concurrentResponse('sample-03')),
   );
   const secondConcurrentSignal = sync.syncOnce();
   uploadGate.release();
   await Promise.all([firstConcurrentSync, secondConcurrentSignal]);
-  assert.ok(api.files.has('responses/response-sample-02.json'));
-  assert.ok(api.files.has('responses/response-sample-03.json'),
+  assert.ok(api.files.has('agents/default/responses/response-sample-02.json'));
+  assert.ok(api.files.has('agents/default/responses/response-sample-03.json'),
     'a response arriving during synchronization must be published by the queued follow-up pass');
   await assert.rejects(
-    () => fs.access(path.join(paths.responses, 'response-sample-03.json')),
+    () => fs.access(path.join(defaultPaths.responses, 'response-sample-03.json')),
     /ENOENT/,
     'the follow-up pass should remove the second published response from local staging',
   );
@@ -740,7 +849,7 @@ try {
   // Also exercise splitting an existing local artifact produced by the worker.
   // A sparse file keeps the fixture small while preserving a real >32 MiB size.
   const largeSourceArtifactPath = 'artifacts/' + largeResponseId + '/large-source.bin';
-  const largeSourceLocalPath = path.join(paths.root, ...largeSourceArtifactPath.split('/'));
+  const largeSourceLocalPath = path.join(defaultPaths.root, ...largeSourceArtifactPath.split('/'));
   const largeSourceBytes = 32 * 1024 * 1024 + 1;
   await fs.mkdir(path.dirname(largeSourceLocalPath), { recursive: true });
   const largeSourceHandle = await fs.open(largeSourceLocalPath, 'w');
@@ -781,11 +890,11 @@ try {
     }],
     artifacts: [largeSourceArtifact],
   };
-  const largeResponsePath = path.join(paths.responses, 'response-' + largeResponseId + '.json');
+  const largeResponsePath = path.join(defaultPaths.responses, 'response-' + largeResponseId + '.json');
   await fs.writeFile(largeResponsePath, JSON.stringify(largeResponse));
   await sync.syncOnce();
 
-  const publishedLargeResponseBytes = api.files.get('responses/response-' + largeResponseId + '.json')?.bytes;
+  const publishedLargeResponseBytes = api.files.get('agents/default/responses/response-' + largeResponseId + '.json')?.bytes;
   assert.ok(publishedLargeResponseBytes, 'the compact response marker should be committed to GitHub');
   assert.ok(publishedLargeResponseBytes.length < MAX_GITHUB_BRIDGE_FILE_BYTES,
     'the response marker must stay below the GitHub per-file limit');
@@ -801,7 +910,7 @@ try {
     assert.ok(Array.isArray(reference.parts) && reference.parts.length > 0,
       'chunked artifacts must expose their remote parts');
     const chunks = reference.parts.map((part) => {
-      const stored = api.files.get(part.path);
+      const stored = api.files.get('agents/default/' + part.path);
       assert.ok(stored, 'each declared artifact part must be uploaded: ' + part.path);
       assert.equal(stored.bytes.length, part.bytes);
       assert.equal(crypto.createHash('sha256').update(stored.bytes).digest('hex'), part.sha256);
@@ -818,7 +927,7 @@ try {
   // The new automatic-dump threshold is 1 MB, not the old 32 MiB threshold.
   const autoDumpId = 'auto-dump-01';
   const autoDumpText = 'D'.repeat(1_000_100);
-  const autoDumpResponsePath = path.join(paths.responses, 'response-' + autoDumpId + '.json');
+  const autoDumpResponsePath = path.join(defaultPaths.responses, 'response-' + autoDumpId + '.json');
   await fs.writeFile(autoDumpResponsePath, JSON.stringify({
     protocol_version: 1,
     id: autoDumpId,
@@ -836,7 +945,7 @@ try {
     artifacts: [],
   }));
   await sync.syncOnce();
-  const autoDumpRemotePath = 'responses/response-' + autoDumpId + '.json';
+  const autoDumpRemotePath = 'agents/default/responses/response-' + autoDumpId + '.json';
   const autoDumpMarker = api.files.get(autoDumpRemotePath)?.bytes;
   assert.ok(autoDumpMarker, 'a response slightly over 1 MB must still publish a completion marker');
   assert.ok(autoDumpMarker.length <= 1_000_000,
@@ -846,7 +955,7 @@ try {
   assert.ok(autoDumpReference, 'the oversized result must be replaced by a JSON artifact reference');
   const autoDumpContentBytes = autoDumpReference.parts
     ? reconstructArtifact(autoDumpReference)
-    : api.files.get(autoDumpReference.path).bytes;
+    : api.files.get('agents/default/' + autoDumpReference.path).bytes;
   assert.deepEqual(
     JSON.parse(autoDumpContentBytes.toString('utf8')),
     [{ type: 'text', text: autoDumpText }],
@@ -876,11 +985,11 @@ try {
   const invalidResponseId = 'invalid-response-01';
   const validResponseId = 'valid-response-02';
   await fs.writeFile(
-    path.join(paths.responses, 'response-' + invalidResponseId + '.json'),
+    path.join(defaultPaths.responses, 'response-' + invalidResponseId + '.json'),
     '{invalid json',
   );
   await fs.writeFile(
-    path.join(paths.responses, 'response-' + validResponseId + '.json'),
+    path.join(defaultPaths.responses, 'response-' + validResponseId + '.json'),
     JSON.stringify({
       protocol_version: 1,
       id: validResponseId,
@@ -896,13 +1005,13 @@ try {
     () => sync.syncOnce(),
     /Could not synchronize 1 local response file/,
   );
-  assert.ok(api.files.has('responses/response-' + validResponseId + '.json'),
+  assert.ok(api.files.has('agents/default/responses/response-' + validResponseId + '.json'),
     'a malformed response must not block another response from the same sync pass');
-  await fs.access(path.join(paths.responses, 'response-' + invalidResponseId + '.json'));
-  await fs.rm(path.join(paths.responses, 'response-' + invalidResponseId + '.json'), { force: true });
+  await fs.access(path.join(defaultPaths.responses, 'response-' + invalidResponseId + '.json'));
+  await fs.rm(path.join(defaultPaths.responses, 'response-' + invalidResponseId + '.json'), { force: true });
 
   const listingFailureId = 'listing-failure-01';
-  await fs.writeFile(path.join(paths.responses, 'response-' + listingFailureId + '.json'), JSON.stringify({
+  await fs.writeFile(path.join(defaultPaths.responses, 'response-' + listingFailureId + '.json'), JSON.stringify({
     protocol_version: 1,
     id: listingFailureId,
     request_hash: crypto.createHash('sha256').update(listingFailureId).digest('hex'),
@@ -918,7 +1027,7 @@ try {
     /local response publication was still attempted/,
     'remote queue discovery errors should still be reported after trying to publish completed local responses',
   );
-  assert.ok(api.files.has('responses/response-' + listingFailureId + '.json'),
+  assert.ok(api.files.has('agents/default/responses/response-' + listingFailureId + '.json'),
     'a temporary remote request-listing failure must not block a completed response upload');
 
   const followupId = 'sync-followup-01';
@@ -931,7 +1040,7 @@ try {
   api.failNextQueueTreeList();
   const failedPassWithQueuedSignal = sync.syncOnce();
   await queueListGate.started;
-  api.files.set('requests/' + followupId + '.json', {
+  api.files.set('agents/default/requests/' + followupId + '.json', {
     bytes: followupRequestBytes,
     sha: gitBlobSha(followupRequestBytes),
   });
@@ -939,7 +1048,7 @@ try {
   queueListGate.release();
   await Promise.all([failedPassWithQueuedSignal, queuedFollowupSignal]);
   assert.deepEqual(
-    await fs.readFile(path.join(paths.requests, followupId + '.json')),
+    await fs.readFile(path.join(defaultPaths.requests, followupId + '.json')),
     followupRequestBytes,
     'a queued sync signal must trigger a successful retry even when the preceding pass failed',
   );
@@ -948,26 +1057,30 @@ try {
   try {
     const restartedPaths = {
       root: restartRoot,
-      requests: path.join(restartRoot, 'requests'),
-      responses: path.join(restartRoot, 'responses'),
-      artifacts: path.join(restartRoot, 'artifacts'),
+      agents: path.join(restartRoot, 'agents'),
+    };
+    const restartedDefaultPaths = {
+      root: path.join(restartedPaths.agents, 'default'),
+      requests: path.join(restartedPaths.agents, 'default', 'requests'),
+      responses: path.join(restartedPaths.agents, 'default', 'responses'),
+      artifacts: path.join(restartedPaths.agents, 'default', 'artifacts'),
     };
     const restartedSync = new GitHubBridgeSync(client, restartedPaths);
     await restartedSync.initialize();
     await restartedSync.syncOnce();
     await assert.rejects(
-      () => fs.access(path.join(restartedPaths.requests, 'request-sample-01.json')),
+      () => fs.access(path.join(restartedDefaultPaths.requests, 'request-sample-01.json')),
       /ENOENT/,
       'a request with an existing remote response must not be staged again after restart',
     );
     assert.equal(api.getRawReadCount(requestPath), 1,
       'a restarted bridge must not download a request whose response completion marker already exists');
-    assert.equal(api.getRawReadCount('responses/response-sample-01.json'), 0,
+    assert.equal(api.getRawReadCount('agents/default/responses/response-sample-01.json'), 0,
       'a restarted bridge must not download historical completed responses');
     await restartedSync.syncOnce();
     assert.equal(api.getRawReadCount(requestPath), 1,
       'completed request history must remain excluded from every later synchronization');
-    assert.equal(api.getRawReadCount('responses/response-sample-01.json'), 0,
+    assert.equal(api.getRawReadCount('agents/default/responses/response-sample-01.json'), 0,
       'completed response history must remain excluded from every later synchronization');
   } finally {
     await fs.rm(restartRoot, { recursive: true, force: true });
@@ -980,8 +1093,8 @@ try {
   const historyCount = 2_000;
   for (let index = 0; index < historyCount; index++) {
     const id = 'history-' + String(index).padStart(4, '0');
-    const requestName = 'requests/request-' + id + '.json';
-    const responseName = 'responses/response-' + id + '.json';
+    const requestName = 'agents/default/requests/request-' + id + '.json';
+    const responseName = 'agents/default/responses/response-' + id + '.json';
     const oldRequest = Buffer.from('historical request ' + index);
     const oldResponse = Buffer.from('historical response ' + index);
     api.files.set(requestName, { bytes: oldRequest, sha: gitBlobSha(oldRequest) });
@@ -1003,8 +1116,8 @@ try {
 
   // Backslashes are path separators on Windows and must not allow a remote
   // response to escape the artifact cache root.
-  await fs.mkdir(paths.responses, { recursive: true });
-  await fs.writeFile(path.join(paths.responses, 'response-sample-01.json'), JSON.stringify({
+  await fs.mkdir(defaultPaths.responses, { recursive: true });
+  await fs.writeFile(path.join(defaultPaths.responses, 'response-sample-01.json'), JSON.stringify({
     ...response,
     artifacts: [{
       path: 'artifacts/sample-01/..\\\\outside.bin',

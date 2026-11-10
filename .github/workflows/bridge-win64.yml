@@ -39,11 +39,16 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+        env:
+          # @vscode/ripgrep downloads its platform binary via the GitHub API.
+          # Authenticate this download to avoid anonymous shared-runner rate limits.
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Build and run bridge and security regression tests
         run: >-
           npm test --
           test-bridge-protocol.js
+          test-bridge-agents.js
           test-bridge-guide.js
           test-bridge-github.js
           test-bridge-github-webhook.js
@@ -133,8 +138,10 @@ jobs:
         shell: pwsh
         run: |
           $cloudDir = Join-Path $env:TEMP "DesktopCommanderBridgeSmoke"
+          $agentRoot = Join-Path $cloudDir "agents\smoke"
+          $otherAgentRoot = Join-Path $cloudDir "agents\planner"
           $stateDir = Join-Path $env:LOCALAPPDATA "DesktopCommanderBridge"
-          New-Item -ItemType Directory -Force -Path $cloudDir, (Join-Path $cloudDir 'requests'), $stateDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $agentRoot, (Join-Path $agentRoot 'requests'), (Join-Path $agentRoot 'responses'), $otherAgentRoot, (Join-Path $otherAgentRoot 'requests'), (Join-Path $otherAgentRoot 'responses'), $stateDir | Out-Null
 
           $settings = @{
             directory = $cloudDir
@@ -163,27 +170,38 @@ jobs:
               @{ tool = "get_file_info"; arguments = @{ path = $imagePath } }
             )
           } | ConvertTo-Json -Depth 20
-          $mailboxSmokeSender = "BridgeSmokeSender-" + [Guid]::NewGuid().ToString("N")
-          $mailboxSmokeRecipient = "BridgeSmokeRecipient-" + [Guid]::NewGuid().ToString("N")
           $configRequest = @{
             protocol_version = 1
             id = "smoke-config"
             commands = @(
-              @{ tool = "get_config"; arguments = @{} },
-              @{ tool = "mailbox"; arguments = @{ action = "register"; username = $mailboxSmokeSender } },
-              @{ tool = "mailbox"; arguments = @{ action = "register"; username = $mailboxSmokeRecipient } }
+              @{ tool = "get_config"; arguments = @{} }
             )
           } | ConvertTo-Json -Depth 20
 
-          $imageRequestPath = Join-Path $cloudDir "requests\smoke-image.json"
+          # A second agent intentionally reuses this request ID. Its processing
+          # ledger and response must remain isolated in its own folder.
+          $sameIdOtherAgentRequest = @{
+            protocol_version = 1
+            id = "smoke-config"
+            commands = @(
+              @{ tool = "get_config"; arguments = @{} }
+            )
+          } | ConvertTo-Json -Depth 20
+
+          $imageRequestPath = Join-Path $agentRoot "requests\smoke-image.json"
           [System.IO.File]::WriteAllText(
             $imageRequestPath,
             '{ "protocol_version": 1,',
             [System.Text.UTF8Encoding]::new($false)
           )
           [System.IO.File]::WriteAllText(
-            (Join-Path $cloudDir "requests\smoke-config.json"),
+            (Join-Path $agentRoot "requests\smoke-config.json"),
             $configRequest,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          [System.IO.File]::WriteAllText(
+            (Join-Path $otherAgentRoot "requests\smoke-config.json"),
+            $sameIdOtherAgentRequest,
             [System.Text.UTF8Encoding]::new($false)
           )
 
@@ -212,20 +230,21 @@ jobs:
           [System.IO.File]::WriteAllText($imageRequestPath, $imageRequest, [System.Text.UTF8Encoding]::new($false))
 
           try {
-            $imageResponsePath = Join-Path $cloudDir "responses\smoke-image.json"
-            $configResponsePath = Join-Path $cloudDir "responses\smoke-config.json"
+            $imageResponsePath = Join-Path $agentRoot "responses\smoke-image.json"
+            $configResponsePath = Join-Path $agentRoot "responses\smoke-config.json"
+            $otherAgentResponsePath = Join-Path $otherAgentRoot "responses\smoke-config.json"
 
             # The first request pauses for five seconds between its two commands.
             # The independent request must complete during that pause.
             $parallelDeadline = (Get-Date).AddSeconds(3)
-            while ((Get-Date) -lt $parallelDeadline -and !(Test-Path $configResponsePath)) {
+            while ((Get-Date) -lt $parallelDeadline -and (!(Test-Path $configResponsePath) -or !(Test-Path $otherAgentResponsePath))) {
               if ($process.HasExited) {
                 throw "Bridge exited before the independent request completed. stdout: $(Get-Content $stdout -Raw -ErrorAction SilentlyContinue) stderr: $(Get-Content $stderr -Raw -ErrorAction SilentlyContinue)"
               }
               Start-Sleep -Milliseconds 100
             }
-            if (!(Test-Path $configResponsePath)) {
-              throw "A separate request file did not complete while the first request was in its configured 5-second command delay."
+            if (!(Test-Path $configResponsePath) -or !(Test-Path $otherAgentResponsePath)) {
+              throw "Independent requests from separate agent folders did not both complete during the first request's 5-second command delay."
             }
             if (Test-Path $imageResponsePath) {
               throw "The two commands in one request did not respect the configured sequential command delay."
@@ -244,89 +263,22 @@ jobs:
 
             $imageResponse = Get-Content $imageResponsePath -Raw | ConvertFrom-Json
             $configResponse = Get-Content $configResponsePath -Raw | ConvertFrom-Json
+            $otherAgentResponse = Get-Content $otherAgentResponsePath -Raw | ConvertFrom-Json
             if ($imageResponse.status -ne "completed" -or $imageResponse.results.Count -ne 2) {
               throw "Sequential multi-command image request failed: $($imageResponse | ConvertTo-Json -Depth 10)"
             }
-            if ($configResponse.status -ne "completed" -or $configResponse.results.Count -ne 3) {
-              throw "Independent config/mailbox registration request failed: $($configResponse | ConvertTo-Json -Depth 10)"
+            if ($configResponse.status -ne "completed" -or $configResponse.results.Count -ne 1) {
+              throw "Independent config request failed: $($configResponse | ConvertTo-Json -Depth 10)"
             }
-            $mailboxSenderResult = $configResponse.results[1]
-            $mailboxRecipientResult = $configResponse.results[2]
-            if ($mailboxSenderResult.tool -ne "mailbox" -or $mailboxSenderResult.status -ne "succeeded" -or $mailboxSenderResult.isError -or $mailboxRecipientResult.tool -ne "mailbox" -or $mailboxRecipientResult.status -ne "succeeded" -or $mailboxRecipientResult.isError) {
-              throw "Mailbox registration did not execute successfully through the portable bridge: $($configResponse | ConvertTo-Json -Depth 10)"
-            }
-            $mailboxSender = $mailboxSenderResult.content[0].text | ConvertFrom-Json
-            $mailboxRecipient = $mailboxRecipientResult.content[0].text | ConvertFrom-Json
-            if ($mailboxSender.status -ne "registered" -or $mailboxSender.username -ne $mailboxSmokeSender -or [string]::IsNullOrEmpty($mailboxSender.mailbox_user_id) -or $mailboxRecipient.status -ne "registered" -or $mailboxRecipient.username -ne $mailboxSmokeRecipient -or [string]::IsNullOrEmpty($mailboxRecipient.mailbox_user_id)) {
-              throw "Portable bridge mailbox registration returned an invalid identity: $($mailboxSender | ConvertTo-Json -Depth 5) / $($mailboxRecipient | ConvertTo-Json -Depth 5)"
-            }
-
-            $mailboxSmokeMessage = "Portable bridge mailbox smoke message " + [Guid]::NewGuid().ToString("N")
-            $mailboxSendRequest = @{
-              protocol_version = 1
-              id = "smoke-mailbox-send"
-              commands = @(
-                @{ tool = "mailbox"; arguments = @{ action = "send"; mailbox_user_id = $mailboxSender.mailbox_user_id; to = $mailboxSmokeRecipient; message = $mailboxSmokeMessage } }
-              )
-            } | ConvertTo-Json -Depth 20
-            [System.IO.File]::WriteAllText((Join-Path $cloudDir "requests\request-smoke-mailbox-send.json"), $mailboxSendRequest, [System.Text.UTF8Encoding]::new($false))
-            $mailboxSendResponsePath = Join-Path $cloudDir "responses\response-smoke-mailbox-send.json"
-            $mailboxDeadline = (Get-Date).AddSeconds(30)
-            while ((Get-Date) -lt $mailboxDeadline -and !(Test-Path $mailboxSendResponsePath)) {
-              if ($process.HasExited) { throw "Bridge exited before producing the mailbox send response. stdout: $(Get-Content $stdout -Raw -ErrorAction SilentlyContinue) stderr: $(Get-Content $stderr -Raw -ErrorAction SilentlyContinue)" }
-              Start-Sleep -Milliseconds 200
-            }
-            if (!(Test-Path $mailboxSendResponsePath)) { throw "Portable bridge did not finish mailbox send within 30 seconds." }
-            $mailboxSendResponse = Get-Content $mailboxSendResponsePath -Raw | ConvertFrom-Json
-            if ($mailboxSendResponse.status -ne "completed" -or $mailboxSendResponse.results.Count -ne 1 -or $mailboxSendResponse.results[0].tool -ne "mailbox" -or $mailboxSendResponse.results[0].status -ne "succeeded" -or $mailboxSendResponse.results[0].isError) {
-              throw "Mailbox send failed through the portable bridge: $($mailboxSendResponse | ConvertTo-Json -Depth 10)"
-            }
-
-            $mailboxNoticeRequest = @{
-              protocol_version = 1
-              id = "smoke-mailbox-notice"
-              commands = @(
-                @{ tool = "get_config"; arguments = @{ mailbox_user_id = $mailboxRecipient.mailbox_user_id } }
-              )
-            } | ConvertTo-Json -Depth 20
-            [System.IO.File]::WriteAllText((Join-Path $cloudDir "requests\request-smoke-mailbox-notice.json"), $mailboxNoticeRequest, [System.Text.UTF8Encoding]::new($false))
-            $mailboxNoticeResponsePath = Join-Path $cloudDir "responses\response-smoke-mailbox-notice.json"
-            $mailboxDeadline = (Get-Date).AddSeconds(30)
-            while ((Get-Date) -lt $mailboxDeadline -and !(Test-Path $mailboxNoticeResponsePath)) {
-              if ($process.HasExited) { throw "Bridge exited before producing the mailbox notice response." }
-              Start-Sleep -Milliseconds 200
-            }
-            if (!(Test-Path $mailboxNoticeResponsePath)) { throw "Portable bridge did not finish the mailbox notice request within 30 seconds." }
-            $mailboxNoticeResponse = Get-Content $mailboxNoticeResponsePath -Raw | ConvertFrom-Json
-            if ($mailboxNoticeResponse.status -ne "completed" -or $mailboxNoticeResponse.results.Count -ne 1 -or $mailboxNoticeResponse.results[0].content[0].text -notmatch '1 new message') {
-              throw "Ordinary bridge tools did not receive the mailbox unread notice: $($mailboxNoticeResponse | ConvertTo-Json -Depth 10)"
-            }
-
-            $mailboxInboxRequest = @{
-              protocol_version = 1
-              id = "smoke-mailbox-inbox"
-              commands = @(
-                @{ tool = "mailbox"; arguments = @{ action = "inbox_unread"; mailbox_user_id = $mailboxRecipient.mailbox_user_id } }
-              )
-            } | ConvertTo-Json -Depth 20
-            [System.IO.File]::WriteAllText((Join-Path $cloudDir "requests\request-smoke-mailbox-inbox.json"), $mailboxInboxRequest, [System.Text.UTF8Encoding]::new($false))
-            $mailboxInboxResponsePath = Join-Path $cloudDir "responses\response-smoke-mailbox-inbox.json"
-            $mailboxDeadline = (Get-Date).AddSeconds(30)
-            while ((Get-Date) -lt $mailboxDeadline -and !(Test-Path $mailboxInboxResponsePath)) {
-              if ($process.HasExited) { throw "Bridge exited before producing the mailbox inbox response." }
-              Start-Sleep -Milliseconds 200
-            }
-            if (!(Test-Path $mailboxInboxResponsePath)) { throw "Portable bridge did not finish the mailbox inbox request within 30 seconds." }
-            $mailboxInboxResponse = Get-Content $mailboxInboxResponsePath -Raw | ConvertFrom-Json
-            if ($mailboxInboxResponse.status -ne "completed" -or $mailboxInboxResponse.results.Count -ne 1 -or $mailboxInboxResponse.results[0].tool -ne "mailbox" -or $mailboxInboxResponse.results[0].status -ne "succeeded" -or $mailboxInboxResponse.results[0].content[0].text -notmatch [regex]::Escape($mailboxSmokeMessage)) {
-              throw "Portable bridge mailbox inbox did not return the sent message: $($mailboxInboxResponse | ConvertTo-Json -Depth 10)"
+            if ($otherAgentResponse.status -ne "completed" -or $otherAgentResponse.id -ne $configResponse.id -or $otherAgentResponse.results.Count -ne 1) {
+              throw "The second agent did not receive an independent response for its reused request ID: $($otherAgentResponse | ConvertTo-Json -Depth 10)"
             }
             if ($imageResponse.artifacts.Count -lt 1) {
               throw "Image read did not produce an artifact reference."
             }
 
             $relativeArtifact = $imageResponse.artifacts[0].path.Replace('/', '\')
-            $artifactPath = Join-Path $cloudDir $relativeArtifact
+            $artifactPath = Join-Path $agentRoot $relativeArtifact
             if (!(Test-Path $artifactPath)) {
               throw "The image artifact referenced by the response was not materialized: $artifactPath"
             }
@@ -335,20 +287,20 @@ jobs:
               throw "Bridge did not generate README.md in the configured cloud folder."
             }
             $guideContent = Get-Content $guidePath -Raw
-            if (!$guideContent.Contains("## Optional local mailbox (direct MCP and both bridge transports)")) {
-              throw "Generated bridge README is missing the shared local-mailbox section."
+            if (!$guideContent.Contains("agents/<agent-name>/requests/") -or !$guideContent.Contains("agents/<agent-name>/responses/") -or !$guideContent.Contains("agents/<agent-name>/artifacts/")) {
+              throw "Generated bridge README is missing the agent-scoped queue folder layout."
             }
-            if (!$guideContent.Contains("### mailbox")) {
-              throw "Generated bridge README is missing the mailbox tool from its tool catalog."
+            if (!$guideContent.Contains("folder name identifies your agent")) {
+              throw "Generated bridge README does not describe folder-based agent identity."
             }
-            if (!$guideContent.Contains("message text, usernames, and mailbox IDs included in a bridge request or returned in a response")) {
-              throw "Generated bridge README is missing the mailbox queue-transport privacy note."
+            if ($guideContent.Contains("mailbox_user_id") -or $guideContent.Contains("## Optional local mailbox")) {
+              throw "Generated bridge README still couples bridge agents to mailbox identities."
             }
-            if ($guideContent.Contains("bridge request parser intentionally rejects the")) {
-              throw "Generated bridge README still describes mailbox as bridge-inaccessible."
+            if (!$guideContent.Contains("agents/chatgpt/requests/task-a1.json") -or !$guideContent.Contains("agents/chatgpt/responses/task-a1.json")) {
+              throw "Generated bridge README is missing the compact agent-scoped request/response filename convention."
             }
-            if (!$guideContent.Contains("requests/task-a1.json") -or !$guideContent.Contains("responses/task-a1.json")) {
-              throw "Generated bridge README is missing the compact request/response filename convention."
+            if (Test-Path (Join-Path $cloudDir "requests")) {
+              throw "The bridge created a legacy root-level requests folder instead of agent-scoped queues."
             }
             if ($guideContent.Contains("status/status-") -or $guideContent.Contains("status/worker.json")) {
               throw "Generated bridge README refers to status files that this bridge does not publish."

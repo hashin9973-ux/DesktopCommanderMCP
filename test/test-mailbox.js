@@ -9,7 +9,7 @@ try {
   await withEnv({ HOME: home, USERPROFILE: home }, async () => {
     const { mailboxStore } = await import('../dist/mailbox.js');
     const { BRIDGE_TOOL_NAMES } = await import('../dist/bridge/protocol.js');
-    assert.equal(BRIDGE_TOOL_NAMES.includes('mailbox'), true, 'mailbox must be exposed as a normal cloud-folder bridge tool');
+    assert.equal(BRIDGE_TOOL_NAMES.includes('mailbox'), false, 'agent folders replace mailbox registration in the file-queue bridge protocol');
     const alice = await mailboxStore.register('Alice');
     const bob = await mailboxStore.register('Bob');
     assert.equal(alice.existing, false);

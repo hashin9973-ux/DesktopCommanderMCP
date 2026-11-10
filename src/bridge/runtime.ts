@@ -16,13 +16,13 @@ import { writeFileAtomic } from '../utils/atomic-write.js';
 import { preloadFileSupport } from '../utils/files/index.js';
 import { featureFlagManager } from '../utils/feature-flags.js';
 import { BRIDGE_TOOL_NAMES, parseBridgeRequest, type BridgeCommand, type BridgeRequest } from './protocol.js';
-import { appendMailboxGuideSection } from './guide.js';
+import { discoverAgentQueuePaths, initializeAgentLayout, type AgentQueuePaths } from './agents.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_STORAGE_BYTES = 3_000_000_000;
 const STABILITY_CHECK_MS = 200;
 const REQUEST_PARSE_SETTLE_MS = 2_000;
-const BRIDGE_GUIDE_MARKER = '<!-- desktop-commander:bridge-guide:v2 -->';
+const BRIDGE_GUIDE_MARKER = '<!-- desktop-commander:bridge-guide:v3 -->';
 const RECENT_FILE_CLEANUP_GRACE_MS = 60_000;
 const MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
 
@@ -89,12 +89,11 @@ interface BridgeResponse {
   error?: string;
 }
 
-interface BridgePaths {
+interface BridgePaths extends AgentQueuePaths {}
+interface BridgeRootPaths {
   root: string;
-  requests: string;
-  responses: string;
-  artifacts: string;
-  ledgers: string;
+  agents: string;
+  stateDirectory: string;
 }
 
 function defaultSettings(): BridgeSettings {
@@ -165,7 +164,7 @@ function printHelp(): void {
     '      --max-storage-gb <n>   Bridge folder size limit (default 3 decimal GB)',
     '  -h, --help                 Show this help',
     '',
-    'Different request files execute concurrently. Commands inside one file execute sequentially.',
+    'Requests from all agent folders execute concurrently. Commands inside one file execute sequentially.',
   ].join('\n'));
 }
 
@@ -331,44 +330,45 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '',
     '## Folder layout',
     '',
-    '- requests/ — submit <id>.json or <id>.md request files.',
-    '- responses/ — read <id>.json results.',
-    '- artifacts/ — binary outputs (images, PDFs, and other files) returned by the local worker.',
-    '- README.md — this guide.',
+    '- agents/<agent-name>/requests/ — submit <id>.json or <id>.md request files.',
+    '- agents/<agent-name>/responses/ — read matching <id>.json results.',
+    '- agents/<agent-name>/artifacts/ — binary outputs returned to that agent.',
+    '- agents/<agent-name>/ — one isolated workspace per AI agent or subagent.',
+    '- README.md — the only agent-facing guide.',
     '',
     '## AI Quick Start',
     '',
-    '1. Confirm the local Desktop Commander Bridge is running and first-run consent has been accepted. Make sure the cloud folder or GitHub repository used by this bridge is accessible.',
-    '2. Locate the bridge root in the connected cloud folder or GitHub repository. It must contain this README.md and the requests/, responses/, and artifacts/ folders. If several candidate roots exist, verify all three folders before choosing one; never guess.',
-    '3. Read this README once at the start of a fresh chat. It is the only operating guide. Do not search for or read other guide files. Keep the bridge root and pending request IDs for the rest of the session.',
-    '4. Choose a short unique ID such as task-a1 or 7c2e91a4. Submit requests/<id>.json with the same value in the JSON id field. Do not add a request- prefix. IDs beginning with request- or response- are reserved for legacy compatibility. Use a different ID for every request.',
-    '5. The matching result appears at responses/<id>.json. Do not add a response- prefix. Submit independent requests without waiting for earlier results, then retrieve each exact response path.',
-    '6. For image, PDF, or binary outputs, use the artifact paths listed in the response and retrieve those files from artifacts/. Do not expect binary bytes to be embedded in response JSON.',
+    '1. Confirm the local Desktop Commander Bridge is running and first-run consent has been accepted. Make sure the shared cloud folder or GitHub repository is accessible.',
+    '2. Create or choose your own folder under agents/ using a short stable name such as chatgpt, claude, codex, or planner. The folder name identifies your agent; no separate registration or agent ID is needed.',
+    '3. Use only your own agents/<agent-name>/ folder. It contains requests/, responses/, and artifacts/. Do not place requests in another agent folder.',
+    '4. Read this README once at the start of a fresh chat. It is the only operating guide. Keep your agent folder and pending request IDs for the rest of the session.',
+    '5. Choose a short request ID such as task-a1 or 7c2e91a4. Submit agents/<agent-name>/requests/<id>.json with the same value in the JSON id field. Request IDs need only be unique within your agent folder.',
+    '6. The result appears at agents/<agent-name>/responses/<id>.json. Retrieve artifacts from your own agents/<agent-name>/artifacts/ folder.',
     '',
-    'The bridge must be running on the computer that should execute the tools. The AI-side storage connector only submits requests and retrieves results; it does not execute commands. Use one bridge host per shared request root.',
+    'The bridge must be running on the computer that should execute the tools. The storage connector only submits requests and retrieves results; it does not execute commands. Folder ownership is the agent identity and queue boundary.',
     '',
     '## Fast asynchronous workflow',
     '',
-    'Use one request file per independent tool call. Write request A, then request B without checking for A yet. A successful write confirms only that the request file reached bridge storage; it does not mean the command has finished. The request ID is the job ID. Separate request files execute concurrently by default, while commands within one request file execute sequentially.',
+    'Use one request file per independent tool call inside your own agent folder. A successful write confirms only that the request reached bridge storage; it does not mean the command has finished. Request IDs are scoped to the agent folder. Different request files execute concurrently by default, while commands within one request file execute sequentially.',
     '',
-    'Keep the pipeline full: submit A, submit B, then check responses/A.json. While B is still running, submit C if it is independent. Read each response as soon as it appears; do not block every submission on its own result. Retrieve known response paths directly rather than repeatedly listing the whole response history.',
+    'Keep the pipeline full: submit A and B, then check agents/<agent-name>/responses/A.json. While B is running, submit C if it is independent. Retrieve known response paths directly instead of repeatedly listing response history.',
     '',
-    'Example: upload requests/task-a1.json, then requests/task-b2.json; next read responses/task-a1.json. If it is ready, read it while B continues. Submit requests/task-c3.json without waiting for B if C is independent, then retrieve responses/task-b2.json and responses/task-c3.json. Each request uses protocol_version 1, an id matching its filename, and a commands array containing the relevant tool call.',
+    'Example: upload agents/chatgpt/requests/task-a1.json and agents/chatgpt/requests/task-b2.json; read agents/chatgpt/responses/task-a1.json; then submit task-c3 if independent. Each request uses protocol_version 1, an id matching its filename, and a commands array containing the tool call.',
     '',
     'Use a single request file with multiple commands only when those commands must run in a known sequence and all later arguments are already known. If a later command needs data returned by an earlier command (for example, a PID or discovered path), wait for that result before submitting the dependent request. Never pretend independent requests are ordered relative to each other.',
     '',
-    'For the fastest normal session: discover the bridge root once, read this guide once, submit independent requests in a batch, and retrieve results in a batch. Do not insert a response-folder check after every upload.',
+    'For the fastest normal session: discover your agent folder once, read this guide once, submit independent requests in a batch, and retrieve matching responses in a batch.',
     '',
     '## Failure recovery',
     '',
-    '- Match each result by ID: requests/<id>.json maps to responses/<id>.json. The JSON id must match the filename.',
+    '- Match each result by ID: agents/<agent-name>/requests/<id>.json maps to agents/<agent-name>/responses/<id>.json. The JSON id must match the filename.',
     '- Check the top-level status and every command status. A failed command stops later commands in that request; later commands are marked skipped.',
-    '- If a response is not visible, check the exact requests/<id>.json and responses/<id>.json paths. If the request exists and the response does not, wait for the bridge to finish and check the exact response path again. Do not create a duplicate request while the original remains queued.',
+    '- If a response is not visible, check the exact request and response paths inside your agent folder. If the request exists and the response does not, wait for the bridge to finish and check the exact response path again. Do not create a duplicate request while the original remains queued.',
     '- The bridge does not create per-request status files. Do not look for status/ or worker.json.',
     '- A rejected response usually means the request filename, ID, protocol version, tool name, or arguments failed validation. Correct the request and submit it with a new ID.',
     '- An outcome_unknown command may have performed its side effect. Inspect the target state before retrying; never blindly resubmit a potentially non-idempotent command.',
     '- An interrupted request may have completed some commands. Inspect its recorded results and current target state before deciding what to retry.',
-    '- If artifacts are missing, verify the response artifact path and check that the corresponding artifacts/<id>/ folder is visible in the connected storage before requesting the file again.',
+    '- If artifacts are missing, verify the response artifact path and check that the corresponding agents/<agent-name>/artifacts/<id>/ folder is visible in the connected storage before requesting the file again.',
     '',
     '## JSON request format',
     '',
@@ -384,11 +384,11 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     }, null, 2),
     fence3,
     '',
-    'Save this example as requests/task-a1.json. The filename is the ID; copy that exact ID into the JSON id field. Short IDs are supported. Legacy request-<id>.json files remain accepted. command_delay_ms is optional (0–60000) and overrides the configured delay between commands in this file. The origin argument, when present, must be llm; ui is reserved for the local application and rejected by the bridge.',
+    'Save this example as agents/<agent-name>/requests/task-a1.json. The filename is the ID; copy that exact ID into the JSON id field. Short IDs are supported. Legacy request-<id>.json files remain accepted. command_delay_ms is optional (0–60000) and overrides the configured delay between commands in this file. The origin argument, when present, must be llm; ui is reserved for the local application and rejected by the bridge.',
     '',
     '## Fenced Markdown request format',
     '',
-    'Save as requests/<id>.md, for example requests/task-b2.md. Each executable block contains one JSON tool call. Blocks execute in document order; ordinary prose and other code fences are ignored. Legacy request-<id>.md files remain accepted.',
+    'Save as agents/<agent-name>/requests/<id>.md, for example agents/chatgpt/requests/task-b2.md. Each executable block contains one JSON tool call. Blocks execute in document order; ordinary prose and other code fences are ignored. Legacy request-<id>.md files remain accepted.',
     '',
     fence4 + 'markdown',
     '# Inspect a project',
@@ -404,7 +404,7 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '',
     '## Execution and performance',
     '',
-    '- Different request files execute concurrently. The default concurrency limit is unlimited (--max-parallel 0). A positive --max-parallel value sets an optional cap.',
+    '- Requests from all agent folders share the configured concurrency limit. Different request files execute concurrently. The default concurrency limit is unlimited (--max-parallel 0). A positive --max-parallel value sets an optional cap.',
     '- Commands within one request file execute sequentially, in their listed order.',
     '- The default delay between commands is 0 ms. Configure it with --command-delay-ms or the JSON command_delay_ms property.',
     '- Cloud-folder mode uses filesystem notifications plus a one-second fallback scan. GitHub mode uses signed push webhooks through an optional Cloudflare Quick Tunnel and a five-second reconciliation poll to recover missed events. If webhook or local watcher setup is unavailable, GitHub mode uses five-second polling. Remote storage visibility latency depends on the provider and is not controlled by this application.',
@@ -413,11 +413,11 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '',
     '## Responses and artifacts',
     '',
-    'Each accepted request produces responses/<id>.json. Results preserve the tool content and report command status. Top-level status is completed, failed, partial_failure, interrupted, rejected, or discarded_by_quota.',
+    'Each accepted request produces agents/<agent-name>/responses/<id>.json. Results preserve the tool content and report command status. Top-level status is completed, failed, partial_failure, interrupted, rejected, or discarded_by_quota.',
     '',
-    'Image blocks returned by read_file, read_multiple_files, or PDF page extraction are written into artifacts/<id>/. When a read tool returns a binary source file (such as a PDF, Office document, archive, audio/video file, or an otherwise unsupported binary), the original file is copied there too. The response lists each artifact path, MIME type, byte size, and SHA-256 hash. Binary bytes are not embedded as base64 in response JSON; retrieve the referenced artifact from the same bridge storage (cloud folder or GitHub repository). Cloud-folder mode can export a single artifact up to 256 MiB; GitHub mode limits each uploaded file to 50 MiB.',
+    'Image blocks returned by read_file, read_multiple_files, or PDF page extraction are written into agents/<agent-name>/artifacts/<id>/. When a read tool returns a binary source file (such as a PDF, Office document, archive, audio/video file, or an otherwise unsupported binary), the original file is copied there too. The response lists each artifact path, MIME type, byte size, and SHA-256 hash. Binary bytes are not embedded as base64 in response JSON; retrieve the referenced artifact from your agent folder in the same bridge storage. Cloud-folder mode can export a single artifact up to 256 MiB; GitHub mode limits each uploaded file to 50 MiB.',
     '',
-    'Successfully created PDFs are also copied into the request artifact directory and referenced in the response.',
+    'Successfully created PDFs are also copied into the same agent artifact directory and referenced in the response.',
     '',
     'A request with a failed command stops at that command; later commands are marked skipped. If the process crashes after a command starts but before its result is durably recorded, the command is marked outcome_unknown and is not retried automatically.',
     '',
@@ -445,7 +445,7 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
       const isGeneratedGuide =
         (existing.startsWith('# Desktop Commander Bridge') || existing.startsWith('# Desktop Commander Cloud-Folder Bridge'))
         && existing.includes('This README is the AI-facing operating guide');
-      if (isGeneratedGuide && !existing.includes(BRIDGE_GUIDE_MARKER)) {
+      if (isGeneratedGuide && existing !== guide) {
         await writeFileAtomic(guidePath, guide);
         console.log('Updated generated agent guide: ' + guidePath);
       } else {
@@ -454,19 +454,9 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     }
   }
 
-  // Add new guidance without regenerating or replacing a pre-existing guide.
-  // Custom README files and guides that already contain this section are left alone.
-  try {
-    const appendResult = await appendMailboxGuideSection(guidePath);
-    if (appendResult === 'appended') {
-      console.log('Appended optional local mailbox guidance to ' + guidePath);
-    } else if (appendResult === 'not_bridge_guide') {
-      console.log('Unrecognized README.md preserved without changes: ' + guidePath);
-    }
-  } catch (error) {
-    // Guide maintenance is best-effort; it must not prevent the bridge from starting.
-    console.warn('Could not append mailbox guidance to ' + guidePath + ': ' + errorMessage(error));
-  }
+  // The generated README is the complete agent-facing guide. Agent folder
+  // names provide identity; a separate agent identifier is not required.
+
 }
 
 class ResourceLocks {
@@ -1039,11 +1029,12 @@ async function processRequestFile(
   if (!bytes) return;
   const requestHash = createHash('sha256').update(bytes).digest('hex');
 
-  const knownHash = doneRequests.get(id);
+  const requestKey = paths.agentId + ':' + id;
+  const knownHash = doneRequests.get(requestKey);
   if (knownHash) {
     if (knownHash !== requestHash) {
-      console.error('Request id conflict: ' + filename + ' was changed after it was processed.');
-      doneRequests.set(id, requestHash);
+      console.error('Agent ' + paths.agentId + ' request ID conflict: ' + filename + ' was changed after it was processed.');
+      doneRequests.set(requestKey, requestHash);
     }
     return;
   }
@@ -1054,9 +1045,9 @@ async function processRequestFile(
     ?? await readJsonIfExists<BridgeResponse>(path.join(paths.responses, alternateResponseFilename));
   if (existingResponse) {
     if (existingResponse.request_hash !== requestHash) {
-      console.error('Request id conflict: a different response already exists for ' + id + '.');
+      console.error('Agent ' + paths.agentId + ' request ID conflict: a different response already exists for ' + id + '.');
     }
-    doneRequests.set(id, requestHash);
+    doneRequests.set(requestKey, requestHash);
     return;
   }
 
@@ -1064,26 +1055,26 @@ async function processRequestFile(
   try {
     request = parseBridgeRequest(filename, bytes.toString('utf8'));
   } catch (error) {
-    const observation = invalidRequestObservations.get(id);
+    const observation = invalidRequestObservations.get(requestKey);
     if (!observation || observation.requestHash !== requestHash) {
-      invalidRequestObservations.set(id, { requestHash, firstSeenAt: Date.now() });
-      console.warn('Request ' + filename + ' is not valid yet; waiting briefly for cloud-folder synchronization to finish.');
+      invalidRequestObservations.set(requestKey, { requestHash, firstSeenAt: Date.now() });
+      console.warn('Agent ' + paths.agentId + ' request ' + filename + ' is not valid yet; waiting briefly for cloud-folder synchronization to finish.');
       return;
     }
     if (Date.now() - observation.firstSeenAt < REQUEST_PARSE_SETTLE_MS) return;
-    invalidRequestObservations.delete(id);
+    invalidRequestObservations.delete(requestKey);
     await writeRejectedResponse(paths.root, id, requestHash, errorMessage(error), responseFilename);
-    doneRequests.set(id, requestHash);
-    console.error('Rejected ' + filename + ': ' + errorMessage(error));
+    doneRequests.set(requestKey, requestHash);
+    console.error('Agent ' + paths.agentId + ' rejected ' + filename + ': ' + errorMessage(error));
     return;
   }
-  invalidRequestObservations.delete(id);
+  invalidRequestObservations.delete(requestKey);
 
   const ledgerPath = path.join(paths.ledgers, id + '.json');
   let ledger = await readJsonIfExists<RequestLedger>(ledgerPath);
   if (ledger && ledger.request_hash !== requestHash) {
     await writeRejectedResponse(paths.root, id, requestHash, 'This request id was previously used with different content. Use a new id.', responseFilename);
-    doneRequests.set(id, requestHash);
+    doneRequests.set(requestKey, requestHash);
     return;
   }
 
@@ -1101,7 +1092,7 @@ async function processRequestFile(
     await writeJsonAtomic(ledgerPath, ledger);
   } else if (ledger.commands.length !== request.commands.length) {
     await writeRejectedResponse(paths.root, id, requestHash, 'The saved processing record does not match the command count in this request.', responseFilename);
-    doneRequests.set(id, requestHash);
+    doneRequests.set(requestKey, requestHash);
     return;
   }
 
@@ -1134,7 +1125,7 @@ async function processRequestFile(
       if (ledger.commands[i].result) results.push(ledger.commands[i].result!);
     }
     await commitResponse(paths.responses, id, requestHash, ledger.started_at, results, responseStatus(results, false), undefined, responseFilename);
-    doneRequests.set(id, requestHash);
+    doneRequests.set(requestKey, requestHash);
     await cleanup();
     return;
   }
@@ -1260,11 +1251,11 @@ async function processRequestFile(
   activeResponseFiles.add(responsePath);
   try {
     await commitResponse(paths.responses, id, requestHash, ledger.started_at, results, status, undefined, responseFilename);
-    doneRequests.set(id, requestHash);
+    doneRequests.set(requestKey, requestHash);
   } finally {
     activeResponseFiles.delete(responsePath);
   }
-  console.log('Request ' + id + ': ' + status + ' (' + results.length + ' command result(s)).');
+  console.log('Agent ' + paths.agentId + ' request ' + id + ': ' + status + ' (' + results.length + ' command result(s)).');
   await cleanup();
 }
 
@@ -1407,13 +1398,15 @@ export function createBridgePollingTimer(scanRequests: () => void, intervalMs: n
   return setInterval(scanRequests, intervalMs);
 }
 
-async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): Promise<void> {
+async function runBridgeRuntime(rootPaths: BridgeRootPaths, settings: BridgeSettings): Promise<void> {
   const activeFiles = new Set<string>();
   const activeResponseFiles = new Set<string>();
   const activeJobs = new Map<string, Promise<void>>();
   const activeRequestIds = new Set<string>();
   const doneRequests = new Map<string, string>();
   const invalidRequestObservations = new Map<string, { requestHash: string; firstSeenAt: number }>();
+  const agentPathsByName = new Map<string, BridgePaths>();
+  const requestWatchers = new Map<string, FSWatcher>();
   const fileSupportPromise = preloadFileSupport()
     .then(() => true)
     .catch((error) => {
@@ -1421,12 +1414,36 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
       return false;
     });
 
-  let watcher: FSWatcher | undefined;
+  let agentsWatcher: FSWatcher | undefined;
   let stopped = false;
   let scanning = false;
   let scanAgain = false;
   let cleanupRunning = false;
   let cleanupRequested = false;
+
+  const addRequestWatcher = (directory: string): void => {
+    if (requestWatchers.has(directory)) return;
+    try {
+      const handle = watch(directory, { persistent: true }, () => { void scanRequests(); });
+      handle.on('error', (error) => {
+        console.warn('Request watcher failed for ' + directory + '; fallback polling remains active: ' + error.message);
+        handle.close();
+        requestWatchers.delete(directory);
+      });
+      requestWatchers.set(directory, handle);
+    } catch (error) {
+      console.warn('Filesystem notifications unavailable for ' + directory + '; fallback polling remains active: ' + errorMessage(error));
+    }
+  };
+
+  const discoverAgents = async (): Promise<BridgePaths[]> => {
+    const discovered = await discoverAgentQueuePaths(rootPaths.agents, rootPaths.stateDirectory) as BridgePaths[];
+    for (const paths of discovered) {
+      agentPathsByName.set(paths.agentId, paths);
+      addRequestWatcher(paths.requests);
+    }
+    return discovered;
+  };
 
   const cleanup = async (): Promise<void> => {
     if (cleanupRunning) {
@@ -1437,10 +1454,12 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
     try {
       do {
         cleanupRequested = false;
-        try {
-          await cleanStorage(paths, settings.maxStorageBytes, activeFiles, activeResponseFiles);
-        } catch (error) {
-          console.warn('Storage cleanup failed: ' + errorMessage(error));
+        for (const paths of agentPathsByName.values()) {
+          try {
+            await cleanStorage(paths, settings.maxStorageBytes, activeFiles, activeResponseFiles);
+          } catch (error) {
+            console.warn('Storage cleanup failed for agent ' + paths.agentId + ': ' + errorMessage(error));
+          }
         }
       } while (cleanupRequested);
     } finally {
@@ -1458,30 +1477,35 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
     try {
       do {
         scanAgain = false;
-        const entries = await fs.readdir(paths.requests, { withFileTypes: true });
-        const candidates: Array<{ path: string; id: string; mtimeMs: number }> = [];
-        const presentRequestIds = new Set<string>();
-        for (const entry of entries) {
-          const id = entry.isFile() ? requestIdFromFilename(entry.name) : undefined;
-          if (!id) continue;
-          presentRequestIds.add(id);
-          const fullPath = path.join(paths.requests, entry.name);
-          if (activeJobs.has(fullPath) || activeRequestIds.has(id)) continue;
-          const stat = await fs.stat(fullPath).catch(() => null);
-          if (stat?.isFile()) candidates.push({ path: fullPath, id, mtimeMs: stat.mtimeMs });
+        const agents = await discoverAgents();
+        const candidates: Array<{ paths: BridgePaths; path: string; id: string; key: string; mtimeMs: number }> = [];
+        const presentRequestKeys = new Set<string>();
+        for (const paths of agents) {
+          const entries = await fs.readdir(paths.requests, { withFileTypes: true });
+          for (const entry of entries) {
+            const id = entry.isFile() ? requestIdFromFilename(entry.name) : undefined;
+            if (!id) continue;
+            const key = paths.agentId + ':' + id;
+            presentRequestKeys.add(key);
+            const fullPath = path.join(paths.requests, entry.name);
+            if (activeJobs.has(fullPath) || activeRequestIds.has(key)) continue;
+            const stat = await fs.stat(fullPath).catch(() => null);
+            if (stat?.isFile()) candidates.push({ paths, path: fullPath, id, key, mtimeMs: stat.mtimeMs });
+          }
         }
-        for (const id of invalidRequestObservations.keys()) {
-          if (!presentRequestIds.has(id)) invalidRequestObservations.delete(id);
+
+        for (const key of invalidRequestObservations.keys()) {
+          if (!presentRequestKeys.has(key)) invalidRequestObservations.delete(key);
         }
         candidates.sort((a, b) => a.mtimeMs - b.mtimeMs || a.path.localeCompare(b.path));
 
         for (const candidate of candidates) {
           if (settings.maxParallelRequests > 0 && activeJobs.size >= settings.maxParallelRequests) break;
-          if (activeJobs.has(candidate.path) || activeRequestIds.has(candidate.id)) continue;
+          if (activeJobs.has(candidate.path) || activeRequestIds.has(candidate.key)) continue;
           activeFiles.add(candidate.path);
-          activeRequestIds.add(candidate.id);
+          activeRequestIds.add(candidate.key);
           const task = processRequestFile(
-            paths,
+            candidate.paths,
             candidate.path,
             settings,
             fileSupportPromise,
@@ -1491,10 +1515,10 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
             invalidRequestObservations,
             cleanup,
           ).catch((error) => {
-            console.error('Request processing failed (' + path.basename(candidate.path) + '): ' + errorMessage(error));
+            console.error('Request processing failed (' + candidate.paths.agentId + '/' + path.basename(candidate.path) + '): ' + errorMessage(error));
           }).finally(() => {
             activeFiles.delete(candidate.path);
-            activeRequestIds.delete(candidate.id);
+            activeRequestIds.delete(candidate.key);
             activeJobs.delete(candidate.path);
             void scanRequests();
           });
@@ -1503,7 +1527,7 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
       } while (scanAgain && !stopped);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        console.error('Could not scan request directory: ' + errorMessage(error));
+        console.error('Could not scan agent request folders: ' + errorMessage(error));
       }
     } finally {
       scanning = false;
@@ -1512,15 +1536,16 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
   };
 
   try {
-    watcher = watch(paths.requests, { persistent: true }, () => { void scanRequests(); });
-    watcher.on('error', (error) => console.warn('Request folder watcher error; fallback polling remains active: ' + error.message));
+    agentsWatcher = watch(rootPaths.agents, { persistent: true }, () => { void scanRequests(); });
+    agentsWatcher.on('error', (error) => {
+      console.warn('Agent-folder watcher error; fallback polling remains active: ' + error.message);
+    });
   } catch (error) {
-    console.warn('Filesystem notifications unavailable; fallback polling remains active: ' + errorMessage(error));
+    console.warn('Agent-folder notifications unavailable; fallback polling remains active: ' + errorMessage(error));
   }
 
-  // Keep request polling referenced so it survives a failed or closed fs.watch handle.
-  // This is the recovery path for cloud-synced folders whose filesystem notifications
-  // are unreliable or unavailable.
+  // Polling is the durable discovery fallback for cloud-sync providers and
+  // newly created agent folders. Per-agent watchers reduce normal latency.
   const pollTimer = createBridgePollingTimer(() => { void scanRequests(); }, settings.pollIntervalMs);
   const cleanupTimer = setInterval(() => { void cleanup(); }, 60_000);
   cleanupTimer.unref();
@@ -1530,7 +1555,9 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
   const stop = () => {
     if (stopped) return;
     stopped = true;
-    watcher?.close();
+    agentsWatcher?.close();
+    for (const watcher of requestWatchers.values()) watcher.close();
+    requestWatchers.clear();
     clearInterval(pollTimer);
     clearInterval(cleanupTimer);
     resolveStop();
@@ -1540,14 +1567,13 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
 
   console.log('');
   console.log('Desktop Commander Bridge is running.');
-  console.log('Cloud folder: ' + paths.root);
-  console.log('Requests: ' + paths.requests);
-  console.log('Responses: ' + paths.responses);
-  console.log('Artifacts: ' + paths.artifacts);
+  console.log('Bridge root: ' + rootPaths.root);
+  console.log('Agent queues: ' + path.join(rootPaths.agents, '<agent-name>'));
+  console.log('Agent queues: agents/<agent-name>/{requests,responses,artifacts}/');
   console.log('Parallel request limit: ' + (settings.maxParallelRequests === 0 ? 'unlimited' : settings.maxParallelRequests));
   console.log('Delay between commands in one request: ' + settings.commandDelayMs + ' ms');
   console.log('Polling fallback: ' + settings.pollIntervalMs + ' ms');
-  console.log('Storage limit: ' + settings.maxStorageBytes + ' bytes');
+  console.log('Storage limit per agent: ' + settings.maxStorageBytes + ' bytes');
   console.log('Press Ctrl+C to stop.');
   console.log('');
 
@@ -1620,19 +1646,13 @@ export async function runBridge(args: string[] = []): Promise<void> {
     settings.directory = realRoot;
     await writeJsonAtomic(settingsPath, settings);
 
-    const paths: BridgePaths = {
+    const agentsRoot = await initializeAgentLayout(realRoot, stateDir);
+    await ensureSafeBridgeDirectory(realRoot, agentsRoot);
+    const paths: BridgeRootPaths = {
       root: realRoot,
-      requests: path.join(realRoot, 'requests'),
-      responses: path.join(realRoot, 'responses'),
-      artifacts: path.join(realRoot, 'artifacts'),
-      ledgers: path.join(stateDir, 'requests'),
+      agents: agentsRoot,
+      stateDirectory: stateDir,
     };
-    await Promise.all([
-      ensureSafeBridgeDirectory(realRoot, paths.requests),
-      ensureSafeBridgeDirectory(realRoot, paths.responses),
-      ensureSafeBridgeDirectory(realRoot, paths.artifacts),
-      fs.mkdir(paths.ledgers, { recursive: true }),
-    ]);
     await createGuideIfMissing(realRoot);
 
     await configManager.loadConfig();

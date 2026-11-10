@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { isValidAgentDirectoryName } from './agents.js';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -337,7 +338,7 @@ export class GitHubRepositoryClient {
         method: 'POST',
         body: JSON.stringify({
           name,
-          description: 'Private Desktop Commander Bridge request and response mailbox',
+          description: 'Private Desktop Commander agent request and response queues',
           private: true,
           auto_init: true,
           has_issues: false,
@@ -476,7 +477,11 @@ export class GitHubRepositoryClient {
     }
   }
 
-  async listQueueFiles(): Promise<{ requests: GitHubContentEntry[]; responses: GitHubContentEntry[] }> {
+  async listQueueFiles(): Promise<{
+    requests: GitHubContentEntry[];
+    responses: GitHubContentEntry[];
+    legacyArtifacts: GitHubContentEntry[];
+  }> {
     const commit = await this.requestJson(
       '/repos/' + this.repository + '/commits/' + encodeURIComponent(this.defaultBranch),
     ) as { commit?: { tree?: { sha?: unknown } } };
@@ -487,6 +492,42 @@ export class GitHubRepositoryClient {
 
     type TreeEntry = { path?: unknown; sha?: unknown; size?: unknown; type?: unknown; mode?: unknown };
     const treeUrl = '/repos/' + this.repository + '/git/trees/';
+    const agentQueuePath = /^agents\/([a-z0-9][a-z0-9._-]{0,63})\/(requests|responses)\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/;
+    const legacyRequestPath = /^requests\/(?:request-)?([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/i;
+    const legacyResponsePath = /^responses\/(?:response-)?([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.json$/i;
+    const legacyArtifactPath = /^artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)$/i;
+    const requests: GitHubContentEntry[] = [];
+    const responses: GitHubContentEntry[] = [];
+    const legacyArtifacts: GitHubContentEntry[] = [];
+
+    const toEntry = (filePath: string, entry: TreeEntry): GitHubContentEntry | undefined => {
+      if (entry.type !== 'blob' || entry.mode === '120000'
+        || typeof entry.sha !== 'string') return undefined;
+      return {
+        name: path.posix.basename(filePath),
+        path: filePath,
+        sha: entry.sha,
+        size: typeof entry.size === 'number' ? entry.size : 0,
+        type: 'file',
+      };
+    };
+    const addFile = (filePath: string, entry: TreeEntry): void => {
+      const result = toEntry(filePath, entry);
+      if (!result) return;
+      if (agentQueuePath.test(filePath)) {
+        const agentId = filePath.split('/')[1];
+        if (!isValidAgentDirectoryName(agentId)) return;
+        if (filePath.split('/')[2] === 'requests') requests.push(result);
+        else responses.push(result);
+      } else if (legacyRequestPath.test(filePath)) {
+        requests.push(result);
+      } else if (legacyResponsePath.test(filePath)) {
+        responses.push(result);
+      } else if (legacyArtifactPath.test(filePath)) {
+        legacyArtifacts.push(result);
+      }
+    };
+
     const fullTree = await this.requestJson(treeUrl + encodeURIComponent(treeSha) + '?recursive=1') as {
       tree?: unknown;
       truncated?: unknown;
@@ -495,67 +536,125 @@ export class GitHubRepositoryClient {
       throw new Error('GitHub returned an invalid recursive repository tree.');
     }
 
-    let queueEntries: Array<{ path: string; sha: string; size: number }> = [];
     if (fullTree.truncated !== true) {
-      queueEntries = (fullTree.tree as TreeEntry[]).flatMap((entry) => {
-        if (entry.type !== 'blob' || entry.mode === '120000'
-          || typeof entry.path !== 'string' || typeof entry.sha !== 'string') return [];
-        if (!entry.path.startsWith('requests/') && !entry.path.startsWith('responses/')) return [];
-        const relative = entry.path.slice(entry.path.indexOf('/') + 1);
-        if (!relative || relative.includes('/')) return [];
-        return [{
-          path: entry.path,
-          sha: entry.sha,
-          size: typeof entry.size === 'number' ? entry.size : 0,
-        }];
-      });
+      for (const entry of fullTree.tree as TreeEntry[]) {
+        if (typeof entry.path === 'string') addFile(entry.path, entry);
+      }
     } else {
-      // A large repository can truncate its recursive root tree. Resolve only
-      // requests/ and responses/ from the non-recursive root, then recurse each
-      // queue subtree independently so unrelated repository history is cheap.
+      // For large repositories, traverse only queue roots and the agent folders,
+      // instead of repeatedly downloading unrelated repository history.
       const rootTree = await this.requestJson(treeUrl + encodeURIComponent(treeSha)) as { tree?: unknown };
       if (!Array.isArray(rootTree.tree)) {
         throw new Error('GitHub returned an invalid root Git tree while recovering a truncated listing.');
       }
-      const queueDirectories = (rootTree.tree as TreeEntry[]).filter((entry) =>
-        entry.type === 'tree'
-        && (entry.path === 'requests' || entry.path === 'responses')
-        && typeof entry.sha === 'string',
-      );
-      for (const directory of queueDirectories) {
-        const name = String(directory.path);
+      const rootEntries = rootTree.tree as TreeEntry[];
+
+      for (const queueName of ['requests', 'responses'] as const) {
+        const directory = rootEntries.find((entry) =>
+          entry.type === 'tree' && entry.path === queueName && typeof entry.sha === 'string',
+        );
+        if (!directory) continue;
         const subtree = await this.requestJson(
           treeUrl + encodeURIComponent(String(directory.sha)) + '?recursive=1',
         ) as { tree?: unknown; truncated?: unknown };
         if (subtree.truncated === true || !Array.isArray(subtree.tree)) {
           throw new Error(
-            'GitHub queue directory ' + name +
-            ' exceeds the Git Trees API listing limit. Archive old queue entries or shard the queue before continuing.',
+            'Legacy GitHub queue ' + queueName +
+            ' exceeds the Git Trees API listing limit. Migrate or archive the legacy queue before continuing.',
           );
         }
         for (const entry of subtree.tree as TreeEntry[]) {
-          if (entry.type !== 'blob' || entry.mode === '120000'
-            || typeof entry.path !== 'string' || typeof entry.sha !== 'string') continue;
-          if (!entry.path || entry.path.includes('/')) continue;
-          queueEntries.push({
-            path: name + '/' + entry.path,
-            sha: entry.sha,
-            size: typeof entry.size === 'number' ? entry.size : 0,
-          });
+          if (typeof entry.path === 'string' && !entry.path.includes('/')) {
+            addFile(queueName + '/' + entry.path, entry);
+          }
+        }
+      }
+
+      const legacyArtifactRoot = rootEntries.find((entry) =>
+        entry.type === 'tree' && entry.path === 'artifacts' && typeof entry.sha === 'string',
+      );
+      if (legacyArtifactRoot) {
+        const artifactRootTree = await this.requestJson(
+          treeUrl + encodeURIComponent(String(legacyArtifactRoot.sha)),
+        ) as { tree?: unknown };
+        if (!Array.isArray(artifactRootTree.tree)) {
+          throw new Error('GitHub returned an invalid legacy artifact tree.');
+        }
+        for (const artifactDirectory of artifactRootTree.tree as TreeEntry[]) {
+          if (artifactDirectory.type !== 'tree' || typeof artifactDirectory.path !== 'string'
+            || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(artifactDirectory.path)
+            || typeof artifactDirectory.sha !== 'string') continue;
+          const artifactTree = await this.requestJson(
+            treeUrl + encodeURIComponent(artifactDirectory.sha) + '?recursive=1',
+          ) as { tree?: unknown; truncated?: unknown };
+          if (artifactTree.truncated === true || !Array.isArray(artifactTree.tree)) {
+            throw new Error(
+              'Legacy artifact folder artifacts/' + artifactDirectory.path +
+              ' exceeds the Git Trees API listing limit. Archive or migrate it before continuing.',
+            );
+          }
+          for (const entry of artifactTree.tree as TreeEntry[]) {
+            if (typeof entry.path === 'string' && !entry.path.includes('/')) {
+              addFile('artifacts/' + artifactDirectory.path + '/' + entry.path, entry);
+            }
+          }
+        }
+      }
+
+      const agentsDirectory = rootEntries.find((entry) =>
+        entry.type === 'tree' && entry.path === 'agents' && typeof entry.sha === 'string',
+      );
+      if (agentsDirectory) {
+        const agentsTree = await this.requestJson(
+          treeUrl + encodeURIComponent(String(agentsDirectory.sha)),
+        ) as { tree?: unknown };
+        if (!Array.isArray(agentsTree.tree)) {
+          throw new Error('GitHub returned an invalid agents directory tree.');
+        }
+
+        for (const agentDirectory of agentsTree.tree as TreeEntry[]) {
+          const agentName = agentDirectory.path;
+          if (agentDirectory.type !== 'tree' || typeof agentName !== 'string'
+            || !isValidAgentDirectoryName(agentName)
+            || typeof agentDirectory.sha !== 'string') continue;
+
+          const agentTree = await this.requestJson(
+            treeUrl + encodeURIComponent(agentDirectory.sha),
+          ) as { tree?: unknown };
+          if (!Array.isArray(agentTree.tree)) {
+            throw new Error('GitHub returned an invalid tree for agent ' + agentName + '.');
+          }
+          for (const queueName of ['requests', 'responses'] as const) {
+            const queueDirectory = (agentTree.tree as TreeEntry[]).find((entry) =>
+              entry.type === 'tree' && entry.path === queueName && typeof entry.sha === 'string',
+            );
+            if (!queueDirectory) continue;
+            const queueTree = await this.requestJson(
+              treeUrl + encodeURIComponent(String(queueDirectory.sha)) + '?recursive=1',
+            ) as { tree?: unknown; truncated?: unknown };
+            if (queueTree.truncated === true || !Array.isArray(queueTree.tree)) {
+              throw new Error(
+                'GitHub agent queue agents/' + agentName + '/' + queueName +
+                ' exceeds the Git Trees API listing limit. Archive completed queue entries before continuing.',
+              );
+            }
+            for (const entry of queueTree.tree as TreeEntry[]) {
+              if (typeof entry.path === 'string' && !entry.path.includes('/')) {
+                addFile('agents/' + agentName + '/' + queueName + '/' + entry.path, entry);
+              }
+            }
+          }
         }
       }
     }
 
-    const toEntries = (directory: 'requests' | 'responses'): GitHubContentEntry[] =>
-      queueEntries.filter((entry) => entry.path.startsWith(directory + '/'))
-        .map((entry) => ({
-          name: path.posix.basename(entry.path),
-          path: entry.path,
-          sha: entry.sha,
-          size: entry.size,
-          type: 'file',
-        }));
-    return { requests: toEntries('requests'), responses: toEntries('responses') };
+    const byPath = (left: GitHubContentEntry, right: GitHubContentEntry) =>
+      left.path.localeCompare(right.path);
+    return {
+      requests: requests.sort(byPath),
+      responses: responses.sort(byPath),
+      legacyArtifacts: legacyArtifacts.sort(byPath),
+    };
   }
 
   async readFile(filePath: string): Promise<Buffer> {
@@ -677,29 +776,39 @@ export class GitHubRepositoryClient {
   }
 
   async deleteFileIfPresent(filePath: string, message: string): Promise<boolean> {
-    const directory = path.posix.dirname(filePath);
-    const name = path.posix.basename(filePath);
     const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
-    const url = '/repos/' + this.repository + '/contents/' + encodedPath;
+    const url = '/repos/' + this.repository + '/contents/' + encodedPath +
+      '?ref=' + encodeURIComponent(this.defaultBranch);
 
     for (let attempt = 0; attempt < 3; attempt++) {
-      const entries = await this.listDirectory(directory === '.' ? '' : directory);
-      const existingEntry = entries.find((entry) => entry.type === 'file' && entry.name === name);
-      if (!existingEntry) return false;
+      let metadata: unknown;
+      try {
+        metadata = await this.requestJson(url);
+      } catch (error) {
+        if (error instanceof GitHubApiError && error.status === 404) return false;
+        throw error;
+      }
+      const sha = metadata && typeof metadata === 'object'
+        ? (metadata as Record<string, unknown>).sha
+        : undefined;
+      if (typeof sha !== 'string' || !sha) {
+        throw new Error('GitHub did not return a file identity for ' + filePath + '.');
+      }
 
       try {
-        await this.requestJson(url, {
+        await this.requestJson('/repos/' + this.repository + '/contents/' + encodedPath, {
           method: 'DELETE',
           body: JSON.stringify({
             message,
-            sha: existingEntry.sha,
+            sha,
             branch: this.defaultBranch,
           }),
         });
         return true;
       } catch (error) {
+        if (error instanceof GitHubApiError && error.status === 404) return false;
         if (error instanceof GitHubApiError
-          && (error.status === 404 || error.status === 409 || error.status === 422)
+          && (error.status === 409 || error.status === 422)
           && attempt < 2) {
           continue;
         }
