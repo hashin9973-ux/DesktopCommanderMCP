@@ -21,6 +21,7 @@ import { appendMailboxGuideSection } from './guide.js';
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_STORAGE_BYTES = 3_000_000_000;
 const STABILITY_CHECK_MS = 200;
+const REQUEST_PARSE_SETTLE_MS = 2_000;
 const BRIDGE_GUIDE_MARKER = '<!-- desktop-commander:bridge-guide:v2 -->';
 const RECENT_FILE_CLEANUP_GRACE_MS = 60_000;
 const MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
@@ -1035,6 +1036,7 @@ async function processRequestFile(
   activeFiles: Set<string>,
   activeResponseFiles: Set<string>,
   doneRequests: Map<string, string>,
+  invalidRequestObservations: Map<string, { requestHash: string; firstSeenAt: number }>,
   cleanup: () => Promise<void>,
 ): Promise<void> {
   const filename = path.basename(filePath);
@@ -1068,11 +1070,20 @@ async function processRequestFile(
   try {
     request = parseBridgeRequest(filename, bytes.toString('utf8'));
   } catch (error) {
+    const observation = invalidRequestObservations.get(id);
+    if (!observation || observation.requestHash !== requestHash) {
+      invalidRequestObservations.set(id, { requestHash, firstSeenAt: Date.now() });
+      console.warn('Request ' + filename + ' is not valid yet; waiting briefly for cloud-folder synchronization to finish.');
+      return;
+    }
+    if (Date.now() - observation.firstSeenAt < REQUEST_PARSE_SETTLE_MS) return;
+    invalidRequestObservations.delete(id);
     await writeRejectedResponse(paths.root, id, requestHash, errorMessage(error), responseFilename);
     doneRequests.set(id, requestHash);
     console.error('Rejected ' + filename + ': ' + errorMessage(error));
     return;
   }
+  invalidRequestObservations.delete(id);
 
   const ledgerPath = path.join(paths.ledgers, id + '.json');
   let ledger = await readJsonIfExists<RequestLedger>(ledgerPath);
@@ -1406,6 +1417,7 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
   const activeJobs = new Map<string, Promise<void>>();
   const activeRequestIds = new Set<string>();
   const doneRequests = new Map<string, string>();
+  const invalidRequestObservations = new Map<string, { requestHash: string; firstSeenAt: number }>();
   const fileSupportPromise = preloadFileSupport()
     .then(() => true)
     .catch((error) => {
@@ -1452,13 +1464,18 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
         scanAgain = false;
         const entries = await fs.readdir(paths.requests, { withFileTypes: true });
         const candidates: Array<{ path: string; id: string; mtimeMs: number }> = [];
+        const presentRequestIds = new Set<string>();
         for (const entry of entries) {
           const id = entry.isFile() ? requestIdFromFilename(entry.name) : undefined;
           if (!id) continue;
+          presentRequestIds.add(id);
           const fullPath = path.join(paths.requests, entry.name);
           if (activeJobs.has(fullPath) || activeRequestIds.has(id)) continue;
           const stat = await fs.stat(fullPath).catch(() => null);
           if (stat?.isFile()) candidates.push({ path: fullPath, id, mtimeMs: stat.mtimeMs });
+        }
+        for (const id of invalidRequestObservations.keys()) {
+          if (!presentRequestIds.has(id)) invalidRequestObservations.delete(id);
         }
         candidates.sort((a, b) => a.mtimeMs - b.mtimeMs || a.path.localeCompare(b.path));
 
@@ -1475,6 +1492,7 @@ async function runBridgeRuntime(paths: BridgePaths, settings: BridgeSettings): P
             activeFiles,
             activeResponseFiles,
             doneRequests,
+            invalidRequestObservations,
             cleanup,
           ).catch((error) => {
             console.error('Request processing failed (' + path.basename(candidate.path) + '): ' + errorMessage(error));
