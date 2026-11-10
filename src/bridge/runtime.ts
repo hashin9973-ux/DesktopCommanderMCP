@@ -345,7 +345,7 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '5. Choose a short request ID such as task-a1 or 7c2e91a4. Submit agents/<agent-name>/requests/<id>.json with the same value in the JSON id field. IDs need only be unique within your agent folder.',
     '6. The result appears at agents/<agent-name>/responses/<id>.json. Retrieve artifacts from your own agents/<agent-name>/artifacts/ folder.',
     '',
-    'The bridge must be running on the computer that should execute the tools. The storage connector only submits requests and retrieves results; it does not execute commands. Folder ownership is the agent identity and queue boundary.'
+    'The bridge must be running on the computer that should execute the tools. The storage connector only submits requests and retrieves results; it does not execute commands. Folder ownership is the agent identity and queue boundary.',
     '',
     '## Fast asynchronous workflow',
     '',
@@ -404,7 +404,7 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '',
     '## Execution and performance',
     '',
-    '- Different request files execute concurrently. The default concurrency limit is unlimited (--max-parallel 0). A positive --max-parallel value sets an optional cap.',
+    '- Requests from all agent folders share the configured concurrency limit. Different request files execute concurrently. The default concurrency limit is unlimited (--max-parallel 0). A positive --max-parallel value sets an optional cap.',
     '- Commands within one request file execute sequentially, in their listed order.',
     '- The default delay between commands is 0 ms. Configure it with --command-delay-ms or the JSON command_delay_ms property.',
     '- Cloud-folder mode uses filesystem notifications plus a one-second fallback scan. GitHub mode uses signed push webhooks through an optional Cloudflare Quick Tunnel and a five-second reconciliation poll to recover missed events. If webhook or local watcher setup is unavailable, GitHub mode uses five-second polling. Remote storage visibility latency depends on the provider and is not controlled by this application.',
