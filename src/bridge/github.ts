@@ -773,29 +773,39 @@ export class GitHubRepositoryClient {
   }
 
   async deleteFileIfPresent(filePath: string, message: string): Promise<boolean> {
-    const directory = path.posix.dirname(filePath);
-    const name = path.posix.basename(filePath);
     const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
-    const url = '/repos/' + this.repository + '/contents/' + encodedPath;
+    const url = '/repos/' + this.repository + '/contents/' + encodedPath +
+      '?ref=' + encodeURIComponent(this.defaultBranch);
 
     for (let attempt = 0; attempt < 3; attempt++) {
-      const entries = await this.listDirectory(directory === '.' ? '' : directory);
-      const existingEntry = entries.find((entry) => entry.type === 'file' && entry.name === name);
-      if (!existingEntry) return false;
+      let metadata: unknown;
+      try {
+        metadata = await this.requestJson(url);
+      } catch (error) {
+        if (error instanceof GitHubApiError && error.status === 404) return false;
+        throw error;
+      }
+      const sha = metadata && typeof metadata === 'object'
+        ? (metadata as Record<string, unknown>).sha
+        : undefined;
+      if (typeof sha !== 'string' || !sha) {
+        throw new Error('GitHub did not return a file identity for ' + filePath + '.');
+      }
 
       try {
-        await this.requestJson(url, {
+        await this.requestJson('/repos/' + this.repository + '/contents/' + encodedPath, {
           method: 'DELETE',
           body: JSON.stringify({
             message,
-            sha: existingEntry.sha,
+            sha,
             branch: this.defaultBranch,
           }),
         });
         return true;
       } catch (error) {
+        if (error instanceof GitHubApiError && error.status === 404) return false;
         if (error instanceof GitHubApiError
-          && (error.status === 404 || error.status === 409 || error.status === 422)
+          && (error.status === 409 || error.status === 422)
           && attempt < 2) {
           continue;
         }
