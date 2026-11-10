@@ -118,7 +118,7 @@ async function resolveRepositoryCacheRoots(
   await fs.mkdir(cacheRoot, { recursive: true });
   await writeFileAtomic(
     path.join(cacheRoot, '.github-repository-id'),
-    Buffer.from(repositoryKey + '\\n', 'utf8'),
+    Buffer.from(repositoryKey + '\n', 'utf8'),
   );
 
   return {
