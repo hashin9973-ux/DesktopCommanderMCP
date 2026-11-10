@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -6,6 +7,7 @@ import path from 'node:path';
 import { GitHubApiError, GitHubRepositoryClient, MAX_GITHUB_BRIDGE_FILE_BYTES } from '../dist/bridge/github.js';
 import { createGuideIfMissing } from '../dist/bridge/runtime.js';
 import { GitHubBridgeSync } from '../dist/bridge/github-sync.js';
+import { superviseBridgeWorker } from '../dist/bridge/github-runtime.js';
 import { resolveRepositoryCacheRoots } from '../dist/bridge/github-runtime.js';
 
 // Test double for GitHub's Contents and Repositories REST APIs. No network calls are made.
@@ -1049,5 +1051,51 @@ try {
 } finally {
   await fs.rm(temporaryRoot, { recursive: true, force: true });
 }
+
+
+function fakeWorkerChild() {
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.killed = false;
+  child.kill = () => {
+    child.killed = true;
+    return true;
+  };
+  return child;
+}
+
+const firstWorker = fakeWorkerChild();
+const restartedWorker = fakeWorkerChild();
+let workerShouldStop = false;
+let workerStartCount = 0;
+let workerStartedResolve;
+const workerStarted = new Promise((resolve) => { workerStartedResolve = resolve; });
+const workerRestartDelays = [];
+const workerExitEvents = [];
+const workerSupervisor = superviseBridgeWorker({
+  initialChild: firstWorker,
+  start: async () => {
+    workerStartCount++;
+    return restartedWorker;
+  },
+  shouldStop: () => workerShouldStop,
+  signal: new AbortController().signal,
+  sleep: async (milliseconds) => { workerRestartDelays.push(milliseconds); },
+  onChildStarted: (child) => workerStartedResolve(child),
+  onWorkerExit: (event) => workerExitEvents.push(event),
+});
+await new Promise((resolve) => setImmediate(resolve));
+firstWorker.emit('close', 1, null);
+assert.equal(await workerStarted, restartedWorker,
+  'the GitHub supervisor must replace a worker that exits unexpectedly');
+assert.equal(workerStartCount, 1);
+assert.deepEqual(workerRestartDelays, [1_000],
+  'the first worker restart should use a short bounded backoff');
+assert.equal(workerExitEvents.length, 1);
+assert.equal(workerExitEvents[0].code, 1);
+workerShouldStop = true;
+restartedWorker.emit('close', 0, null);
+await workerSupervisor;
 
 console.log('GitHub repository bridge tests passed.');
