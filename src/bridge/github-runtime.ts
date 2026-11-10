@@ -55,6 +55,78 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+async function directoryExists(directory: string): Promise<boolean> {
+  try {
+    return (await fs.stat(directory)).isDirectory();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function readRepositoryIdentityMarker(directory: string): Promise<string | undefined> {
+  try {
+    return (await fs.readFile(path.join(directory, '.github-repository-id'), 'utf8')).trim();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+async function resolveRepositoryCacheRoots(
+  stateDir: string,
+  repository: string,
+  repositoryId: number,
+): Promise<{ cacheRoot: string; workerStateRoot: string }> {
+  const repositoryKey = String(repositoryId);
+  const repositorySlug = repository.replace('/', '--');
+  const identityCacheRoot = path.join(stateDir, 'github-cache', repositoryKey);
+  const legacyCacheRoot = path.join(stateDir, 'github-cache', repositorySlug);
+  let cacheRoot = identityCacheRoot;
+  let cacheKey = repositoryKey;
+
+  if (repositorySlug !== repositoryKey && await directoryExists(legacyCacheRoot)
+    && !await directoryExists(identityCacheRoot)) {
+    const previousRepositoryId = await readRepositoryIdentityMarker(legacyCacheRoot);
+    if (previousRepositoryId === repositoryKey) {
+      // This cache was already migrated/confirmed for the same immutable repo.
+      cacheRoot = legacyCacheRoot;
+      cacheKey = repositorySlug;
+    } else if (previousRepositoryId === undefined) {
+      // Older releases keyed local state only by owner/name. We cannot tell
+      // whether that cache belongs to this repository or a deleted/recreated
+      // repository with the same name. Require an explicit one-time decision.
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        throw new Error(
+          'An older local GitHub bridge cache exists for ' + repository + ' but has no repository identity. ' +
+          'Start the bridge interactively once and confirm whether this is the same repository; ' +
+          'if the repository was deleted and recreated, do not reuse the old cache.',
+        );
+      }
+      console.log('');
+      console.log('LEGACY GITHUB BRIDGE CACHE');
+      console.log('An older cache exists for ' + repository + ' but does not record the repository ID.');
+      console.log('Reuse it only if this is the same GitHub repository, not a repository deleted and recreated under the same name.');
+      const answer = await ask('Type REUSE to preserve pending local requests and responses, or press Enter to start a fresh cache: ');
+      if (answer === 'REUSE') {
+        cacheRoot = legacyCacheRoot;
+        cacheKey = repositorySlug;
+      }
+    }
+  }
+
+  await fs.mkdir(cacheRoot, { recursive: true });
+  await writeFileAtomic(
+    path.join(cacheRoot, '.github-repository-id'),
+    Buffer.from(repositoryKey + '\\n', 'utf8'),
+  );
+
+  return {
+    cacheRoot,
+    workerStateRoot: path.join(stateDir, 'github-worker-state', cacheKey),
+  };
+}
+
 function parseIntegerOption(flag: string, raw: string | undefined, min: number, max: number): number {
   const value = Number(raw);
   if (!Number.isInteger(value) || value < min || value > max) {
@@ -394,18 +466,18 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       settings.githubConsentRepositoryId = client.repositoryId;
     }
 
-    // A repository name can be deleted and recreated. Its immutable GitHub ID
-    // prevents stale local request/response caches from being reused by the new
-    // repository that happens to have the same owner/name.
-    const repositoryCacheKey = String(client.repositoryId);
-    const cacheRoot = path.join(stateDir, 'github-cache', repositoryCacheKey);
+    // A repository name can be deleted and recreated. Prefer an immutable-ID
+    // cache, and only reuse a legacy name-keyed cache after its identity is known
+    // or the user explicitly confirms that the repository was not recreated.
+    const cacheRoots = await resolveRepositoryCacheRoots(stateDir, repository, client.repositoryId);
+    const cacheRoot = cacheRoots.cacheRoot;
     const paths = {
       root: cacheRoot,
       requests: path.join(cacheRoot, 'requests'),
       responses: path.join(cacheRoot, 'responses'),
       artifacts: path.join(cacheRoot, 'artifacts'),
     };
-    const workerStateRoot = path.join(stateDir, 'github-worker-state', repositoryCacheKey);
+    const workerStateRoot = cacheRoots.workerStateRoot;
 
     // With webhooks enabled, this is only a slow reconciliation safety net.
     // Until the tunnel is live (or when it fails), use the faster fallback.
