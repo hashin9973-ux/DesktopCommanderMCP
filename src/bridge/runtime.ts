@@ -1068,7 +1068,7 @@ async function processRequestFile(
     console.error('Rejected ' + filename + ': ' + errorMessage(error));
     return;
   }
-  invalidRequestObservations.delete(id);
+  invalidRequestObservations.delete(requestKey);
 
   const ledgerPath = path.join(paths.ledgers, id + '.json');
   let ledger = await readJsonIfExists<RequestLedger>(ledgerPath);
