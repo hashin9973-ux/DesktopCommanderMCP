@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-export const AGENT_DIRECTORY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+export const AGENT_DIRECTORY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 export const LEGACY_DEFAULT_AGENT = 'default';
 
 export interface AgentQueuePaths {
