@@ -534,6 +534,12 @@ export class GitHubBridgeSync {
       fs.mkdir(this.paths.root, { recursive: true }),
       fs.mkdir(this.paths.agents, { recursive: true }),
     ]);
+    const rootStat = await fs.lstat(this.paths.root);
+    const agentsStat = await fs.lstat(this.paths.agents);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()
+      || !agentsStat.isDirectory() || agentsStat.isSymbolicLink()) {
+      throw new Error('The local GitHub bridge cache and agents paths must be real directories.');
+    }
 
     // Move any existing flat queue into the explicit default agent. This
     // preserves pending work and historical response/artifact data.
