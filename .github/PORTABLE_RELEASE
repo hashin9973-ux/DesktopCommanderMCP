@@ -1,1 +1,2 @@
 # One-time release trigger for the Windows x64 portable Desktop Commander Bridge build.
+# This marker is intentionally the final PR change so merge strategies preserve the release trigger.
