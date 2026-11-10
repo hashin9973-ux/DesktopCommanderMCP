@@ -6,6 +6,7 @@ import path from 'node:path';
 import { GitHubApiError, GitHubRepositoryClient, MAX_GITHUB_BRIDGE_FILE_BYTES } from '../dist/bridge/github.js';
 import { createGuideIfMissing } from '../dist/bridge/runtime.js';
 import { GitHubBridgeSync } from '../dist/bridge/github-sync.js';
+import { resolveRepositoryCacheRoots } from '../dist/bridge/github-runtime.js';
 
 // Test double for GitHub's Contents and Repositories REST APIs. No network calls are made.
 function gitBlobSha(bytes) {
@@ -43,6 +44,7 @@ function createGitHubApiDouble() {
 
     if (url.pathname === '/repos/owner/repo' && method === 'GET') {
       return jsonResponse({
+        id: 1001,
         full_name: 'owner/repo',
         default_branch: 'main',
         archived: false,
@@ -53,6 +55,7 @@ function createGitHubApiDouble() {
 
     if (url.pathname === '/repos/archived/repo' && method === 'GET') {
       return jsonResponse({
+        id: 1002,
         full_name: 'archived/repo',
         default_branch: 'main',
         archived: true,
@@ -62,6 +65,7 @@ function createGitHubApiDouble() {
 
     if (url.pathname === '/repos/read-only/repo' && method === 'GET') {
       return jsonResponse({
+        id: 1003,
         full_name: 'read-only/repo',
         default_branch: 'main',
         archived: false,
@@ -72,6 +76,7 @@ function createGitHubApiDouble() {
 
     if (url.pathname === '/repos/public/repo' && method === 'GET') {
       return jsonResponse({
+        id: 1004,
         full_name: 'public/repo',
         default_branch: 'main',
         archived: false,
@@ -318,6 +323,7 @@ assert.equal(listed[1].push, false);
 
 const client = await GitHubRepositoryClient.connect('owner/repo', token, api.fetcher);
 assert.equal(client.defaultBranch, 'main');
+assert.equal(client.repositoryId, 1001, 'the connected repository exposes its immutable GitHub ID');
 api.conflictNextCreateFile('responses/stale-head-retry.json');
 assert.equal(await client.createFileIfAbsent(
   'responses/stale-head-retry.json',
@@ -341,12 +347,26 @@ await assert.rejects(
 );
 const publicClient = await GitHubRepositoryClient.connect('public/repo', token, api.fetcher);
 assert.equal(publicClient.isPrivate, false, 'public repository visibility must be returned for startup consent');
+assert.equal(publicClient.repositoryId, 1004);
+
+await assert.rejects(
+  () => GitHubRepositoryClient.connect('owner/repo', token, async () => new Response(JSON.stringify({
+    default_branch: 'main',
+    archived: false,
+    private: true,
+    permissions: { push: true },
+  }), { status: 200, headers: { 'content-type': 'application/json' } })),
+  /valid immutable repository ID/,
+  'repository metadata without an immutable ID must not create an unisolated cache identity',
+);
+
 
 let rateLimitCalls = 0;
 const rateLimitedClient = await GitHubRepositoryClient.connect('owner/repo', token, async () => {
   rateLimitCalls++;
   if (rateLimitCalls === 1) {
     return new Response(JSON.stringify({
+      id: 1001,
       default_branch: 'main',
       archived: false,
       private: true,
@@ -385,6 +405,7 @@ const webhookRateLimitedClient = await GitHubRepositoryClient.connect('owner/rep
   webhookRateLimitCalls++;
   if (webhookRateLimitCalls === 1) {
     return new Response(JSON.stringify({
+      id: 1001,
       default_branch: 'main',
       archived: false,
       private: true,
@@ -416,6 +437,7 @@ const primaryRateLimitedClient = await GitHubRepositoryClient.connect('owner/rep
   primaryLimitCalls++;
   if (primaryLimitCalls === 1) {
     return new Response(JSON.stringify({
+      id: 1001,
       default_branch: 'main',
       archived: false,
       private: true,
@@ -993,6 +1015,37 @@ try {
     /unsafe artifact path/,
     'artifact paths containing Windows traversal separators must be rejected',
   );
+
+  const cacheStateRoot = path.join(temporaryRoot, 'repository-cache-state');
+  const freshCache = await resolveRepositoryCacheRoots(cacheStateRoot, 'owner/fresh', 501);
+  assert.equal(freshCache.cacheRoot, path.join(cacheStateRoot, 'github-cache', '501'));
+  assert.equal(freshCache.workerStateRoot, path.join(cacheStateRoot, 'github-worker-state', '501'));
+  assert.equal(
+    (await fs.readFile(path.join(freshCache.cacheRoot, '.github-repository-id'), 'utf8')).trim(),
+    '501',
+    'new caches must persist the immutable repository ID',
+  );
+
+  const confirmedLegacyCache = path.join(cacheStateRoot, 'github-cache', 'owner--same');
+  await fs.mkdir(confirmedLegacyCache, { recursive: true });
+  await fs.writeFile(path.join(confirmedLegacyCache, '.github-repository-id'), '502\n');
+  const sameRepositoryCache = await resolveRepositoryCacheRoots(cacheStateRoot, 'owner/same', 502);
+  assert.equal(sameRepositoryCache.cacheRoot, confirmedLegacyCache,
+    'an existing cache with the same immutable repository ID must be preserved');
+  assert.equal(sameRepositoryCache.workerStateRoot, path.join(cacheStateRoot, 'github-worker-state', 'owner--same'));
+
+  const recreatedRepositoryCache = await resolveRepositoryCacheRoots(cacheStateRoot, 'owner/same', 503);
+  assert.equal(recreatedRepositoryCache.cacheRoot, path.join(cacheStateRoot, 'github-cache', '503'),
+    'a recreated repository with the same name but a different ID must receive a fresh cache');
+
+  const unmarkedLegacyCache = path.join(cacheStateRoot, 'github-cache', 'owner--legacy');
+  await fs.mkdir(unmarkedLegacyCache, { recursive: true });
+  await assert.rejects(
+    () => resolveRepositoryCacheRoots(cacheStateRoot, 'owner/legacy', 504),
+    /older local GitHub bridge cache exists/,
+    'unmarked legacy caches require an explicit interactive decision rather than being reused silently',
+  );
+
 } finally {
   await fs.rm(temporaryRoot, { recursive: true, force: true });
 }
