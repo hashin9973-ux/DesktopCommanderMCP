@@ -467,7 +467,7 @@ export class GitHubBridgeSync {
         throw new Error('The local queue directory for agent ' + agentId + ' must be a real directory: ' + directory);
       }
       const realDirectory = await fs.realpath(directory);
-      if (!samePath(realDirectory, directory)) {
+      if (!samePath(realDirectory, path.join(realAgent, path.basename(directory)))) {
         throw new Error('The local queue directory for agent ' + agentId + ' resolves outside its cache: ' + directory);
       }
     }
