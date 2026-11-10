@@ -21,7 +21,7 @@ try {
   assert.match(generatedGuide, /agents\/chatgpt\/requests\/task-a1\.json/);
   assert.match(generatedGuide, /agents\/<agent-name>\/responses\/<id>\.json/);
   assert.match(generatedGuide, /agents\/<agent-name>\/artifacts/);
-  assert.match(generatedGuide, /folder name is your agent identity/);
+  assert.match(generatedGuide, /folder name identifies your agent/);
   assert.match(generatedGuide, /Request IDs need only be unique within your agent folder/);
   assert.match(generatedGuide, /only agent-facing guide/);
   assert.doesNotMatch(generatedGuide, /(?:^|\n)- requests\//);
