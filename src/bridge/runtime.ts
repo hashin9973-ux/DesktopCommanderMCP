@@ -339,7 +339,7 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '## AI Quick Start',
     '',
     '1. Confirm the local Desktop Commander Bridge is running and first-run consent has been accepted. Make sure the shared cloud folder or GitHub repository is accessible.',
-    '2. Create or choose your own folder under agents/ using a short stable name such as chatgpt, claude, codex, or planner. The folder name is your agent identity; do not register a mailbox user or send a separate agent ID.',
+    '2. Create or choose your own folder under agents/ using a short stable name such as chatgpt, claude, codex, or planner. The folder name identifies your agent; no separate registration or agent ID is needed.',
     '3. Use only your own agents/<agent-name>/ folder. It contains requests/, responses/, and artifacts/. Do not place requests in another agent folder.',
     '4. Read this README once at the start of a fresh chat. It is the only operating guide. Keep your agent folder and pending request IDs for the rest of the session.',
     '5. Choose a short request ID such as task-a1 or 7c2e91a4. Submit agents/<agent-name>/requests/<id>.json with the same value in the JSON id field. IDs need only be unique within your agent folder.',
@@ -454,8 +454,8 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     }
   }
 
-  // The generated README is the complete agent-facing guide. Agent
-  // folder names provide identity; mailbox_user_id is not part of the bridge.
+  // The generated README is the complete agent-facing guide. Agent folder
+  // names provide identity; a separate agent identifier is not required.
 
 }
 
