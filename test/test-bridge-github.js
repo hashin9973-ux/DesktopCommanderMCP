@@ -1015,10 +1015,6 @@ try {
     /unsafe artifact path/,
     'artifact paths containing Windows traversal separators must be rejected',
   );
-} finally {
-  await fs.rm(temporaryRoot, { recursive: true, force: true });
-}
-
 
 const cacheStateRoot = path.join(temporaryRoot, 'repository-cache-state');
 const freshCache = await resolveRepositoryCacheRoots(cacheStateRoot, 'owner/fresh', 501);
@@ -1049,5 +1045,9 @@ await assert.rejects(
   /older local GitHub bridge cache exists/,
   'unmarked legacy caches require an explicit interactive decision rather than being reused silently',
 );
+
+} finally {
+  await fs.rm(temporaryRoot, { recursive: true, force: true });
+}
 
 console.log('GitHub repository bridge tests passed.');
