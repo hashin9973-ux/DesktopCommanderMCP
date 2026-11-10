@@ -399,10 +399,12 @@ jobs:
           $version = node -p "require('./package.json').version"
           $tag = "bridge-portable-v$version-$env:GITHUB_RUN_NUMBER"
           $archive = "build\DesktopCommanderBridge-win-x64-portable.zip"
-          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          $gh = Join-Path $PWD "build\\PortableBridge\\tools\\gh.exe"
+          if (!(Test-Path $gh)) { throw "The previously verified bundled GitHub CLI was not found at $gh." }
+          & $gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $archive --repo $env:GITHUB_REPOSITORY --clobber
+            & $gh release upload $tag $archive --repo $env:GITHUB_REPOSITORY --clobber
           } else {
-            gh release create $tag $archive --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "Desktop Commander Bridge portable v$version (Windows x64)" --notes "Portable Windows x64 build. Extract the ZIP and run DesktopCommanderBridge.exe. Includes its Node.js runtime, application dependencies, GitHub CLI, and Cloudflare Quick Tunnel client."
+            & $gh release create $tag $archive --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "Desktop Commander Bridge portable v$version (Windows x64)" --notes "Portable Windows x64 build. Extract the ZIP and run DesktopCommanderBridge.exe. Includes its Node.js runtime, application dependencies, GitHub CLI, and Cloudflare Quick Tunnel client."
           }
           if ($LASTEXITCODE -ne 0) { throw "Could not publish the portable GitHub release asset." }
