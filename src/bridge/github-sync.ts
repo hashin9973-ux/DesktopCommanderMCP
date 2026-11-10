@@ -12,6 +12,11 @@ import {
 
 export interface GitHubBridgeCachePaths {
   root: string;
+  agents: string;
+}
+
+interface AgentGitHubBridgeCachePaths {
+  root: string;
   requests: string;
   responses: string;
   artifacts: string;
@@ -107,7 +112,7 @@ function resolveArtifactPath(root: string, requestId: string, artifactPath: stri
 }
 
 async function ensureSafeArtifactDirectory(
-  paths: GitHubBridgeCachePaths,
+  paths: AgentGitHubBridgeCachePaths,
   requestId: string,
 ): Promise<void> {
   const realRoot = await fs.realpath(paths.root);
@@ -133,7 +138,7 @@ async function ensureSafeArtifactDirectory(
 }
 
 async function writeBufferArtifact(
-  paths: GitHubBridgeCachePaths,
+  paths: AgentGitHubBridgeCachePaths,
   requestId: string,
   artifactPath: string,
   bytes: Buffer,
@@ -174,7 +179,7 @@ async function writeBufferArtifact(
 async function externalizeOversizedResponse(
   response: BridgeResponseReference,
   requestId: string,
-  paths: GitHubBridgeCachePaths,
+  paths: AgentGitHubBridgeCachePaths,
 ): Promise<boolean> {
   if (serializeResponse(response).length <= MAX_GITHUB_INLINE_RESPONSE_BYTES) return false;
 
@@ -247,7 +252,7 @@ async function externalizeOversizedResponse(
 }
 
 async function splitLargeLocalArtifact(
-  paths: GitHubBridgeCachePaths,
+  paths: AgentGitHubBridgeCachePaths,
   requestId: string,
   artifact: BridgeArtifactReference,
 ): Promise<{ artifact: BridgeArtifactReference; changed: boolean }> {
@@ -316,7 +321,7 @@ async function splitLargeLocalArtifact(
 async function prepareResponseArtifacts(
   response: BridgeResponseReference,
   requestId: string,
-  paths: GitHubBridgeCachePaths,
+  paths: AgentGitHubBridgeCachePaths,
 ): Promise<boolean> {
   const results = response.results || [];
   const references = [
@@ -354,7 +359,7 @@ async function prepareResponseArtifacts(
 
 async function uploadResponseArtifact(
   client: GitHubRepositoryClient,
-  paths: GitHubBridgeCachePaths,
+  paths: AgentGitHubBridgeCachePaths,
   requestId: string,
   artifact: BridgeArtifactReference,
 ): Promise<void> {
@@ -399,7 +404,7 @@ export class GitHubBridgeSync {
   private readonly observedRequestBlobShas = new Map<string, string>();
   constructor(
     private readonly client: GitHubRepositoryClient,
-    private readonly paths: GitHubBridgeCachePaths,
+    private readonly paths: AgentGitHubBridgeCachePaths,
   ) {}
 
   async initialize(): Promise<void> {
