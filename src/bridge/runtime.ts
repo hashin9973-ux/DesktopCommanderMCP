@@ -16,13 +16,13 @@ import { writeFileAtomic } from '../utils/atomic-write.js';
 import { preloadFileSupport } from '../utils/files/index.js';
 import { featureFlagManager } from '../utils/feature-flags.js';
 import { BRIDGE_TOOL_NAMES, parseBridgeRequest, type BridgeCommand, type BridgeRequest } from './protocol.js';
-import { appendMailboxGuideSection } from './guide.js';
+import { discoverAgentQueuePaths, initializeAgentLayout, type AgentQueuePaths } from './agents.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_STORAGE_BYTES = 3_000_000_000;
 const STABILITY_CHECK_MS = 200;
 const REQUEST_PARSE_SETTLE_MS = 2_000;
-const BRIDGE_GUIDE_MARKER = '<!-- desktop-commander:bridge-guide:v2 -->';
+const BRIDGE_GUIDE_MARKER = '<!-- desktop-commander:bridge-guide:v3 -->';
 const RECENT_FILE_CLEANUP_GRACE_MS = 60_000;
 const MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
 
@@ -89,12 +89,11 @@ interface BridgeResponse {
   error?: string;
 }
 
-interface BridgePaths {
+interface BridgePaths extends AgentQueuePaths {}
+interface BridgeRootPaths {
   root: string;
-  requests: string;
-  responses: string;
-  artifacts: string;
-  ledgers: string;
+  agents: string;
+  stateDirectory: string;
 }
 
 function defaultSettings(): BridgeSettings {
