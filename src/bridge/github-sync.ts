@@ -360,6 +360,7 @@ async function prepareResponseArtifacts(
 async function uploadResponseArtifact(
   client: GitHubRepositoryClient,
   paths: AgentGitHubBridgeCachePaths,
+  agentId: string,
   requestId: string,
   artifact: BridgeArtifactReference,
 ): Promise<void> {
@@ -388,9 +389,9 @@ async function uploadResponseArtifact(
     wholeHash.update(bytes);
     totalBytes += bytes.length;
     await client.createFileIfAbsent(
-      part.path,
+      'agents/' + agentId + '/' + part.path,
       bytes,
-      'Store Desktop Commander bridge artifact ' + requestId,
+      'Store Desktop Commander bridge artifact ' + agentId + '/' + requestId,
     );
   }
   if (totalBytes !== artifact.bytes || wholeHash.digest('hex') !== artifact.sha256) {
