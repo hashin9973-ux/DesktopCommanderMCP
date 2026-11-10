@@ -562,6 +562,14 @@ export class GitHubBridgeSync {
     // preserves pending work and historical response/artifact data.
     await this.migrateLegacyRemoteQueue();
 
+    // Keep the agents root tracked even before the first named agent submits
+    // a request. This is the only root-level queue marker in the new layout.
+    await this.client.createFileIfAbsent(
+      'agents/.gitkeep',
+      Buffer.from('Desktop Commander agent-scoped queues.\n', 'utf8'),
+      'Create Desktop Commander agent queue root',
+    );
+
     // Publish the single current README whenever its generated content changes.
     // The local digest avoids an unnecessary remote README fetch on each poll.
     const guideDirectory = await fs.mkdtemp(path.join(this.paths.root, '.github-guide-'));
