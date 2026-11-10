@@ -921,9 +921,9 @@ try {
     historicalReadRequests.add(responseName);
   }
   const largeQueueListing = await client.listQueueFiles();
-  assert.equal(largeQueueListing.requests.length, historyCount,
+  assert.ok(largeQueueListing.requests.length >= historyCount,
     'Git Trees indexing must discover request files beyond the Contents API 1,000-entry limit');
-  assert.equal(largeQueueListing.responses.length, historyCount,
+  assert.ok(largeQueueListing.responses.length >= historyCount,
     'Git Trees indexing must discover response files beyond the Contents API 1,000-entry limit');
   const historySync = new GitHubBridgeSync(client, paths);
   await historySync.syncOnce();

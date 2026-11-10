@@ -497,53 +497,58 @@ export class GitHubBridgeSync {
     }
     const completedRequestIds = new Set(remoteResponseByRequestId.keys());
 
-    if (!queueDiscoveryError) for (const entry of remoteRequests) {
-      if (entry.type !== 'file' || !REQUEST_PATTERN.test(entry.name)) continue;
-      if (entry.size > MAX_GITHUB_BRIDGE_FILE_BYTES) {
-        throw new Error('Remote request ' + entry.path + ' exceeds the 50 MiB GitHub bridge file limit.');
-      }
+    const requestSyncErrors: string[] = [];
+    if (!queueDiscoveryError) {
+      const pendingRequests = remoteRequests.filter((entry) =>
+        entry.type === 'file' && REQUEST_PATTERN.test(entry.name),
+      );
+      // Bound concurrent reads: parallel staging is faster for independent
+      // requests without flooding the GitHub API or local filesystem.
+      for (let offset = 0; offset < pendingRequests.length; offset += 8) {
+        const batch = pendingRequests.slice(offset, offset + 8);
+        await Promise.all(batch.map(async (entry) => {
+          try {
+            if (entry.size > MAX_GITHUB_BRIDGE_FILE_BYTES) {
+              throw new Error('Remote request ' + entry.path + ' exceeds the 50 MiB GitHub bridge file limit.');
+            }
+            const match = REQUEST_PATTERN.exec(entry.name);
+            if (!match) return;
+            const requestId = match[1];
+            const remoteResponse = remoteResponseByRequestId.get(requestId);
+            const previouslyObservedSha = this.observedRequestBlobShas.get(requestId);
+            const firstObservation = previouslyObservedSha === undefined;
+            if (previouslyObservedSha && previouslyObservedSha !== entry.sha && remoteResponse) {
+              console.warn(
+                'GitHub bridge: ignored updated ' + entry.name + ' because response ' + requestId +
+                ' already exists. Request IDs cannot be reused; submit this work with a new ID.',
+              );
+            }
+            this.observedRequestBlobShas.set(requestId, entry.sha);
+            if (remoteResponse) return;
 
-      const match = REQUEST_PATTERN.exec(entry.name);
-      if (!match) continue;
-      const requestId = match[1];
-      const remoteResponse = remoteResponseByRequestId.get(requestId);
-      const previouslyObservedSha = this.observedRequestBlobShas.get(requestId);
-      const firstObservation = previouslyObservedSha === undefined;
-      if (previouslyObservedSha && previouslyObservedSha !== entry.sha && remoteResponse) {
-        console.warn(
-          'GitHub bridge: ignored updated ' + entry.name + ' because response-' + requestId +
-          '.json already exists. Request IDs cannot be reused; submit this work with a new ID.',
-        );
-      }
-      this.observedRequestBlobShas.set(requestId, entry.sha);
-      if (remoteResponse) {
-        // A response file is the durable completion marker. Never re-execute a
-        // request ID that already has one, and do not download the historical
-        // request/response pair on every process restart just to revalidate it.
-        continue;
-      }
+            const localPath = path.join(this.paths.requests, entry.name);
+            const cached = await readOptional(localPath);
+            let requestBytes: Buffer;
+            if (cached) {
+              if (gitBlobSha(cached) !== entry.sha) {
+                throw new Error('Local GitHub queue cache conflicts with remote request ' + entry.name + '; the local file was not overwritten.');
+              }
+              requestBytes = cached;
+            } else {
+              requestBytes = await this.client.readFile(entry.path);
+              if (gitBlobSha(requestBytes) !== entry.sha) {
+                throw new Error('GitHub request ' + entry.path + ' changed while it was being downloaded. The next poll will retry.');
+              }
+            }
 
-      const localPath = path.join(this.paths.requests, entry.name);
-      const cached = await readOptional(localPath);
-
-      let requestBytes: Buffer;
-      if (cached) {
-        if (gitBlobSha(cached) !== entry.sha) {
-          throw new Error('Local GitHub queue cache conflicts with remote request ' + entry.name + '; the local file was not overwritten.');
-        }
-        requestBytes = cached;
-      } else {
-        requestBytes = await this.client.readFile(entry.path);
-        if (gitBlobSha(requestBytes) !== entry.sha) {
-          throw new Error('GitHub request ' + entry.path + ' changed while it was being downloaded. The next poll will retry.');
-        }
-      }
-
-      if (!cached) {
-        await writeFileAtomic(localPath, requestBytes);
-      }
-      if (firstObservation) {
-        console.log('GitHub bridge: ' + entry.name + ' is staged locally for execution.');
+            if (!cached) await writeFileAtomic(localPath, requestBytes);
+            if (firstObservation) {
+              console.log('GitHub bridge: ' + entry.name + ' is staged locally for execution.');
+            }
+          } catch (error) {
+            requestSyncErrors.push(entry.name + ': ' + errorMessage(error));
+          }
+        }));
       }
     }
     // Artifacts must reach GitHub before the response file signals completion.
@@ -614,6 +619,12 @@ export class GitHubBridgeSync {
       throw new Error(
         'Could not synchronize ' + responseSyncErrors.length + ' local response file(s): ' +
         responseSyncErrors.join('; '),
+      );
+    }
+    if (requestSyncErrors.length > 0) {
+      throw new Error(
+        'Could not stage ' + requestSyncErrors.length + ' remote request file(s): ' +
+        requestSyncErrors.join('; '),
       );
     }
     if (queueDiscoveryError) {

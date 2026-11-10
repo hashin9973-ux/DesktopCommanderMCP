@@ -444,15 +444,20 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     console.log('Created ' + guidePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    const existing = await fs.readFile(guidePath, 'utf8');
-    const isGeneratedGuide =
-      (existing.startsWith('# Desktop Commander Bridge') || existing.startsWith('# Desktop Commander Cloud-Folder Bridge'))
-      && existing.includes('This README is the AI-facing operating guide');
-    if (isGeneratedGuide && !existing.includes(BRIDGE_GUIDE_MARKER)) {
-      await writeFileAtomic(guidePath, guide);
-      console.log('Updated generated agent guide: ' + guidePath);
+    const existingStat = await fs.lstat(guidePath);
+    if (!existingStat.isFile() || existingStat.isSymbolicLink()) {
+      console.log('Existing non-regular README.md preserved: ' + guidePath);
     } else {
-      console.log('Existing README.md preserved: ' + guidePath);
+      const existing = await fs.readFile(guidePath, 'utf8');
+      const isGeneratedGuide =
+        (existing.startsWith('# Desktop Commander Bridge') || existing.startsWith('# Desktop Commander Cloud-Folder Bridge'))
+        && existing.includes('This README is the AI-facing operating guide');
+      if (isGeneratedGuide && !existing.includes(BRIDGE_GUIDE_MARKER)) {
+        await writeFileAtomic(guidePath, guide);
+        console.log('Updated generated agent guide: ' + guidePath);
+      } else {
+        console.log('Existing README.md preserved: ' + guidePath);
+      }
     }
   }
 

@@ -375,7 +375,8 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     const savedReconcileInterval = Number(settings.githubReconcilePollIntervalMs);
     const legacyInterval = Number(settings.githubPollIntervalMs);
     const pollIntervalMs = options.pollIntervalMs
-      ?? (Number.isInteger(savedReconcileInterval) && savedReconcileInterval >= 1_000 && savedReconcileInterval <= 60_000
+      ?? (Number.isInteger(savedReconcileInterval) && savedReconcileInterval >= 1_000
+        && savedReconcileInterval <= 60_000 && savedReconcileInterval !== 60_000
         ? savedReconcileInterval
         : Number.isInteger(legacyInterval) && legacyInterval >= 1_000 && legacyInterval <= 60_000
           ? legacyInterval
