@@ -89,8 +89,16 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
 
   const legacyLedgers = path.join(stateDirectory, 'requests');
   if (await pathExists(legacyLedgers)) {
+    const legacyLedgerStat = await fs.lstat(legacyLedgers);
+    if (!legacyLedgerStat.isDirectory() || legacyLedgerStat.isSymbolicLink()) {
+      throw new Error('Legacy bridge request ledgers must be stored in a real directory: ' + legacyLedgers);
+    }
     const defaultLedgers = path.join(legacyLedgers, LEGACY_DEFAULT_AGENT);
     if (!await pathExists(defaultLedgers)) await fs.mkdir(defaultLedgers, { recursive: true });
+    const defaultLedgerStat = await fs.lstat(defaultLedgers);
+    if (!defaultLedgerStat.isDirectory() || defaultLedgerStat.isSymbolicLink()) {
+      throw new Error('The default agent ledger path must be a real directory: ' + defaultLedgers);
+    }
     for (const entry of await fs.readdir(legacyLedgers, { withFileTypes: true })) {
       if (entry.name === LEGACY_DEFAULT_AGENT) continue;
       await moveTreeWithoutOverwrite(path.join(legacyLedgers, entry.name), path.join(defaultLedgers, entry.name));
@@ -106,7 +114,11 @@ export async function discoverAgentQueuePaths(
   const entries = await fs.readdir(agentsRoot, { withFileTypes: true });
   const result: AgentQueuePaths[] = [];
   for (const entry of entries) {
-    if (!entry.isDirectory() || entry.isSymbolicLink() || !isValidAgentDirectoryName(entry.name)) continue;
+    if (!isValidAgentDirectoryName(entry.name)) continue;
+    if (entry.isSymbolicLink()) {
+      throw new Error('Agent folder must not be a symbolic link: ' + path.join(agentsRoot, entry.name));
+    }
+    if (!entry.isDirectory()) continue;
     const root = path.join(agentsRoot, entry.name);
     const requests = path.join(root, 'requests');
     const responses = path.join(root, 'responses');
