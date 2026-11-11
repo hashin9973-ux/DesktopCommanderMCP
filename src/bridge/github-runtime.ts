@@ -758,7 +758,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
           const refreshedToken = await refreshGitHubAccessTokenForWebhooks();
           client = await GitHubRepositoryClient.connect(repository, refreshedToken);
           await ensureQueueInitialized();
-          sync = new GitHubBridgeSync(client, paths);
+          sync = new GitHubBridgeSync(client, paths, resolveWorkerStateDirectory(workerStateRoot));
           hookId = await client.upsertPushWebhook(
             savedHookId,
             quickTunnel.url + webhookServer.path,
