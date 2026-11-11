@@ -575,7 +575,6 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     const cacheRoot = cacheRoots.cacheRoot;
     const paths = {
       root: cacheRoot,
-      agents: cacheRoot,
     };
     const workerStateRoot = cacheRoots.workerStateRoot;
 
@@ -650,10 +649,10 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
 
     // Prepare only the agent namespace before starting the worker. The
     // recursive watcher observes responses from every agent and subagent.
-    await fs.mkdir(paths.agents, { recursive: true });
+    await fs.mkdir(paths.root, { recursive: true });
 
     try {
-      responseWatcher = watch(paths.agents, { persistent: true, recursive: true }, () => { void syncPoll(); });
+      responseWatcher = watch(paths.root, { persistent: true, recursive: true }, () => { void syncPoll(); });
       responseWatcherHealthy = true;
       responseWatcher.on('error', (error) => {
         responseWatcherHealthy = false;
