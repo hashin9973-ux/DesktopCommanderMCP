@@ -354,6 +354,12 @@ async function chooseRepository(
   return visible[index].full_name;
 }
 
+function resolveWorkerStateDirectory(workerStateRoot: string): string {
+  return process.platform === 'win32'
+    ? path.join(workerStateRoot, 'localappdata', 'DesktopCommanderBridge')
+    : path.join(workerStateRoot, 'xdg-state', 'desktop-commander-bridge');
+}
+
 async function startWorker(
   cacheRoot: string,
   workerStateRoot: string,
@@ -361,9 +367,7 @@ async function startWorker(
 ): Promise<ChildProcess> {
   const workerLocalAppData = path.join(workerStateRoot, 'localappdata');
   const workerXdgStateHome = path.join(workerStateRoot, 'xdg-state');
-  const workerStateDir = process.platform === 'win32'
-    ? path.join(workerLocalAppData, 'DesktopCommanderBridge')
-    : path.join(workerXdgStateHome, 'desktop-commander-bridge');
+  const workerStateDir = resolveWorkerStateDirectory(workerStateRoot);
 
   await writeJsonAtomic(path.join(workerStateDir, 'settings.json'), {
     directory: cacheRoot,
@@ -612,7 +616,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       console.error(prefix + message);
     };
 
-    let sync = new GitHubBridgeSync(client, paths);
+    let sync = new GitHubBridgeSync(client, paths, resolveWorkerStateDirectory(workerStateRoot));
     let queueInitialized = false;
     let queueInitializationPromise: Promise<void> | undefined;
     const ensureQueueInitialized = async (): Promise<void> => {
