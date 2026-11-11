@@ -130,21 +130,25 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
     }
 
     const defaultLedgers = path.join(legacyLedgers, LEGACY_DEFAULT_AGENT);
-    await fs.mkdir(defaultLedgers, { recursive: true });
-    const defaultLedgerStat = await fs.lstat(defaultLedgers);
-    if (!defaultLedgerStat.isDirectory() || defaultLedgerStat.isSymbolicLink()) {
-      throw new Error('The default agent ledger path must be a real directory: ' + defaultLedgers);
-    }
+    const ensureDefaultLedgers = async (): Promise<void> => {
+      await fs.mkdir(defaultLedgers, { recursive: true });
+      const defaultLedgerStat = await fs.lstat(defaultLedgers);
+      if (!defaultLedgerStat.isDirectory() || defaultLedgerStat.isSymbolicLink()) {
+        throw new Error('The default agent ledger path must be a real directory: ' + defaultLedgers);
+      }
+    };
 
     for (const entry of ledgerEntries) {
       if (migratedLegacyAgentLedgers.has(entry.name) || entry.name === LEGACY_DEFAULT_AGENT) continue;
       const source = path.join(legacyLedgers, entry.name);
       if (!await pathExists(source)) continue;
       if (entry.isFile()) {
+        await ensureDefaultLedgers();
         await moveTreeWithoutOverwrite(source, path.join(defaultLedgers, entry.name));
         continue;
       }
       if (entry.name === 'default' && entry.isDirectory() && !entry.isSymbolicLink()) {
+        await ensureDefaultLedgers();
         await moveTreeWithoutOverwrite(source, defaultLedgers);
         continue;
       }
