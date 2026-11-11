@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { isValidAgentDirectoryName } from './agents.js';
+import { initializeAgentLayout, isValidAgentDirectoryName } from './agents.js';
 import { createHash } from 'node:crypto';
 import { writeFileAtomic } from '../utils/atomic-write.js';
 import { createGuideIfMissing } from './runtime.js';
@@ -408,6 +408,7 @@ export class GitHubBridgeSync {
   constructor(
     private readonly client: GitHubRepositoryClient,
     private readonly paths: GitHubBridgeCachePaths,
+    private readonly workerStateDirectory: string,
   ) {}
 
   private agentPaths(agentId: string): AgentGitHubBridgeCachePaths {
@@ -553,8 +554,12 @@ export class GitHubBridgeSync {
       throw new Error('The local GitHub bridge cache root must be a real directory.');
     }
 
-    // Move any existing flat queue into the explicit default agent. This
-    // preserves pending work and historical response/artifact data.
+    // Upgrade local staged requests/responses/artifacts and their idempotency
+    // ledgers before reconciling remote state or starting the worker. This
+    // prevents the old cacheRoot/agents/<name>/ layout from being stranded.
+    await initializeAgentLayout(this.paths.root, this.workerStateDirectory);
+
+    // Migrate remote requests/responses/artifacts with byte verification.
     await this.migrateLegacyRemoteQueue();
 
     // Keep the agents root tracked even before the first named agent submits
