@@ -675,18 +675,28 @@ try {
   assert.deepEqual(api.files.get('responses/.gitkeep')?.bytes, Buffer.from('user-owned sentinel\n'),
     'migration must preserve a same-named legacy sentinel with unknown user-owned content');
   assert.ok(!api.files.has('artifacts/.gitkeep'));
-  assert.ok(api.files.has('agent-default/requests/legacy-pending.json'));
-  assert.ok(api.files.has('agent-default/responses/legacy-completed.json'));
-  assert.ok(api.files.has('agent-default/artifacts/legacy-completed/output.bin'));
+  const legacyCompatibilityAgent = [...api.files.keys()]
+    .map(filePath => filePath.split('/')[0])
+    .find(agentId => /^agent-legacy-flat-[0-9a-f]{32}$/.test(agentId));
+  assert.ok(legacyCompatibilityAgent,
+    'the existing agent-default identity must not receive unscoped flat queue data');
+  const migratedLegacyRequest = legacyCompatibilityAgent + '/requests/legacy-pending.json';
+  const migratedLegacyResponse = legacyCompatibilityAgent + '/responses/legacy-completed.json';
+  const migratedLegacyArtifact = legacyCompatibilityAgent + '/artifacts/legacy-completed/output.bin';
+  assert.ok(api.files.has(migratedLegacyRequest));
+  assert.ok(api.files.has(migratedLegacyResponse));
+  assert.ok(api.files.has(migratedLegacyArtifact));
   assert.ok(
-    api.commits.findIndex((commit) => commit.path === 'agent-default/artifacts/legacy-completed/output.bin')
-      < api.commits.findIndex((commit) => commit.path === 'agent-default/responses/legacy-completed.json'),
+    api.commits.findIndex((commit) => commit.path === migratedLegacyArtifact)
+      < api.commits.findIndex((commit) => commit.path === migratedLegacyResponse),
     'legacy artifacts must be committed before the migrated response completion marker',
   );
+  assert.ok(api.files.has('agent-default/responses/stale-head-retry.json'),
+    'the pre-existing agent-default conversation and its request/response state must be preserved');
   assert.ok(!api.files.has('requests/legacy-pending.json'));
   assert.ok(!api.files.has('responses/legacy-completed.json'));
   assert.ok(!api.files.has('artifacts/legacy-completed/output.bin'),
-    'legacy remote files are removed only after their agent/default copies are verified');
+    'legacy remote files are removed only after their compatibility-folder copies are verified');
   assert.ok(api.files.has('agent-chatgpt-old/requests/previous-agent-pending.json'));
   assert.ok(api.files.has('agent-chatgpt-old/responses/previous-agent-completed.json'));
   assert.ok(api.files.has('agent-chatgpt-old/artifacts/previous-agent-completed/output.bin'));

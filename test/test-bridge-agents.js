@@ -242,12 +242,18 @@ try {
   await fs.mkdir(path.dirname(conflictDestination), { recursive: true });
   await fs.writeFile(conflictSource, 'legacy-content');
   await fs.writeFile(conflictDestination, 'different-new-content');
-  await assert.rejects(
-    () => initializeAgentLayout(conflictRoot, conflictState),
-    /stopped rather than overwrite different data/,
-  );
-  assert.equal(await fs.readFile(conflictSource, 'utf8'), 'legacy-content');
-  assert.equal(await fs.readFile(conflictDestination, 'utf8'), 'different-new-content');
+  await initializeAgentLayout(conflictRoot, conflictState);
+  const conflictCompatibilityAgent = (await fs.readdir(conflictRoot)).find(name =>
+    /^agent-legacy-flat-[0-9a-f]{32}$/.test(name));
+  assert.ok(conflictCompatibilityAgent,
+    'an occupied agent-default conversation must force flat legacy data into a separate generated folder');
+  assert.equal(await fs.readFile(
+    path.join(conflictRoot, conflictCompatibilityAgent, 'requests', 'task.json'), 'utf8',
+  ), 'legacy-content');
+  assert.equal(await fs.readFile(conflictDestination, 'utf8'), 'different-new-content',
+    'an existing agent-default request must remain untouched');
+  await assert.rejects(() => fs.access(conflictSource), { code: 'ENOENT' },
+    'the flat source is removed only after its compatibility copy is verified');
 
   // An existing root-level agent-default is an identity, not the reserved
   // flat migration bucket. Flat queues and their ledgers must be isolated in a
