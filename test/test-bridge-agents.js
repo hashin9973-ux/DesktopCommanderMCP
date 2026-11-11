@@ -117,6 +117,7 @@ try {
   const previousAgentRequests = path.join(previousLayoutRoot, 'agents', 'chatgpt-old-conversation', 'requests');
   const previousPrefixedAgentRequests = path.join(previousLayoutRoot, 'agents', 'agent-cli-old', 'requests');
   const previousReservedNameRequests = path.join(previousLayoutRoot, 'agents', 'agent-default', 'requests');
+  const previousAgentsSentinel = path.join(previousLayoutRoot, 'agents', '.gitkeep');
   const previousAgentLedger = path.join(previousStateRoot, 'requests', 'chatgpt-old-conversation');
   const previousPrefixedAgentLedger = path.join(previousStateRoot, 'requests', 'agent-cli-old');
   const previousReservedNameLedger = path.join(previousStateRoot, 'requests', 'agent-default');
@@ -124,6 +125,7 @@ try {
     fs.mkdir(previousAgentRequests, { recursive: true }),
     fs.mkdir(previousPrefixedAgentRequests, { recursive: true }),
     fs.mkdir(previousReservedNameRequests, { recursive: true }),
+    fs.writeFile(previousAgentsSentinel, 'Desktop Commander agent-scoped queues.\\n'),
     fs.mkdir(previousAgentLedger, { recursive: true }),
     fs.mkdir(previousPrefixedAgentLedger, { recursive: true }),
     fs.mkdir(previousReservedNameLedger, { recursive: true }),
@@ -177,6 +179,8 @@ try {
   for (const oldLedgerPath of [previousAgentLedger, previousPrefixedAgentLedger, previousReservedNameLedger]) {
     await assert.rejects(() => fs.access(oldLedgerPath), { code: 'ENOENT' });
   }
+  await assert.rejects(() => fs.access(previousAgentsSentinel), { code: 'ENOENT' },
+    'the known generated namespace sentinel is removed during migration');
   await assert.rejects(
     () => fs.access(path.join(previousLayoutRoot, 'agents')),
     { code: 'ENOENT' },
