@@ -768,7 +768,7 @@ try {
     path.join(defaultPaths.requests, 'request-' + cachedRequestId + '.json'),
     cachedRequestBytes,
   );
-  const cachedStartupSync = new GitHubBridgeSync(client, paths);
+  const cachedStartupSync = new GitHubBridgeSync(client, paths, workerStateDirectory);
   const stagingLogs = [];
   const originalLog = console.log;
   console.log = (...args) => stagingLogs.push(args.join(' '));
@@ -1195,7 +1195,7 @@ try {
     'Git Trees indexing must discover request files beyond the Contents API 1,000-entry limit');
   assert.ok(largeQueueListing.responses.length >= historyCount,
     'Git Trees indexing must discover response files beyond the Contents API 1,000-entry limit');
-  const historySync = new GitHubBridgeSync(client, paths);
+  const historySync = new GitHubBridgeSync(client, paths, workerStateDirectory);
   await historySync.syncOnce();
   for (const remotePath of historicalReadRequests) {
     assert.equal(api.getRawReadCount(remotePath), 0,
