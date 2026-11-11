@@ -25,7 +25,7 @@ try {
   assert.match(generatedGuide, /Request IDs need only be unique within this conversation's folder/);
   assert.match(generatedGuide, /one isolated workspace per conversation or subagent instance/);
   assert.match(generatedGuide, /NEW unique folder for this conversation/);
-  assert.match(generatedGuide, /Never use a shared platform-only folder such as chatgpt/);
+  assert.match(generatedGuide, /Never share a folder between conversations/);
   assert.match(generatedGuide, /reuse it only when continuing that same conversation/);
   assert.match(generatedGuide, /only agent-facing guide/);
   assert.doesNotMatch(generatedGuide, /(?:^|\n)- requests\//);
