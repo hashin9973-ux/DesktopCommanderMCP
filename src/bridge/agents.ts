@@ -118,7 +118,15 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
       const destination = path.join(bridgeRoot, 'agent-' + entry.name);
       await moveTreeWithoutOverwrite(path.join(previousAgentsRoot, entry.name), destination);
     }
-    await fs.rmdir(previousAgentsRoot);
+    const remainingEntries = await fs.readdir(previousAgentsRoot);
+    if (remainingEntries.length === 0) {
+      await fs.rmdir(previousAgentsRoot);
+    } else {
+      console.warn(
+        'Preserved unrecognized content in the previous agents/ directory rather than deleting user data: ' +
+        previousAgentsRoot,
+      );
+    }
   }
   return agentsRoot;
 }
