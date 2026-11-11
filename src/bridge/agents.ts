@@ -158,6 +158,8 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
         await moveTreeWithoutOverwrite(source, path.join(legacyLedgers, 'agent-' + entry.name));
         continue;
       }
+      if (entry.isDirectory() && !entry.isSymbolicLink()
+        && AGENT_DIRECTORY_PATTERN.test(entry.name)) continue;
       console.warn(
         'Preserved unrecognized legacy request-ledger content rather than changing its identity: ' + source,
       );
