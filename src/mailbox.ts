@@ -6,12 +6,30 @@ import { CONFIG_FILE } from './config.js';
 import { writeFileAtomic } from './utils/atomic-write.js';
 
 export interface MailboxUser {
-  id: string;
   username: string;
   createdAt: string;
   lastActivityAt: string;
 }
 export interface MailboxMessage {
+  id: string;
+  from: string;
+  to: string;
+  body: string;
+  createdAt: string;
+  readAt?: string;
+}
+interface MailboxDatabase {
+  version: 2;
+  users: MailboxUser[];
+  messages: MailboxMessage[];
+}
+interface LegacyMailboxUser {
+  id: string;
+  username: string;
+  createdAt: string;
+  lastActivityAt: string;
+}
+interface LegacyMailboxMessage {
   id: string;
   fromUserId: string;
   toUserId: string;
@@ -19,10 +37,10 @@ export interface MailboxMessage {
   createdAt: string;
   readAt?: string;
 }
-interface MailboxDatabase {
+interface LegacyMailboxDatabase {
   version: 1;
-  users: MailboxUser[];
-  messages: MailboxMessage[];
+  users: LegacyMailboxUser[];
+  messages: LegacyMailboxMessage[];
 }
 export interface MailboxFilters {
   user?: string;
@@ -34,7 +52,7 @@ export interface MailboxFilters {
 
 const DATABASE_PATH = path.join(path.dirname(CONFIG_FILE), 'mailbox.json');
 const LOCK_PATH = DATABASE_PATH + '.lockfile';
-const EMPTY_DATABASE: MailboxDatabase = { version: 1, users: [], messages: [] };
+const EMPTY_DATABASE: MailboxDatabase = { version: 2, users: [], messages: [] };
 let inProcessQueue: Promise<unknown> = Promise.resolve();
 
 function normalizeUsername(value: string): string {
@@ -42,13 +60,39 @@ function normalizeUsername(value: string): string {
 }
 function resolveUser(db: MailboxDatabase, value: string | undefined): MailboxUser | undefined {
   if (!value) return undefined;
-  return db.users.find(user => user.id === value || normalizeUsername(user.username) === normalizeUsername(value));
+  return db.users.find(user => normalizeUsername(user.username) === normalizeUsername(value));
+}
+function validateUsername(username: string): string {
+  const clean = username.trim().normalize('NFKC');
+  if (!clean || clean.length > 64 || /[\u0000-\u001f\u007f]/u.test(clean)) {
+    throw new Error('Username must be 1–64 printable characters.');
+  }
+  return clean;
 }
 function validateMessage(body: string): string {
   const value = body.trim();
   if (!value) throw new Error('Message body cannot be empty.');
   if (value.length > 20000) throw new Error('Message body cannot exceed 20,000 characters.');
   return value;
+}
+function migrateLegacyDatabase(value: LegacyMailboxDatabase): MailboxDatabase {
+  const usernamesById = new Map(value.users.map(user => [user.id, user.username]));
+  return {
+    version: 2,
+    users: value.users.map(({ username, createdAt, lastActivityAt }) => ({
+      username,
+      createdAt,
+      lastActivityAt,
+    })),
+    messages: value.messages.map(message => ({
+      id: message.id,
+      from: usernamesById.get(message.fromUserId) ?? 'deleted user',
+      to: usernamesById.get(message.toUserId) ?? 'deleted user',
+      body: message.body,
+      createdAt: message.createdAt,
+      ...(message.readAt ? { readAt: message.readAt } : {}),
+    })),
+  };
 }
 async function ensureLockFile(): Promise<void> {
   await fs.mkdir(path.dirname(DATABASE_PATH), { recursive: true });
@@ -63,20 +107,28 @@ async function withDatabase<T>(mutate: (db: MailboxDatabase) => Promise<T> | T, 
     const release = await lockfile.lock(LOCK_PATH, { retries: { retries: 20, minTimeout: 25, maxTimeout: 250 } });
     try {
       let db: MailboxDatabase;
+      let migrated = false;
       try {
-        db = JSON.parse(await fs.readFile(DATABASE_PATH, 'utf8')) as MailboxDatabase;
+        const parsed = JSON.parse(await fs.readFile(DATABASE_PATH, 'utf8')) as MailboxDatabase | LegacyMailboxDatabase;
+        if (parsed.version === 1 && Array.isArray(parsed.users) && Array.isArray(parsed.messages)) {
+          db = migrateLegacyDatabase(parsed as LegacyMailboxDatabase);
+          migrated = true;
+        } else if (parsed.version === 2 && Array.isArray(parsed.users) && Array.isArray(parsed.messages)) {
+          db = parsed as MailboxDatabase;
+        } else {
+          throw new Error('Mailbox database has an unsupported or invalid format; no changes were made.');
+        }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-          db = { version: 1, users: [], messages: [] };
+          db = { ...EMPTY_DATABASE, users: [], messages: [] };
         } else {
           throw new Error(`Mailbox database could not be read safely: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      if (db.version !== 1 || !Array.isArray(db.users) || !Array.isArray(db.messages)) {
-        throw new Error('Mailbox database has an unsupported or invalid format; no changes were made.');
-      }
       const result = await mutate(db);
-      if (write) await writeFileAtomic(DATABASE_PATH, JSON.stringify(db, null, 2) + '\n', { mode: 0o600 });
+      if (migrated || write) {
+        await writeFileAtomic(DATABASE_PATH, JSON.stringify(db, null, 2) + '\n', { mode: 0o600 });
+      }
       return result;
     } finally {
       await release();
@@ -101,15 +153,12 @@ export function formatRelativeActivity(timestamp: string | undefined): string {
 
 export const mailboxStore = {
   async register(username: string): Promise<{ user: MailboxUser; existing: boolean }> {
-    const clean = username.trim().normalize('NFKC');
-    if (!clean || clean.length > 64 || /[\u0000-\u001f\u007f]/u.test(clean)) {
-      throw new Error('Username must be 1–64 printable characters.');
-    }
+    const clean = validateUsername(username);
     return withDatabase(db => {
       const existing = db.users.find(user => normalizeUsername(user.username) === normalizeUsername(clean));
       if (existing) return { user: existing, existing: true };
       const now = new Date().toISOString();
-      const user = { id: randomUUID(), username: clean, createdAt: now, lastActivityAt: now };
+      const user = { username: clean, createdAt: now, lastActivityAt: now };
       db.users.push(user);
       return { user, existing: false };
     }, true);
@@ -126,25 +175,22 @@ export const mailboxStore = {
       sender.lastActivityAt = now;
       recipient.lastActivityAt = now;
       const message: MailboxMessage = {
-        id: randomUUID(), fromUserId: sender.id, toUserId: recipient.id, body: messageBody, createdAt: now,
+        id: randomUUID(), from: sender.username, to: recipient.username, body: messageBody, createdAt: now,
       };
       db.messages.push(message);
       return message;
     }, true);
   },
 
-  async inboxUnread(userId: string): Promise<{ user: MailboxUser; messages: Array<MailboxMessage & { from: string }> }> {
+  async inboxUnread(username: string): Promise<{ user: MailboxUser; messages: MailboxMessage[] }> {
     return withDatabase(db => {
-      const user = resolveUser(db, userId);
-      if (!user) throw new Error('Mailbox identity not found. Register first or check mailbox_user_id.');
-      const unread = db.messages.filter(message => message.toUserId === user.id && !message.readAt);
+      const user = resolveUser(db, username);
+      if (!user) throw new Error('Mailbox username not found. Register the username first.');
+      const unread = db.messages.filter(message => normalizeUsername(message.to) === normalizeUsername(user.username) && !message.readAt);
       const now = new Date().toISOString();
       for (const message of unread) message.readAt = now;
       user.lastActivityAt = now;
-      return {
-        user,
-        messages: unread.map(message => ({ ...message, from: db.users.find(item => item.id === message.fromUserId)?.username ?? 'deleted user' })),
-      };
+      return { user, messages: unread };
     }, true);
   },
 
@@ -155,11 +201,11 @@ export const mailboxStore = {
       .map(user => ({
         ...user,
         lastActivity: formatRelativeActivity(user.lastActivityAt),
-        unreadCount: db.messages.filter(message => message.toUserId === user.id && !message.readAt).length,
+        unreadCount: db.messages.filter(message => normalizeUsername(message.to) === normalizeUsername(user.username) && !message.readAt).length,
       })));
   },
 
-  async read(filters: MailboxFilters = {}): Promise<Array<MailboxMessage & { from: string; to: string }>> {
+  async read(filters: MailboxFilters = {}): Promise<MailboxMessage[]> {
     return withDatabase(db => {
       const selectedUser = resolveUser(db, filters.user);
       if (filters.user && !selectedUser) throw new Error(`User not found: ${filters.user}`);
@@ -169,38 +215,40 @@ export const mailboxStore = {
       if (filters.to && !toUser) throw new Error(`Recipient not found: ${filters.to}`);
       const limit = Math.min(Math.max(Math.trunc(filters.limit ?? 100), 1), 1000);
       return db.messages
-        .filter(message => !selectedUser || message.fromUserId === selectedUser.id || message.toUserId === selectedUser.id)
-        .filter(message => !fromUser || message.fromUserId === fromUser.id)
-        .filter(message => !toUser || message.toUserId === toUser.id)
+        .filter(message => !selectedUser
+          || normalizeUsername(message.from) === normalizeUsername(selectedUser.username)
+          || normalizeUsername(message.to) === normalizeUsername(selectedUser.username))
+        .filter(message => !fromUser || normalizeUsername(message.from) === normalizeUsername(fromUser.username))
+        .filter(message => !toUser || normalizeUsername(message.to) === normalizeUsername(toUser.username))
         .filter(message => !filters.unreadOnly || !message.readAt)
-        .slice(-limit)
-        .map(message => ({
-          ...message,
-          from: db.users.find(user => user.id === message.fromUserId)?.username ?? 'deleted user',
-          to: db.users.find(user => user.id === message.toUserId)?.username ?? 'deleted user',
-        }));
+        .slice(-limit);
     });
   },
 
-  async unreadCount(userId: string): Promise<number> {
+  async unreadCount(username: string): Promise<number> {
     return withDatabase(db => {
-      const user = resolveUser(db, userId);
+      const user = resolveUser(db, username);
       if (!user) return 0;
-      return db.messages.filter(message => message.toUserId === user.id && !message.readAt).length;
+      return db.messages.filter(message => normalizeUsername(message.to) === normalizeUsername(user.username) && !message.readAt).length;
     });
   },
 
   async renameUser(user: string, username: string): Promise<MailboxUser> {
-    const clean = username.trim().normalize('NFKC');
-    if (!clean || clean.length > 64 || /[\u0000-\u001f\u007f]/u.test(clean)) throw new Error('Username must be 1–64 printable characters.');
+    const clean = validateUsername(username);
     return withDatabase(db => {
       const target = resolveUser(db, user);
       if (!target) throw new Error(`User not found: ${user}`);
-      if (db.users.some(item => item.id !== target.id && normalizeUsername(item.username) === normalizeUsername(clean))) {
+      if (db.users.some(item => normalizeUsername(item.username) === normalizeUsername(clean)
+        && normalizeUsername(item.username) !== normalizeUsername(target.username))) {
         throw new Error('That username is already registered.');
       }
+      const oldUsername = target.username;
       target.username = clean;
       target.lastActivityAt = new Date().toISOString();
+      for (const message of db.messages) {
+        if (normalizeUsername(message.from) === normalizeUsername(oldUsername)) message.from = clean;
+        if (normalizeUsername(message.to) === normalizeUsername(oldUsername)) message.to = clean;
+      }
       return target;
     }, true);
   },
@@ -209,9 +257,11 @@ export const mailboxStore = {
     return withDatabase(db => {
       const target = resolveUser(db, user);
       if (!target) throw new Error(`User not found: ${user}`);
-      db.users = db.users.filter(item => item.id !== target.id);
+      db.users = db.users.filter(item => normalizeUsername(item.username) !== normalizeUsername(target.username));
       const before = db.messages.length;
-      db.messages = db.messages.filter(message => message.fromUserId !== target.id && message.toUserId !== target.id);
+      db.messages = db.messages.filter(message =>
+        normalizeUsername(message.from) !== normalizeUsername(target.username)
+        && normalizeUsername(message.to) !== normalizeUsername(target.username));
       return { user: target, deletedMessages: before - db.messages.length };
     }, true);
   },
@@ -235,7 +285,7 @@ export const mailboxStore = {
   },
 
   async sendAsUser(to: string, body: string): Promise<MailboxMessage> {
-    const user = await this.register('User');
-    return this.send(user.user.id, to, body);
+    await this.register('User');
+    return this.send('User', to, body);
   },
 };

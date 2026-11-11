@@ -133,6 +133,7 @@ try {
   const previousAgentRequests = path.join(previousLayoutRoot, 'agents', 'chatgpt-old-conversation', 'requests');
   const previousPrefixedAgentRequests = path.join(previousLayoutRoot, 'agents', 'agent-cli-old', 'requests');
   const previousReservedNameRequests = path.join(previousLayoutRoot, 'agents', 'agent-default', 'requests');
+  const previousDottedAgentRequests = path.join(previousLayoutRoot, 'agents', 'legacy_agent.v2', 'requests');
   const previousAgentsSentinel = path.join(previousLayoutRoot, 'agents', '.gitkeep');
   const previousAgentLedger = path.join(previousStateRoot, 'requests', 'chatgpt-old-conversation');
   const previousPrefixedAgentLedger = path.join(previousStateRoot, 'requests', 'agent-cli-old');
@@ -142,6 +143,7 @@ try {
     fs.mkdir(previousAgentRequests, { recursive: true }),
     fs.mkdir(previousPrefixedAgentRequests, { recursive: true }),
     fs.mkdir(previousReservedNameRequests, { recursive: true }),
+    fs.mkdir(previousDottedAgentRequests, { recursive: true }),
     fs.writeFile(previousAgentsSentinel, 'Desktop Commander agent-scoped queues.\n'),
     fs.mkdir(previousAgentLedger, { recursive: true }),
     fs.mkdir(previousPrefixedAgentLedger, { recursive: true }),
@@ -155,6 +157,7 @@ try {
     fs.writeFile(path.join(previousAgentRequests, 'legacy.json'), pendingRequest),
     fs.writeFile(path.join(previousPrefixedAgentRequests, 'prefixed-legacy.json'), pendingRequest),
     fs.writeFile(path.join(previousReservedNameRequests, 'reserved-legacy.json'), pendingRequest),
+    fs.writeFile(path.join(previousDottedAgentRequests, 'dotted-legacy.json'), pendingRequest),
     fs.writeFile(path.join(previousAgentLedger, 'same-id.json'), firstLedgerBytes),
     fs.writeFile(path.join(previousPrefixedAgentLedger, 'same-id.json'), secondLedgerBytes),
     fs.writeFile(path.join(previousReservedNameLedger, 'same-id.json'), reservedNameLedgerBytes),
@@ -172,6 +175,11 @@ try {
   assert.deepEqual(
     await fs.readFile(path.join(previousLayoutRoot, 'agent-agent-default', 'requests', 'reserved-legacy.json')),
     pendingRequest,
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(previousLayoutRoot, 'agent-legacy_agent.v2', 'requests', 'dotted-legacy.json')),
+    pendingRequest,
+    'legacy agent folder names with dots and underscores must be preserved verbatim after the agent- prefix',
   );
   assert.deepEqual(
     await fs.readFile(path.join(previousStateRoot, 'requests', 'agent-chatgpt-old-conversation', 'same-id.json')),
@@ -234,12 +242,138 @@ try {
   await fs.mkdir(path.dirname(conflictDestination), { recursive: true });
   await fs.writeFile(conflictSource, 'legacy-content');
   await fs.writeFile(conflictDestination, 'different-new-content');
+  await initializeAgentLayout(conflictRoot, conflictState);
+  const conflictCompatibilityAgent = (await fs.readdir(conflictRoot)).find(name =>
+    /^agent-legacy-flat-[0-9a-f]{32}$/.test(name));
+  assert.ok(conflictCompatibilityAgent,
+    'an occupied agent-default conversation must force flat legacy data into a separate generated folder');
+  assert.equal(await fs.readFile(
+    path.join(conflictRoot, conflictCompatibilityAgent, 'requests', 'task.json'), 'utf8',
+  ), 'legacy-content');
+  assert.equal(await fs.readFile(conflictDestination, 'utf8'), 'different-new-content',
+    'an existing agent-default request must remain untouched');
+  await assert.rejects(() => fs.access(conflictSource), { code: 'ENOENT' },
+    'the flat source is removed only after its compatibility copy is verified');
+
+  // An existing root-level agent-default is an identity, not the reserved
+  // flat migration bucket. Flat queues and their ledgers must be isolated in a
+  // newly generated root-level compatibility folder even when filenames match.
+  const reservedDefaultRoot = path.join(temporaryRoot, 'reserved-default-bridge');
+  const reservedDefaultState = path.join(temporaryRoot, 'reserved-default-state');
+  const oldFlatRequests = path.join(reservedDefaultRoot, 'requests');
+  const currentDefaultRequests = path.join(reservedDefaultRoot, 'agent-default', 'requests');
+  const oldFlatArtifacts = path.join(reservedDefaultRoot, 'artifacts', 'shared-id');
+  await Promise.all([
+    fs.mkdir(oldFlatRequests, { recursive: true }),
+    fs.mkdir(currentDefaultRequests, { recursive: true }),
+    fs.mkdir(oldFlatArtifacts, { recursive: true }),
+    fs.mkdir(path.join(reservedDefaultRoot, 'responses'), { recursive: true }),
+    fs.mkdir(path.join(reservedDefaultState, 'requests'), { recursive: true }),
+  ]);
+  const flatRequestBytes = Buffer.from('legacy flat request');
+  const defaultRequestBytes = Buffer.from('agent-default conversation request');
+  const flatArtifactBytes = Buffer.from('legacy flat artifact');
+  const flatLedgerBytes = Buffer.from('legacy flat ledger');
+  await Promise.all([
+    fs.writeFile(path.join(oldFlatRequests, 'shared-id.json'), flatRequestBytes),
+    fs.writeFile(path.join(currentDefaultRequests, 'shared-id.json'), defaultRequestBytes),
+    fs.writeFile(path.join(oldFlatArtifacts, 'output.bin'), flatArtifactBytes),
+    fs.writeFile(path.join(reservedDefaultState, 'requests', 'shared-id.json'), flatLedgerBytes),
+  ]);
+  await initializeAgentLayout(reservedDefaultRoot, reservedDefaultState);
+  const reservedEntries = await fs.readdir(reservedDefaultRoot);
+  const compatibilityAgent = reservedEntries.find(name => /^agent-legacy-flat-[0-9a-f]{32}$/.test(name));
+  assert.ok(compatibilityAgent,
+    'legacy flat data must receive its own compatibility folder when agent-default already exists');
+  assert.deepEqual(
+    await fs.readFile(path.join(reservedDefaultRoot, 'agent-default', 'requests', 'shared-id.json')),
+    defaultRequestBytes,
+    'existing agent-default request data must not be merged with the legacy flat request',
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(reservedDefaultRoot, compatibilityAgent, 'requests', 'shared-id.json')),
+    flatRequestBytes,
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(reservedDefaultRoot, compatibilityAgent, 'artifacts', 'shared-id', 'output.bin')),
+    flatArtifactBytes,
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(reservedDefaultState, 'requests', compatibilityAgent, 'shared-id.json')),
+    flatLedgerBytes,
+    'the old flat idempotency ledger must follow the same compatibility folder as its request',
+  );
+
+  // Simulate an interrupted migration after its stable marker was written but
+  // before a conflicting file could be moved. Resolve the conflict and retry:
+  // the same marker destination is reused, and no original data is lost.
+  const interruptedRoot = path.join(temporaryRoot, 'interrupted-bridge');
+  const interruptedState = path.join(temporaryRoot, 'interrupted-state');
+  const interruptedSource = path.join(interruptedRoot, 'requests', 'resume.json');
+  const interruptedDestination = path.join(interruptedRoot, 'agent-default', 'requests', 'resume.json');
+  await fs.mkdir(path.dirname(interruptedSource), { recursive: true });
+  await fs.mkdir(path.dirname(interruptedDestination), { recursive: true });
+  const interruptedSourceBytes = Buffer.from('resume migration source');
+  await fs.writeFile(interruptedSource, interruptedSourceBytes);
+  await fs.writeFile(interruptedDestination, 'different destination bytes');
+  await fs.writeFile(
+    path.join(interruptedRoot, '.desktop-commander-flat-migration.json'),
+    JSON.stringify({ version: 1, agentId: 'agent-default' }) + '\n',
+  );
   await assert.rejects(
-    () => initializeAgentLayout(conflictRoot, conflictState),
+    () => initializeAgentLayout(interruptedRoot, interruptedState),
     /stopped rather than overwrite different data/,
   );
-  assert.equal(await fs.readFile(conflictSource, 'utf8'), 'legacy-content');
-  assert.equal(await fs.readFile(conflictDestination, 'utf8'), 'different-new-content');
+  assert.deepEqual(await fs.readFile(interruptedSource), interruptedSourceBytes,
+    'an interrupted migration must preserve the legacy source');
+  await fs.writeFile(interruptedDestination, interruptedSourceBytes);
+  await initializeAgentLayout(interruptedRoot, interruptedState);
+  assert.deepEqual(await fs.readFile(interruptedDestination), interruptedSourceBytes,
+    'a retry must finish the same migration when the destination is byte-identical');
+  await assert.rejects(() => fs.access(interruptedSource), { code: 'ENOENT' });
+  await initializeAgentLayout(interruptedRoot, interruptedState);
+  assert.deepEqual(await fs.readFile(interruptedDestination), interruptedSourceBytes,
+    'repeated migration after recovery must remain idempotent');
+
+  // Simulate a process stopping before it can atomically publish the
+  // migration marker. A partial temporary marker is ignored and preserved;
+  // the untouched legacy queue can safely start a new migration attempt.
+  const markerInterruptedRoot = path.join(temporaryRoot, 'marker-interrupted-bridge');
+  const markerInterruptedState = path.join(temporaryRoot, 'marker-interrupted-state');
+  const markerInterruptedRequests = path.join(markerInterruptedRoot, 'requests');
+  await fs.mkdir(markerInterruptedRequests, { recursive: true });
+  const markerInterruptedBytes = Buffer.from('request survives incomplete marker write');
+  await fs.writeFile(path.join(markerInterruptedRequests, 'marker-retry.json'), markerInterruptedBytes);
+  const abandonedMarkerTemp = path.join(
+    markerInterruptedRoot,
+    '.desktop-commander-flat-migration.json.tmp-abandoned',
+  );
+  await fs.writeFile(abandonedMarkerTemp, '{"version":1,');
+  await initializeAgentLayout(markerInterruptedRoot, markerInterruptedState);
+  assert.deepEqual(
+    await fs.readFile(path.join(markerInterruptedRoot, 'agent-default', 'requests', 'marker-retry.json')),
+    markerInterruptedBytes,
+    'a partial temporary migration marker must not strand the legacy request',
+  );
+  assert.equal(await fs.readFile(abandonedMarkerTemp, 'utf8'), '{"version":1,',
+    'unrecognized temporary content is preserved rather than deleted');
+
+  if (process.platform !== 'win32') {
+    const symlinkRoot = path.join(temporaryRoot, 'symlink-bridge');
+    const symlinkState = path.join(temporaryRoot, 'symlink-state');
+    const outsidePath = path.join(temporaryRoot, 'outside-request.json');
+    const symlinkQueue = path.join(symlinkRoot, 'requests');
+    await fs.mkdir(symlinkQueue, { recursive: true });
+    const outsideBytes = Buffer.from('outside user data');
+    await fs.writeFile(outsidePath, outsideBytes);
+    await fs.symlink(outsidePath, path.join(symlinkQueue, 'external.json'));
+    await assert.rejects(() => initializeAgentLayout(symlinkRoot, symlinkState),
+      /refuses to follow symbolic links/);
+    assert.deepEqual(await fs.readFile(outsidePath), outsideBytes,
+      'migration must not follow or modify a symlink target');
+    assert.equal((await fs.lstat(path.join(symlinkQueue, 'external.json'))).isSymbolicLink(), true,
+      'the unrecognized symlink itself remains in place for manual handling');
+  }
 
   console.log('Agent queue layout and migration tests passed.');
 } finally {

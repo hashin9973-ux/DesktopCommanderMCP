@@ -22,7 +22,7 @@ const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_STORAGE_BYTES = 3_000_000_000;
 const STABILITY_CHECK_MS = 200;
 const REQUEST_PARSE_SETTLE_MS = 2_000;
-const BRIDGE_GUIDE_MARKER = '<!-- desktop-commander:bridge-guide:v5 -->';
+const BRIDGE_GUIDE_MARKER = '<!-- desktop-commander:bridge-guide:v6 -->';
 const RECENT_FILE_CLEANUP_GRACE_MS = 60_000;
 const MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
 
@@ -418,6 +418,22 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     'Successfully created PDFs are also copied into the same agent artifact directory and referenced in the response.',
     '',
     'A request with a failed command stops at that command; later commands are marked skipped. If the process crashes after a command starts but before its result is durably recorded, the command is marked outcome_unknown and is not retried automatically.',
+    '',
+    '## Transport behavior',
+    '',
+    '### Cloud-folder synchronization',
+    '',
+    'The Bridge root is the shared folder selected in the local Desktop Commander settings. Every conversation uses its own direct child agent-<uniqueid>/ folder; the three queue directories and processing ledger are scoped to that folder. The local worker watches the root and each discovered request folder for filesystem changes and also performs a one-second fallback scan. Cloud provider synchronization can delay when another device sees a newly written request or response, so check the exact path in your own folder before deciding that a request was lost.',
+    '',
+    'Use one running Cloud-folder worker for a shared root. A second conversation does not need a second root or a registration step: it creates and uses a different root-level agent folder. The agent folder name is the only conversation identity; do not add mailbox identifiers to request arguments.',
+    '',
+    '### GitHub Repository Bridge',
+    '',
+    'GitHub mode uses the repository root and the same agent-<uniqueid>/{requests,responses,artifacts}/ layout. Requests are staged from the remote agent folder into a local per-repository cache. The worker publishes artifacts first and the matching response file last; the response is the durable completion marker. Files are committed directly to the repository default branch. The Bridge does not create branches or pull requests.',
+    '',
+    'The local GitHub cache is keyed by the immutable GitHub repository ID. Durable processing ledgers are stored locally under that repository worker state and remain separated by agent folder and request ID. These ledgers are not shared between agents and are not a mailbox or registration database. On restart, the worker reconciles remote requests, prior responses, local cached work, and its durable per-agent processing records before executing more commands.',
+    '',
+    'GitHub mode normally receives signed push webhooks through an optional Cloudflare Quick Tunnel and also reconciles by polling. If webhook or tunnel setup is unavailable, polling continues. A successful upload confirms that GitHub accepted the file; it does not confirm that this conversation has retrieved the response. Each GitHub queue file is limited to 50 MiB. Large response fields are externalized to artifacts and large JSON artifacts may be split into ordered chunks; follow the response artifact references and validate their byte counts and hashes.',
     '',
     '## Tool catalog',
     '',

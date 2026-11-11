@@ -7,11 +7,11 @@ function usage(): string {
     'Commands:',
     '  mailbox users',
     '  mailbox register <username>',
-    '  mailbox read [--user <id|name>] [--from <id|name>] [--to <id|name>] [--unread] [--limit <n>]',
+    '  mailbox read [--user <username>] [--from <username>] [--to <username>] [--unread] [--limit <n>]',
     '  mailbox send-as-user <recipient> <message>',
-    '  mailbox send <sender-id|name> <recipient> <message>',
-    '  mailbox rename-user <id|name> <new-username>',
-    '  mailbox delete-user <id|name>',
+    '  mailbox send <sender-username> <recipient> <message>',
+    '  mailbox rename-user <username> <new-username>',
+    '  mailbox delete-user <username>',
     '  mailbox edit-mail <message-id> <new-message>',
     '  mailbox delete-mail <message-id>',
   ].join('\n');
@@ -50,17 +50,17 @@ export async function runMailboxCli(args: string[]): Promise<void> {
         break;
       }
       case 'send': {
-        if (rest.length < 3) throw new Error('Usage: mailbox send <sender-id|name> <recipient> <message>');
+        if (rest.length < 3) throw new Error('Usage: mailbox send <sender-username> <recipient> <message>');
         console.log(JSON.stringify(await mailboxStore.send(rest[0], rest[1], rest.slice(2).join(' ')), null, 2));
         break;
       }
       case 'rename-user': {
-        if (rest.length !== 2) throw new Error('Usage: mailbox rename-user <id|name> <new-username>');
+        if (rest.length !== 2) throw new Error('Usage: mailbox rename-user <username> <new-username>');
         console.log(JSON.stringify(await mailboxStore.renameUser(rest[0], rest[1]), null, 2));
         break;
       }
       case 'delete-user': {
-        if (rest.length !== 1) throw new Error('Usage: mailbox delete-user <id|name>');
+        if (rest.length !== 1) throw new Error('Usage: mailbox delete-user <username>');
         console.log(JSON.stringify(await mailboxStore.deleteUser(rest[0]), null, 2));
         break;
       }

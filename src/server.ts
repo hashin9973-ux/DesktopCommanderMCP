@@ -1151,9 +1151,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             {
                 name: "mailbox",
                 description: `
-                        Optional local, app-side messaging, independent of agent-scoped bridge folders. Mail is stored only on this device.
-                        Actions: register (username), inbox_unread (mailbox_user_id), send (mailbox_user_id, to username, message), list_users, and read (optional user/from/to/unreadOnly/limit filters).
-                        The mailbox identity is used only by this separate mailbox tool. Normal Desktop Commander tools and agent-scoped bridge requests identify agents by their folders and do not require a mailbox ID.
+                        Optional local-only messaging, independent of Bridge agent folders. Mail is stored only on this device and addressed by registered usernames.
+                        Actions: register (username), inbox_unread (username), send (username, to username, message), list_users, and read (optional user/from/to/unreadOnly/limit filters).
+                        These usernames are only mailbox addresses. Bridge conversations are identified exclusively by their own root-level agent folders.
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(MailboxArgsSchema),
                 annotations: {
@@ -1281,9 +1281,7 @@ export async function validateBridgeArtifactPath(filePath: string): Promise<stri
 
 async function handleCallToolRequest(request: CallToolRequest): Promise<ServerResult> {
     const { name, arguments: args } = request.params;
-    const persistedArgs = args && typeof args === 'object' && !Array.isArray(args)
-        ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'mailbox_user_id'))
-        : args;
+    const persistedArgs = args;
     const startTime = Date.now();
     // Hoisted above the try so the finally block can read them when emitting the
     // server_call_tool completion event (duration + status), even on the crash path.
@@ -1391,21 +1389,19 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
                             result = { content: [{ type: 'text', text: JSON.stringify({
                                 status: registered.existing ? 'already_registered' : 'registered',
                                 username: registered.user.username,
-                                mailbox_user_id: registered.user.id,
-                                message: 'Use this ID only with the separate mailbox inbox_unread and send actions. Normal tools and agent-scoped bridge requests do not need it.',
+                                message: 'Use this username only for the separate local mailbox. Bridge conversations use their own root-level agent folders.',
                             }, null, 2) }] };
                             break;
                         }
                         case 'inbox_unread': {
-                            const inbox = await mailboxStore.inboxUnread(parsed.mailbox_user_id!);
+                            const inbox = await mailboxStore.inboxUnread(parsed.username!);
                             result = { content: [{ type: 'text', text: inbox.messages.length
                                 ? JSON.stringify(inbox.messages, null, 2)
                                 : 'No unread messages.' }] };
                             break;
                         }
                         case 'send': {
-                            if (!parsed.mailbox_user_id) throw new Error('mailbox_user_id is required to send mail.');
-                            const message = await mailboxStore.send(parsed.mailbox_user_id, parsed.to!, parsed.message!);
+                            const message = await mailboxStore.send(parsed.username!, parsed.to!, parsed.message!);
                             result = { content: [{ type: 'text', text: `Message sent. Message ID: ${message.id}` }] };
                             break;
                         }

@@ -481,6 +481,7 @@ export class GitHubRepositoryClient {
     requests: GitHubContentEntry[];
     responses: GitHubContentEntry[];
     legacyArtifacts: GitHubContentEntry[];
+    agentDirectories: string[];
   }> {
     const commit = await this.requestJson(
       '/repos/' + this.repository + '/commits/' + encodeURIComponent(this.defaultBranch),
@@ -492,7 +493,7 @@ export class GitHubRepositoryClient {
 
     type TreeEntry = { path?: unknown; sha?: unknown; size?: unknown; type?: unknown; mode?: unknown };
     const treeUrl = '/repos/' + this.repository + '/git/trees/';
-    const agentQueuePath = /^(agent-[a-z0-9][a-z0-9-]{0,58}[a-z0-9])\/(requests|responses)\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/;
+    const agentQueuePath = /^(agent-[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?)\/(requests|responses)\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/;
     const legacyRequestPath = /^requests\/(?:request-)?([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/i;
     const legacyResponsePath = /^responses\/(?:response-)?([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.json$/i;
     const legacyArtifactPath = /^(?:artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)|agents\/([a-z0-9][a-z0-9._-]{0,63})\/artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*))$/i;
@@ -500,6 +501,21 @@ export class GitHubRepositoryClient {
     const requests: GitHubContentEntry[] = [];
     const responses: GitHubContentEntry[] = [];
     const legacyArtifacts: GitHubContentEntry[] = [];
+    const discoveredAgentIds = new Set<string>();
+    const previousAgentNamePattern = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
+
+    const recordAgentDirectory = (filePath: string, isDirectory = false): void => {
+      const segments = filePath.split('/');
+      if (segments.length === 1 && isValidAgentDirectoryName(segments[0])) {
+        discoveredAgentIds.add(segments[0]);
+      } else if (segments.length > 1 && isValidAgentDirectoryName(segments[0])) {
+        discoveredAgentIds.add(segments[0]);
+      } else if (segments.length > 1 && segments[0] === 'agents'
+        && (segments.length > 2 || isDirectory)
+        && previousAgentNamePattern.test(segments[1])) {
+        discoveredAgentIds.add('agent-' + segments[1]);
+      }
+    };
 
     const toEntry = (filePath: string, entry: TreeEntry): GitHubContentEntry | undefined => {
       if (entry.type !== 'blob' || entry.mode === '120000'
@@ -513,6 +529,7 @@ export class GitHubRepositoryClient {
       };
     };
     const addFile = (filePath: string, entry: TreeEntry): void => {
+      recordAgentDirectory(filePath, entry.type === 'tree');
       const result = toEntry(filePath, entry);
       if (!result) return;
       if (agentQueuePath.test(filePath)) {
@@ -543,7 +560,10 @@ export class GitHubRepositoryClient {
 
     if (fullTree.truncated !== true) {
       for (const entry of fullTree.tree as TreeEntry[]) {
-        if (typeof entry.path === 'string') addFile(entry.path, entry);
+        if (typeof entry.path === 'string') {
+          if (entry.type === 'tree' && !entry.path.includes('/')) recordAgentDirectory(entry.path, true);
+          addFile(entry.path, entry);
+        }
       }
     } else {
       // For large repositories, traverse only queue roots and the agent folders,
@@ -553,6 +573,12 @@ export class GitHubRepositoryClient {
         throw new Error('GitHub returned an invalid root Git tree while recovering a truncated listing.');
       }
       const rootEntries = rootTree.tree as TreeEntry[];
+      for (const entry of rootEntries) {
+        if (entry.type === 'tree' && typeof entry.path === 'string'
+          && isValidAgentDirectoryName(entry.path)) {
+          discoveredAgentIds.add(entry.path);
+        }
+      }
 
       for (const queueName of ['requests', 'responses'] as const) {
         const directory = rootEntries.find((entry) =>
@@ -630,6 +656,7 @@ export class GitHubRepositoryClient {
           if (entry.type === 'tree' && typeof entry.path === 'string'
             && /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(entry.path)
             && typeof entry.sha === 'string') {
+            discoveredAgentIds.add('agent-' + entry.path);
             agentDirectories.push({ name: entry.path, sha: entry.sha, prefix: 'agents/' + entry.path });
           }
         }
@@ -706,6 +733,7 @@ export class GitHubRepositoryClient {
       requests: requests.sort(byPath),
       responses: responses.sort(byPath),
       legacyArtifacts: legacyArtifacts.sort(byPath),
+      agentDirectories: [...discoveredAgentIds].sort(),
     };
   }
 
