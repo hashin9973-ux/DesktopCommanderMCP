@@ -614,8 +614,23 @@ export class GitHubBridgeSync {
       );
     }
 
-    // Do not delete flat queue sentinels or other unrecognized content. They
-    // are not protocol requests and may be user-owned files.
+    // Remove only the exact sentinel written by old releases. Preserve a
+    // same-named file with different bytes because it may be user-owned data.
+    const legacySentinel = Buffer.from('legacy queue sentinel\n', 'utf8');
+    for (const directory of ['requests', 'responses', 'artifacts']) {
+      const sentinelPath = directory + '/.gitkeep';
+      try {
+        const sentinelBytes = await this.client.readFile(sentinelPath);
+        if (sentinelBytes.equals(legacySentinel)) {
+          await this.client.deleteFileIfPresent(
+            sentinelPath,
+            'Remove verified generated legacy flat queue directory sentinel',
+          );
+        }
+      } catch (error) {
+        if (!(error instanceof GitHubApiError) || error.status !== 404) throw error;
+      }
+    }
     // Keep the marker in the repository as durable migration identity. The
     // local cache may still contain old flat files which must move to this
     // same compatibility folder on a later restart. It is tiny metadata, not

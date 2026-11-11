@@ -143,6 +143,7 @@ try {
     fs.mkdir(previousAgentRequests, { recursive: true }),
     fs.mkdir(previousPrefixedAgentRequests, { recursive: true }),
     fs.mkdir(previousReservedNameRequests, { recursive: true }),
+    fs.mkdir(previousDottedAgentRequests, { recursive: true }),
     fs.writeFile(previousAgentsSentinel, 'Desktop Commander agent-scoped queues.\n'),
     fs.mkdir(previousAgentLedger, { recursive: true }),
     fs.mkdir(previousPrefixedAgentLedger, { recursive: true }),
