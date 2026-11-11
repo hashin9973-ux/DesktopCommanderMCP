@@ -110,6 +110,23 @@ try {
     'conversation two',
   );
 
+  // Migrate the previously released nested agents/<name>/ layout into
+  // root-level agent-<name>/ folders without losing pending request bytes.
+  const previousLayoutRoot = path.join(temporaryRoot, 'previous-layout');
+  const previousAgentRequests = path.join(previousLayoutRoot, 'agents', 'chatgpt-old-conversation', 'requests');
+  await fs.mkdir(previousAgentRequests, { recursive: true });
+  await fs.writeFile(path.join(previousAgentRequests, 'legacy.json'), pendingRequest);
+  await initializeAgentLayout(previousLayoutRoot, path.join(temporaryRoot, 'previous-state'));
+  assert.deepEqual(
+    await fs.readFile(path.join(previousLayoutRoot, 'agent-chatgpt-old-conversation', 'requests', 'legacy.json')),
+    pendingRequest,
+  );
+  await assert.rejects(
+    () => fs.access(path.join(previousLayoutRoot, 'agents')),
+    { code: 'ENOENT' },
+    'the obsolete agents/ wrapper is removed after its folders are migrated',
+  );
+
   assert.equal(isValidAgentDirectoryName('agent-01'), true);
   assert.equal(isValidAgentDirectoryName('chatgpt.web'), false);
   assert.equal(isValidAgentDirectoryName('agent-chatgpt.web'), true);
