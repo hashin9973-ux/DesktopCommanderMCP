@@ -492,10 +492,11 @@ export class GitHubRepositoryClient {
 
     type TreeEntry = { path?: unknown; sha?: unknown; size?: unknown; type?: unknown; mode?: unknown };
     const treeUrl = '/repos/' + this.repository + '/git/trees/';
-    const agentQueuePath = /^agents\/([a-z0-9][a-z0-9._-]{0,63})\/(requests|responses)\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/;
+    const agentQueuePath = /^(agent-[a-z0-9][a-z0-9-]{0,58}[a-z0-9])\/(requests|responses)\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/;
     const legacyRequestPath = /^requests\/(?:request-)?([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/i;
     const legacyResponsePath = /^responses\/(?:response-)?([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.json$/i;
-    const legacyArtifactPath = /^artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)$/i;
+    const legacyArtifactPath = /^(?:artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)|agents\/([a-z0-9][a-z0-9._-]{0,63})\/artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*))$/i;
+    const previousAgentQueuePath = /^agents\/([a-z0-9][a-z0-9._-]{0,63})\/(requests|responses)\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/i;
     const requests: GitHubContentEntry[] = [];
     const responses: GitHubContentEntry[] = [];
     const legacyArtifacts: GitHubContentEntry[] = [];
@@ -515,9 +516,13 @@ export class GitHubRepositoryClient {
       const result = toEntry(filePath, entry);
       if (!result) return;
       if (agentQueuePath.test(filePath)) {
-        const agentId = filePath.split('/')[1];
+        const agentId = filePath.split('/')[0];
         if (!isValidAgentDirectoryName(agentId)) return;
-        if (filePath.split('/')[2] === 'requests') requests.push(result);
+        if (filePath.split('/')[1] === 'requests') requests.push(result);
+        else responses.push(result);
+      } else if (previousAgentQueuePath.test(filePath)) {
+        const queue = filePath.split('/')[2];
+        if (queue === 'requests') requests.push(result);
         else responses.push(result);
       } else if (legacyRequestPath.test(filePath)) {
         requests.push(result);
