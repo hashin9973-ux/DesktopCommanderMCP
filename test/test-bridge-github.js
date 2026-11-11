@@ -633,7 +633,8 @@ try {
     'the obsolete local cache agents/ wrapper is removed when all known data migrates');
   assert.deepEqual(api.getDirectoryListingCalls().filter(Boolean), [],
     'initialization must not list the requests/responses directories through the 1,000-entry-limited Contents API');
-  assert.ok(api.files.has('agent-default/.gitkeep'));
+  assert.ok(!api.files.has('agent-default/.gitkeep'),
+    'the bridge must not create a synthetic shared conversation folder');
   assert.ok(!api.files.has('requests/.gitkeep') && !api.files.has('responses/.gitkeep'));
   assert.ok(!api.files.has('artifacts/.gitkeep'));
   assert.ok(api.files.has('agent-default/requests/legacy-pending.json'));
