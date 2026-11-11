@@ -505,13 +505,12 @@ await assert.rejects(
 const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-github-bridge-'));
 const paths = {
   root: temporaryRoot,
-  agents: temporaryRoot,
 };
 const defaultPaths = {
-  root: path.join(paths.agents, 'agent-default'),
-  requests: path.join(paths.agents, 'agent-default', 'requests'),
-  responses: path.join(paths.agents, 'agent-default', 'responses'),
-  artifacts: path.join(paths.agents, 'agent-default', 'artifacts'),
+  root: path.join(paths.root, 'agent-default'),
+  requests: path.join(paths.root, 'agent-default', 'requests'),
+  responses: path.join(paths.root, 'agent-default', 'responses'),
+  artifacts: path.join(paths.root, 'agent-default', 'artifacts'),
 };
 
 try {
@@ -656,7 +655,7 @@ try {
   }
   await sync.syncOnce();
   for (const agentId of chatgptConversationIds) {
-    const agentRoot = path.join(paths.agents, agentId);
+    const agentRoot = path.join(paths.root, agentId);
     assert.deepEqual(
       await fs.readFile(path.join(agentRoot, 'requests', sharedId + '.json')),
       agentRequestBytes.get(agentId),
@@ -682,7 +681,7 @@ try {
     assert.ok(api.files.has(agentId + '/requests/' + sharedId + '.json'),
       'remote request history is retained for conversation ' + agentId);
     await assert.rejects(
-      () => fs.access(path.join(paths.agents, agentId, 'requests', sharedId + '.json')),
+      () => fs.access(path.join(paths.root, agentId, 'requests', sharedId + '.json')),
       /ENOENT/,
       'local staged request is removed after publishing that conversation response: ' + agentId,
     );
@@ -1097,13 +1096,12 @@ try {
   try {
     const restartedPaths = {
       root: restartRoot,
-      agents: restartRoot,
     };
     const restartedDefaultPaths = {
-      root: path.join(restartedPaths.agents, 'agent-default'),
-      requests: path.join(restartedPaths.agents, 'agent-default', 'requests'),
-      responses: path.join(restartedPaths.agents, 'agent-default', 'responses'),
-      artifacts: path.join(restartedPaths.agents, 'agent-default', 'artifacts'),
+      root: path.join(restartedPaths.root, 'agent-default'),
+      requests: path.join(restartedPaths.root, 'agent-default', 'requests'),
+      responses: path.join(restartedPaths.root, 'agent-default', 'responses'),
+      artifacts: path.join(restartedPaths.root, 'agent-default', 'artifacts'),
     };
     const restartedSync = new GitHubBridgeSync(client, restartedPaths);
     await restartedSync.initialize();
