@@ -562,13 +562,8 @@ export class GitHubBridgeSync {
     // Migrate remote requests/responses/artifacts with byte verification.
     await this.migrateLegacyRemoteQueue();
 
-    // Keep the reserved agent-default migration bucket tracked. New
-    // conversations create their own root-level agent-<uniqueid>/ folders.
-    await this.client.createFileIfAbsent(
-      'agent-default/.gitkeep',
-      Buffer.from('Desktop Commander root-level agent queues.\n', 'utf8'),
-      'Create Desktop Commander agent queue root',
-    );
+    // README.md is the repository-root marker; actual queue folders are
+    // created only when a conversation or legacy queue has work to store.
 
     // Publish the single current README whenever its generated content changes.
     // The local digest avoids an unnecessary remote README fetch on each poll.
