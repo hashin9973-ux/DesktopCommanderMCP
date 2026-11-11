@@ -16,7 +16,7 @@ try {
 
   const generatedGuidePath = path.join(generatedRoot, 'README.md');
   const generatedGuide = await fs.readFile(generatedGuidePath, 'utf8');
-  assert.match(generatedGuide, /desktop-commander:bridge-guide:v4/);
+  assert.match(generatedGuide, /desktop-commander:bridge-guide:v5/);
   assert.match(generatedGuide, /agents\/<agent-instance-id>\//);
   assert.match(generatedGuide, /agents\/chatgpt-7f3a91c2d4e6\/requests\/task-a1\.json/);
   assert.match(generatedGuide, /agents\/<agent-instance-id>\/responses\/<id>\.json/);
@@ -54,7 +54,7 @@ try {
   const upgradedGuide = await fs.readFile(path.join(oldGeneratedRoot, 'README.md'), 'utf8');
   assert.notEqual(upgradedGuide, staleGeneratedGuide,
     'an existing generated README with the previous marker must be refreshed');
-  assert.match(upgradedGuide, /desktop-commander:bridge-guide:v4/);
+  assert.match(upgradedGuide, /desktop-commander:bridge-guide:v5/);
   assert.match(upgradedGuide, /agents\/<agent-instance-id>/);
   assert.doesNotMatch(upgradedGuide, /Old structure: requests\//);
 
