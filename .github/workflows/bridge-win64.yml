@@ -296,7 +296,7 @@ jobs:
             if ($guideContent.Contains("mailbox_user_id") -or $guideContent.Contains("## Optional local mailbox")) {
               throw "Generated bridge README still couples bridge agents to mailbox identities."
             }
-            if (!$guideContent.Contains("NEW unique folder for this conversation") -or !$guideContent.Contains("Never use a shared platform-only folder such as chatgpt")) {
+            if (!$guideContent.Contains("NEW unique folder for this conversation") -or !$guideContent.Contains("Never share a folder between conversations")) {
               throw "Generated bridge README does not require separate folders for concurrent conversations from the same platform."
             }
             if (!$guideContent.Contains("agent-7f3a91c2d4e6/requests/task-a1.json") -or !$guideContent.Contains("agent-7f3a91c2d4e6/responses/task-a1.json")) {
