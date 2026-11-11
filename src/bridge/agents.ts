@@ -116,14 +116,30 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
     if (!legacyLedgerStat.isDirectory() || legacyLedgerStat.isSymbolicLink()) {
       throw new Error('Legacy bridge request ledgers must be stored in a real directory: ' + legacyLedgers);
     }
+    const ledgerEntries = await fs.readdir(legacyLedgers, { withFileTypes: true });
+    const migratedLegacyAgentLedgers = new Set<string>();
+
+    // Process known old folder identities before creating agent-default. This
+    // handles an old agent literally named "agent-default" without mistaking
+    // its ledger for the reserved flat-queue migration bucket.
+    for (const entry of ledgerEntries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink() || !previousAgentNames.has(entry.name)) continue;
+      await moveTreeWithoutOverwrite(
+        path.join(legacyLedgers, entry.name),
+        path.join(legacyLedgers, 'agent-' + entry.name),
+      );
+      migratedLegacyAgentLedgers.add(entry.name);
+    }
+
     const defaultLedgers = path.join(legacyLedgers, LEGACY_DEFAULT_AGENT);
     await fs.mkdir(defaultLedgers, { recursive: true });
     const defaultLedgerStat = await fs.lstat(defaultLedgers);
     if (!defaultLedgerStat.isDirectory() || defaultLedgerStat.isSymbolicLink()) {
       throw new Error('The default agent ledger path must be a real directory: ' + defaultLedgers);
     }
-    for (const entry of await fs.readdir(legacyLedgers, { withFileTypes: true })) {
-      if (entry.name === LEGACY_DEFAULT_AGENT) continue;
+
+    for (const entry of ledgerEntries) {
+      if (migratedLegacyAgentLedgers.has(entry.name) || entry.name === LEGACY_DEFAULT_AGENT) continue;
       const source = path.join(legacyLedgers, entry.name);
       if (entry.isFile()) {
         await moveTreeWithoutOverwrite(source, path.join(defaultLedgers, entry.name));
@@ -135,7 +151,7 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
       }
       if (entry.isDirectory() && !entry.isSymbolicLink()
         && LEGACY_AGENT_DIRECTORY_PATTERN.test(entry.name)
-        && (previousAgentNames.has(entry.name) || !entry.name.startsWith('agent-'))) {
+        && !entry.name.startsWith('agent-')) {
         await moveTreeWithoutOverwrite(source, path.join(legacyLedgers, 'agent-' + entry.name));
         continue;
       }
@@ -144,7 +160,6 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
       );
     }
   }
-
   if (await pathExists(previousAgentsRoot)) {
     const remainingEntries = await fs.readdir(previousAgentsRoot);
     if (remainingEntries.length === 0) {
