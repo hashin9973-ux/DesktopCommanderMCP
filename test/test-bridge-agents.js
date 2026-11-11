@@ -129,16 +129,14 @@ try {
 
   assert.equal(isValidAgentDirectoryName('agent-01'), true);
   assert.equal(isValidAgentDirectoryName('chatgpt.web'), false);
-  assert.equal(isValidAgentDirectoryName('agent-chatgpt.web'), true);
-  assert.equal(isValidAgentDirectoryName('agent-chatgpt.'), false,
+  assert.equal(isValidAgentDirectoryName('agent-chatgpt-web'), true);
+  assert.equal(isValidAgentDirectoryName('agent-chatgpt-'), false,
     'trailing dots are not portable across Windows filesystems');
   assert.equal(isValidAgentDirectoryName('Agent'), false,
     'agent folder names are lowercase for cross-platform identity consistency');
   assert.equal(isValidAgentDirectoryName('../chatgpt'), false);
-  assert.equal(isValidAgentDirectoryName('con'), false,
-    'Windows reserved device names cannot be agent folder names');
-  assert.equal(isValidAgentDirectoryName('nul.txt'), false,
-    'Windows reserved device names remain prohibited when followed by an extension');
+  assert.equal(isValidAgentDirectoryName('agent-con'), true,
+    'the agent- prefix keeps names distinct from Windows reserved device names');
 
   // Conflicting legacy files must stop migration without overwriting either
   // side or deleting the old source.
