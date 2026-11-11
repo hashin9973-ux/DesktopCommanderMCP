@@ -116,22 +116,29 @@ try {
   const previousStateRoot = path.join(temporaryRoot, 'previous-state');
   const previousAgentRequests = path.join(previousLayoutRoot, 'agents', 'chatgpt-old-conversation', 'requests');
   const previousPrefixedAgentRequests = path.join(previousLayoutRoot, 'agents', 'agent-cli-old', 'requests');
+  const previousReservedNameRequests = path.join(previousLayoutRoot, 'agents', 'agent-default', 'requests');
   const previousAgentLedger = path.join(previousStateRoot, 'requests', 'chatgpt-old-conversation');
   const previousPrefixedAgentLedger = path.join(previousStateRoot, 'requests', 'agent-cli-old');
+  const previousReservedNameLedger = path.join(previousStateRoot, 'requests', 'agent-default');
   await Promise.all([
     fs.mkdir(previousAgentRequests, { recursive: true }),
     fs.mkdir(previousPrefixedAgentRequests, { recursive: true }),
+    fs.mkdir(previousReservedNameRequests, { recursive: true }),
     fs.mkdir(previousAgentLedger, { recursive: true }),
     fs.mkdir(previousPrefixedAgentLedger, { recursive: true }),
+    fs.mkdir(previousReservedNameLedger, { recursive: true }),
   ]);
   const firstLedgerBytes = Buffer.from('first conversation ledger');
   const secondLedgerBytes = Buffer.from('second conversation ledger');
+  const reservedNameLedgerBytes = Buffer.from('old agent-default ledger');
   const flatLegacyLedgerBytes = Buffer.from('flat legacy ledger');
   await Promise.all([
     fs.writeFile(path.join(previousAgentRequests, 'legacy.json'), pendingRequest),
     fs.writeFile(path.join(previousPrefixedAgentRequests, 'prefixed-legacy.json'), pendingRequest),
+    fs.writeFile(path.join(previousReservedNameRequests, 'reserved-legacy.json'), pendingRequest),
     fs.writeFile(path.join(previousAgentLedger, 'same-id.json'), firstLedgerBytes),
     fs.writeFile(path.join(previousPrefixedAgentLedger, 'same-id.json'), secondLedgerBytes),
+    fs.writeFile(path.join(previousReservedNameLedger, 'same-id.json'), reservedNameLedgerBytes),
     fs.writeFile(path.join(previousStateRoot, 'requests', 'flat-legacy.json'), flatLegacyLedgerBytes),
   ]);
   await initializeAgentLayout(previousLayoutRoot, previousStateRoot);
@@ -141,6 +148,10 @@ try {
   );
   assert.deepEqual(
     await fs.readFile(path.join(previousLayoutRoot, 'agent-agent-cli-old', 'requests', 'prefixed-legacy.json')),
+    pendingRequest,
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(previousLayoutRoot, 'agent-agent-default', 'requests', 'reserved-legacy.json')),
     pendingRequest,
   );
   assert.deepEqual(
@@ -154,11 +165,16 @@ try {
     'old IDs beginning with agent- must not be mistaken for already-migrated root agent folder names',
   );
   assert.deepEqual(
+    await fs.readFile(path.join(previousStateRoot, 'requests', 'agent-agent-default', 'same-id.json')),
+    reservedNameLedgerBytes,
+    'a legacy agent already named agent-default must remain distinct from the reserved flat-queue bucket',
+  );
+  assert.deepEqual(
     await fs.readFile(path.join(previousStateRoot, 'requests', 'agent-default', 'flat-legacy.json')),
     flatLegacyLedgerBytes,
     'flat legacy ledgers must remain paired with the agent-default migration bucket',
   );
-  for (const oldLedgerPath of [previousAgentLedger, previousPrefixedAgentLedger]) {
+  for (const oldLedgerPath of [previousAgentLedger, previousPrefixedAgentLedger, previousReservedNameLedger]) {
     await assert.rejects(() => fs.access(oldLedgerPath), { code: 'ENOENT' });
   }
   await assert.rejects(
