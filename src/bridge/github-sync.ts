@@ -541,10 +541,20 @@ export class GitHubBridgeSync {
         'Remove obsolete flat Desktop Commander bridge directory sentinel',
       );
     }
-    await this.client.deleteFileIfPresent(
-      'agents/.gitkeep',
-      'Remove obsolete nested agent namespace sentinel after root-level migration',
-    );
+    // The previous release wrote this exact generated sentinel to keep
+    // agents/ tracked. Preserve any same-named user file with different bytes.
+    let previousAgentSentinel: Buffer | undefined;
+    try {
+      previousAgentSentinel = await this.client.readFile('agents/.gitkeep');
+    } catch (error) {
+      if (!(error instanceof GitHubApiError) || error.status !== 404) throw error;
+    }
+    if (previousAgentSentinel?.equals(Buffer.from('Desktop Commander agent-scoped queues.\\n', 'utf8'))) {
+      await this.client.deleteFileIfPresent(
+        'agents/.gitkeep',
+        'Remove verified generated nested agent namespace sentinel after root-level migration',
+      );
+    }
   }
 
   async initialize(): Promise<void> {
