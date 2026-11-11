@@ -501,19 +501,19 @@ export class GitHubRepositoryClient {
     const requests: GitHubContentEntry[] = [];
     const responses: GitHubContentEntry[] = [];
     const legacyArtifacts: GitHubContentEntry[] = [];
-    const agentDirectories = new Set<string>();
+    const discoveredAgentIds = new Set<string>();
     const previousAgentNamePattern = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 
     const recordAgentDirectory = (filePath: string, isDirectory = false): void => {
       const segments = filePath.split('/');
       if (segments.length === 1 && isValidAgentDirectoryName(segments[0])) {
-        agentDirectories.add(segments[0]);
+        discoveredAgentIds.add(segments[0]);
       } else if (segments.length > 1 && isValidAgentDirectoryName(segments[0])) {
-        agentDirectories.add(segments[0]);
+        discoveredAgentIds.add(segments[0]);
       } else if (segments.length > 1 && segments[0] === 'agents'
         && (segments.length > 2 || isDirectory)
         && previousAgentNamePattern.test(segments[1])) {
-        agentDirectories.add('agent-' + segments[1]);
+        discoveredAgentIds.add('agent-' + segments[1]);
       }
     };
 
@@ -576,7 +576,7 @@ export class GitHubRepositoryClient {
       for (const entry of rootEntries) {
         if (entry.type === 'tree' && typeof entry.path === 'string'
           && isValidAgentDirectoryName(entry.path)) {
-          agentDirectories.add(entry.path);
+          discoveredAgentIds.add(entry.path);
         }
       }
 
@@ -656,7 +656,7 @@ export class GitHubRepositoryClient {
           if (entry.type === 'tree' && typeof entry.path === 'string'
             && /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(entry.path)
             && typeof entry.sha === 'string') {
-            agentDirectories.add('agent-' + entry.path);
+            discoveredAgentIds.add('agent-' + entry.path);
             agentDirectories.push({ name: entry.path, sha: entry.sha, prefix: 'agents/' + entry.path });
           }
         }
@@ -733,7 +733,7 @@ export class GitHubRepositoryClient {
       requests: requests.sort(byPath),
       responses: responses.sort(byPath),
       legacyArtifacts: legacyArtifacts.sort(byPath),
-      agentDirectories: [...agentDirectories].sort(),
+      agentDirectories: [...discoveredAgentIds].sort(),
     };
   }
 

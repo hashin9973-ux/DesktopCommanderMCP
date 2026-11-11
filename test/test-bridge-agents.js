@@ -328,6 +328,29 @@ try {
   assert.deepEqual(await fs.readFile(interruptedDestination), interruptedSourceBytes,
     'repeated migration after recovery must remain idempotent');
 
+  // Simulate a process stopping before it can atomically publish the
+  // migration marker. A partial temporary marker is ignored and preserved;
+  // the untouched legacy queue can safely start a new migration attempt.
+  const markerInterruptedRoot = path.join(temporaryRoot, 'marker-interrupted-bridge');
+  const markerInterruptedState = path.join(temporaryRoot, 'marker-interrupted-state');
+  const markerInterruptedRequests = path.join(markerInterruptedRoot, 'requests');
+  await fs.mkdir(markerInterruptedRequests, { recursive: true });
+  const markerInterruptedBytes = Buffer.from('request survives incomplete marker write');
+  await fs.writeFile(path.join(markerInterruptedRequests, 'marker-retry.json'), markerInterruptedBytes);
+  const abandonedMarkerTemp = path.join(
+    markerInterruptedRoot,
+    '.desktop-commander-flat-migration.json.tmp-abandoned',
+  );
+  await fs.writeFile(abandonedMarkerTemp, '{"version":1,');
+  await initializeAgentLayout(markerInterruptedRoot, markerInterruptedState);
+  assert.deepEqual(
+    await fs.readFile(path.join(markerInterruptedRoot, 'agent-default', 'requests', 'marker-retry.json')),
+    markerInterruptedBytes,
+    'a partial temporary migration marker must not strand the legacy request',
+  );
+  assert.equal(await fs.readFile(abandonedMarkerTemp, 'utf8'), '{"version":1,',
+    'unrecognized temporary content is preserved rather than deleted');
+
   if (process.platform !== 'win32') {
     const symlinkRoot = path.join(temporaryRoot, 'symlink-bridge');
     const symlinkState = path.join(temporaryRoot, 'symlink-state');

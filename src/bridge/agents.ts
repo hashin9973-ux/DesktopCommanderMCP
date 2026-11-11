@@ -105,7 +105,7 @@ async function moveTreeWithoutOverwrite(
   // a destination created by another process. A crash can leave only an
   // unreferenced temporary file; the legacy source remains available to retry.
   const sourceBytes = await fs.readFile(source);
-  const temporary = destination + '.dc-migrate-' + randomUUID().replaceAll('-', '') + '.tmp';
+  const temporary = destination + '.dc-migrate-' + randomUUID().replace(/-/g, '') + '.tmp';
   let tempCreated = false;
   try {
     const handle = await fs.open(temporary, 'wx', sourceStat.mode & 0o777);
@@ -177,23 +177,37 @@ async function readFlatMigrationMarker(bridgeRoot: string): Promise<string | und
 
 async function writeFlatMigrationMarker(bridgeRoot: string, agentId: string): Promise<void> {
   const markerPath = path.join(bridgeRoot, LEGACY_FLAT_MIGRATION_MARKER);
+  const temporary = markerPath + '.tmp-' + randomUUID().replace(/-/g, '');
   const bytes = Buffer.from(JSON.stringify({ version: 1, agentId }) + '\n', 'utf8');
-  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  let temporaryCreated = false;
   try {
-    handle = await fs.open(markerPath, 'wx', 0o600);
-    await handle.writeFile(bytes);
-    await handle.sync();
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    const existing = await readFlatMigrationMarker(bridgeRoot);
-    if (existing !== agentId) {
-      throw new Error('A different legacy flat-queue migration is already recorded; no data was overwritten.');
+    const handle = await fs.open(temporary, 'wx', 0o600);
+    temporaryCreated = true;
+    try {
+      await handle.writeFile(bytes);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+
+    // Publish only a complete marker and never replace an existing decision.
+    // If interrupted before link(), the legacy data is untouched and startup
+    // can select a fresh marker; after link(), the recorded decision is durable.
+    try {
+      await fs.link(temporary, markerPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const existing = await readFlatMigrationMarker(bridgeRoot);
+      if (existing !== agentId) {
+        throw new Error('A different legacy flat-queue migration is already recorded; no data was overwritten.');
+      }
     }
   } finally {
-    await handle?.close();
+    if (temporaryCreated) {
+      await fs.unlink(temporary).catch(() => undefined);
+    }
   }
 }
-
 async function resolveFlatMigrationAgent(
   bridgeRoot: string,
   previousAgentNames: Set<string>,
@@ -222,7 +236,7 @@ async function resolveFlatMigrationAgent(
   let agentId = LEGACY_DEFAULT_AGENT;
   if (defaultDestinationOccupied) {
     do {
-      agentId = 'agent-legacy-flat-' + randomUUID().replaceAll('-', '');
+      agentId = 'agent-legacy-flat-' + randomUUID().replace(/-/g, '');
     } while (
       await pathExists(path.join(bridgeRoot, agentId))
       || previousAgentNames.has(agentId.slice('agent-'.length))

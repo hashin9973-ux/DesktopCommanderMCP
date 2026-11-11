@@ -551,7 +551,7 @@ export class GitHubBridgeSync {
       flatAgentId = LEGACY_DEFAULT_AGENT;
       if (occupied.has(LEGACY_DEFAULT_AGENT)) {
         do {
-          flatAgentId = 'agent-legacy-flat-' + randomUUID().replaceAll('-', '');
+          flatAgentId = 'agent-legacy-flat-' + randomUUID().replace(/-/g, '');
         } while (occupied.has(flatAgentId));
       }
       await this.writeRemoteFlatMigrationAgent(flatAgentId);
