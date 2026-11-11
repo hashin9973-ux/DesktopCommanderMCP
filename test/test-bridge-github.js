@@ -604,7 +604,16 @@ try {
     fs.mkdir(previousLocalLedger, { recursive: true }),
   ]);
   const previousLocalRequestBytes = Buffer.from('cached local request');
-  const previousLocalResponseBytes = Buffer.from('cached local response');
+  const previousLocalResponseBytes = Buffer.from(JSON.stringify({
+    protocol_version: 1,
+    id: 'cached-task',
+    request_hash: 'cached-request-hash',
+    status: 'completed',
+    started_at: '2026-01-01T00:00:00.000Z',
+    completed_at: '2026-01-01T00:00:01.000Z',
+    results: [],
+    artifacts: [],
+  }), 'utf8');
   const previousLocalArtifactBytes = Buffer.from([9, 8, 7, 6]);
   const previousLocalLedgerBytes = Buffer.from('cached local processing ledger');
   await Promise.all([
