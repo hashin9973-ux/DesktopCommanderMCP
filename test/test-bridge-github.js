@@ -581,7 +581,8 @@ try {
     bytes: legacyArtifactBytes, sha: gitBlobSha(legacyArtifactBytes),
   });
 
-  const sync = new GitHubBridgeSync(client, paths);
+  const workerStateDirectory = path.join(temporaryRoot, 'worker-state', 'localappdata', 'DesktopCommanderBridge');
+const sync = new GitHubBridgeSync(client, paths, workerStateDirectory);
   api.resetDirectoryListingCalls();
   await sync.initialize();
   assert.deepEqual(api.getDirectoryListingCalls().filter(Boolean), [],
@@ -1103,7 +1104,7 @@ try {
       responses: path.join(restartedPaths.root, 'agent-default', 'responses'),
       artifacts: path.join(restartedPaths.root, 'agent-default', 'artifacts'),
     };
-    const restartedSync = new GitHubBridgeSync(client, restartedPaths);
+    const restartedSync = new GitHubBridgeSync(client, restartedPaths, workerStateDirectory);
     await restartedSync.initialize();
     await restartedSync.syncOnce();
     await assert.rejects(
