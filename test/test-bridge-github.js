@@ -600,10 +600,12 @@ try {
   assert.equal(api.getRawReadCount('README.md'), 1,
     'routine initialization must use the local generated-guide digest instead of downloading README again');
 
-  // Two agents may use the same request ID without sharing queue state.
+  // Two separate ChatGPT conversations share the same model/platform but
+  // must never share queue, response, artifact, or durable-idempotency state.
   const sharedId = 'same-id';
+  const chatgptConversationIds = ['chatgpt-7f3a91c2d4e6', 'chatgpt-2b8e4d6a1c9f'];
   const agentRequestBytes = new Map();
-  for (const agentId of ['chatgpt', 'claude']) {
+  for (const agentId of chatgptConversationIds) {
     const bytes = Buffer.from(JSON.stringify({
       protocol_version: 1,
       id: sharedId,
@@ -614,12 +616,12 @@ try {
     api.files.set(remotePath, { bytes, sha: gitBlobSha(bytes) });
   }
   await sync.syncOnce();
-  for (const agentId of ['chatgpt', 'claude']) {
+  for (const agentId of chatgptConversationIds) {
     const agentRoot = path.join(paths.agents, agentId);
     assert.deepEqual(
       await fs.readFile(path.join(agentRoot, 'requests', sharedId + '.json')),
       agentRequestBytes.get(agentId),
-      'same request ID must be staged independently for ' + agentId,
+      'same request ID must be staged independently for conversation ' + agentId,
     );
     const responseHash = crypto.createHash('sha256').update(agentRequestBytes.get(agentId)).digest('hex');
     const localResponsePath = path.join(agentRoot, 'responses', sharedId + '.json');
@@ -635,16 +637,15 @@ try {
     }));
   }
   await sync.syncOnce();
-  assert.ok(api.files.has('agents/chatgpt/responses/' + sharedId + '.json'));
-  assert.ok(api.files.has('agents/claude/responses/' + sharedId + '.json'),
-    'each agent must receive its own response even when the request IDs match');
-  for (const agentId of ['chatgpt', 'claude']) {
+  for (const agentId of chatgptConversationIds) {
+    assert.ok(api.files.has('agents/' + agentId + '/responses/' + sharedId + '.json'),
+      'each ChatGPT conversation must receive its own response: ' + agentId);
     assert.ok(api.files.has('agents/' + agentId + '/requests/' + sharedId + '.json'),
-      'remote request history is retained for agent ' + agentId);
+      'remote request history is retained for conversation ' + agentId);
     await assert.rejects(
       () => fs.access(path.join(paths.agents, agentId, 'requests', sharedId + '.json')),
       /ENOENT/,
-      'local staged request is removed after publishing that agent response: ' + agentId,
+      'local staged request is removed after publishing that conversation response: ' + agentId,
     );
   }
 
