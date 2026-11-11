@@ -17,10 +17,10 @@ try {
   const generatedGuidePath = path.join(generatedRoot, 'README.md');
   const generatedGuide = await fs.readFile(generatedGuidePath, 'utf8');
   assert.match(generatedGuide, /desktop-commander:bridge-guide:v4/);
-  assert.match(generatedGuide, /agents\/<agent-name>\//);
-  assert.match(generatedGuide, /agents\/chatgpt\/requests\/task-a1\.json/);
-  assert.match(generatedGuide, /agents\/<agent-name>\/responses\/<id>\.json/);
-  assert.match(generatedGuide, /agents\/<agent-name>\/artifacts/);
+  assert.match(generatedGuide, /agents\/<agent-instance-id>\//);
+  assert.match(generatedGuide, /agents\/chatgpt-7f3a91c2d4e6\/requests\/task-a1\.json/);
+  assert.match(generatedGuide, /agents\/<agent-instance-id>\/responses\/<id>\.json/);
+  assert.match(generatedGuide, /agents\/<agent-instance-id>\/artifacts/);
   assert.match(generatedGuide, /folder identifies this agent instance/);
   assert.match(generatedGuide, /Request IDs need only be unique within this conversation's folder/);
   assert.match(generatedGuide, /one isolated workspace per conversation or subagent instance/);
@@ -55,7 +55,7 @@ try {
   assert.notEqual(upgradedGuide, staleGeneratedGuide,
     'an existing generated README with the previous marker must be refreshed');
   assert.match(upgradedGuide, /desktop-commander:bridge-guide:v4/);
-  assert.match(upgradedGuide, /agents\/<agent-name>/);
+  assert.match(upgradedGuide, /agents\/<agent-instance-id>/);
   assert.doesNotMatch(upgradedGuide, /Old structure: requests\//);
 
   // Custom user-authored README files are deliberately preserved.
