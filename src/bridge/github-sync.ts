@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { isValidAgentDirectoryName } from './agents.js';
+import { initializeAgentLayout, isValidAgentDirectoryName } from './agents.js';
 import { createHash } from 'node:crypto';
 import { writeFileAtomic } from '../utils/atomic-write.js';
 import { createGuideIfMissing } from './runtime.js';
@@ -14,7 +14,6 @@ import {
 
 export interface GitHubBridgeCachePaths {
   root: string;
-  agents: string;
 }
 
 interface AgentGitHubBridgeCachePaths {
@@ -391,7 +390,7 @@ async function uploadResponseArtifact(
     wholeHash.update(bytes);
     totalBytes += bytes.length;
     await client.createFileIfAbsent(
-      'agents/' + agentId + '/' + part.path,
+      agentId + '/' + part.path,
       bytes,
       'Store Desktop Commander bridge artifact ' + agentId + '/' + requestId,
     );
@@ -409,13 +408,14 @@ export class GitHubBridgeSync {
   constructor(
     private readonly client: GitHubRepositoryClient,
     private readonly paths: GitHubBridgeCachePaths,
+    private readonly workerStateDirectory: string,
   ) {}
 
   private agentPaths(agentId: string): AgentGitHubBridgeCachePaths {
     if (!isValidAgentDirectoryName(agentId)) {
       throw new Error('Invalid agent folder name in GitHub bridge queue: ' + agentId);
     }
-    const root = path.join(this.paths.agents, agentId);
+    const root = path.join(this.paths.root, agentId);
     return {
       root,
       requests: path.join(root, 'requests'),
@@ -432,11 +432,6 @@ export class GitHubBridgeSync {
       throw new Error('The local GitHub bridge cache root must be a real directory.');
     }
 
-    await fs.mkdir(this.paths.agents, { recursive: true });
-    const agentsStat = await fs.lstat(this.paths.agents);
-    if (!agentsStat.isDirectory() || agentsStat.isSymbolicLink()) {
-      throw new Error('The local GitHub agent cache root must be a real directory.');
-    }
     const samePath = (left: string, right: string): boolean => {
       const resolvedLeft = path.resolve(left);
       const resolvedRight = path.resolve(right);
@@ -445,18 +440,13 @@ export class GitHubBridgeSync {
         : resolvedLeft === resolvedRight;
     };
     const realRoot = await fs.realpath(this.paths.root);
-    const realAgents = await fs.realpath(this.paths.agents);
-    if (!samePath(realAgents, path.join(realRoot, 'agents'))) {
-      throw new Error('The local GitHub agent cache root resolves outside the repository cache.');
-    }
-
     await fs.mkdir(paths.root, { recursive: true });
     const agentStat = await fs.lstat(paths.root);
     if (!agentStat.isDirectory() || agentStat.isSymbolicLink()) {
       throw new Error('The local cache directory for agent ' + agentId + ' must be a real directory.');
     }
     const realAgent = await fs.realpath(paths.root);
-    if (!samePath(realAgent, path.join(realAgents, agentId))) {
+    if (!samePath(realAgent, path.join(realRoot, agentId))) {
       throw new Error('The local cache directory for agent ' + agentId + ' resolves outside the agent cache root.');
     }
 
@@ -477,10 +467,10 @@ export class GitHubBridgeSync {
   private parseQueueEntry(entry: GitHubContentEntry, queueName: 'requests' | 'responses'):
     { agentId: string; requestId: string } | undefined {
     const segments = entry.path.split('/');
-    if (segments.length !== 4 || segments[0] !== 'agents' || segments[2] !== queueName) return undefined;
-    if (!isValidAgentDirectoryName(segments[1])) return undefined;
-    const match = (queueName === 'requests' ? REQUEST_PATTERN : RESPONSE_PATTERN).exec(segments[3]);
-    return match ? { agentId: segments[1], requestId: match[1] } : undefined;
+    if (segments.length !== 3 || segments[1] !== queueName) return undefined;
+    if (!isValidAgentDirectoryName(segments[0])) return undefined;
+    const match = (queueName === 'requests' ? REQUEST_PATTERN : RESPONSE_PATTERN).exec(segments[2]);
+    return match ? { agentId: segments[0], requestId: match[1] } : undefined;
   }
 
   private async migrateLegacyRemoteQueue(): Promise<void> {
@@ -488,26 +478,33 @@ export class GitHubBridgeSync {
     const transfers: Array<{ source: string; destination: string }> = [];
 
     for (const entry of [...legacy.requests, ...legacy.responses]) {
-      if (!entry.path.startsWith('requests/') && !entry.path.startsWith('responses/')) continue;
-      const queue = entry.path.split('/')[0];
-      const destination = 'agents/default/' + queue + '/' + entry.name;
-      transfers.push({ source: entry.path, destination });
+      if (entry.path.startsWith('requests/') || entry.path.startsWith('responses/')) {
+        const queue = entry.path.split('/')[0];
+        const destination = 'agent-default/' + queue + '/' + entry.name;
+        transfers.push({ source: entry.path, destination });
+        continue;
+      }
+      const previousAgent = /^agents\/([a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?)\/(requests|responses)\/([^/]+)$/.exec(entry.path);
+      if (previousAgent) {
+        transfers.push({
+          source: entry.path,
+          destination: 'agent-' + previousAgent[1] + '/' + previousAgent[2] + '/' + previousAgent[3],
+        });
+      }
     }
 
     for (const entry of legacy.legacyArtifacts) {
       const match = /^artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)$/i.exec(entry.path);
-      if (!match) continue;
-      transfers.push({
-        source: entry.path,
-        destination: 'agents/default/artifacts/' + match[1] + '/' + match[2],
-      });
+      const previous = /^agents\/([a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?)\/artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)$/i.exec(entry.path);
+      if (match) transfers.push({ source: entry.path, destination: 'agent-default/artifacts/' + match[1] + '/' + match[2] });
+      else if (previous) transfers.push({ source: entry.path, destination: 'agent-' + previous[1] + '/artifacts/' + previous[2] + '/' + previous[3] });
     }
 
     // A response is the durable completion marker. Move requests first,
     // artifacts next, and responses last so an agent never observes a migrated
     // response before its referenced artifacts are available.
     const migrationOrder = (source: string): number =>
-      source.startsWith('requests/') ? 0 : source.startsWith('artifacts/') ? 1 : 2;
+      /(?:^|\/)requests\//.test(source) ? 0 : /(?:^|\/)artifacts\//.test(source) ? 1 : 2;
     transfers.sort((left, right) =>
       migrationOrder(left.source) - migrationOrder(right.source)
       || left.source.localeCompare(right.source),
@@ -521,7 +518,7 @@ export class GitHubBridgeSync {
       await this.client.createFileIfAbsent(
         transfer.destination,
         sourceBytes,
-        'Migrate legacy Desktop Commander queue item to agent/default',
+        'Migrate legacy Desktop Commander queue item into its root-level agent folder',
       );
       const destinationBytes = await this.client.readFile(transfer.destination);
       if (!destinationBytes.equals(sourceBytes)) {
@@ -537,38 +534,46 @@ export class GitHubBridgeSync {
     }
 
     // The old flat sentinels are removed only after all real queue items have
-    // been copied and verified inside agents/default.
+    // been copied and verified inside agent-default.
     for (const directory of ['requests', 'responses', 'artifacts']) {
       await this.client.deleteFileIfPresent(
         directory + '/.gitkeep',
         'Remove obsolete flat Desktop Commander bridge directory sentinel',
       );
     }
+    // The previous release wrote this exact generated sentinel to keep
+    // agents/ tracked. Preserve any same-named user file with different bytes.
+    let previousAgentSentinel: Buffer | undefined;
+    try {
+      previousAgentSentinel = await this.client.readFile('agents/.gitkeep');
+    } catch (error) {
+      if (!(error instanceof GitHubApiError) || error.status !== 404) throw error;
+    }
+    if (previousAgentSentinel?.equals(Buffer.from('Desktop Commander agent-scoped queues.\n', 'utf8'))) {
+      await this.client.deleteFileIfPresent(
+        'agents/.gitkeep',
+        'Remove verified generated nested agent namespace sentinel after root-level migration',
+      );
+    }
   }
 
   async initialize(): Promise<void> {
-    await Promise.all([
-      fs.mkdir(this.paths.root, { recursive: true }),
-      fs.mkdir(this.paths.agents, { recursive: true }),
-    ]);
+    await fs.mkdir(this.paths.root, { recursive: true });
     const rootStat = await fs.lstat(this.paths.root);
-    const agentsStat = await fs.lstat(this.paths.agents);
-    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()
-      || !agentsStat.isDirectory() || agentsStat.isSymbolicLink()) {
-      throw new Error('The local GitHub bridge cache and agents paths must be real directories.');
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      throw new Error('The local GitHub bridge cache root must be a real directory.');
     }
 
-    // Move any existing flat queue into the explicit default agent. This
-    // preserves pending work and historical response/artifact data.
+    // Upgrade local staged requests/responses/artifacts and their idempotency
+    // ledgers before reconciling remote state or starting the worker. This
+    // prevents the old cacheRoot/agents/<name>/ layout from being stranded.
+    await initializeAgentLayout(this.paths.root, this.workerStateDirectory);
+
+    // Migrate remote requests/responses/artifacts with byte verification.
     await this.migrateLegacyRemoteQueue();
 
-    // Keep the agents root tracked even before the first named agent submits
-    // a request. This is the only root-level queue marker in the new layout.
-    await this.client.createFileIfAbsent(
-      'agents/.gitkeep',
-      Buffer.from('Desktop Commander agent-scoped queues.\n', 'utf8'),
-      'Create Desktop Commander agent queue root',
-    );
+    // README.md is the repository-root marker; actual queue folders are
+    // created only when a conversation or legacy queue has work to store.
 
     // Publish the single current README whenever its generated content changes.
     // The local digest avoids an unnecessary remote README fetch on each poll.
@@ -640,7 +645,7 @@ export class GitHubBridgeSync {
     }> = [];
     let agentEntries;
     try {
-      agentEntries = await fs.readdir(this.paths.agents, { withFileTypes: true });
+      agentEntries = await fs.readdir(this.paths.root, { withFileTypes: true });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return results;
       throw error;
@@ -779,7 +784,7 @@ export class GitHubBridgeSync {
           await uploadResponseArtifact(this.client, entry.paths, entry.agentId, entry.requestId, artifact);
         }
 
-        const remoteResponsePath = 'agents/' + entry.agentId + '/responses/' + entry.name;
+        const remoteResponsePath = entry.agentId + '/responses/' + entry.name;
         await this.client.createFileIfAbsent(
           remoteResponsePath,
           responseBytes,

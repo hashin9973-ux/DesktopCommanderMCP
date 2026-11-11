@@ -55,7 +55,7 @@ try {
   ]);
 
   const agentsRoot = await initializeAgentLayout(bridgeRoot, stateRoot);
-  assert.equal(agentsRoot, path.join(bridgeRoot, 'agents'));
+  assert.equal(agentsRoot, bridgeRoot);
   const defaultRoot = path.join(agentsRoot, LEGACY_DEFAULT_AGENT);
   assert.deepEqual(await fs.readFile(path.join(defaultRoot, 'requests', 'pending-task.json')), pendingRequest);
   assert.deepEqual(await fs.readFile(path.join(defaultRoot, 'responses', 'completed-task.json')), completedResponse);
@@ -74,47 +74,162 @@ try {
   await initializeAgentLayout(bridgeRoot, stateRoot);
   assert.deepEqual(await fs.readFile(path.join(defaultRoot, 'requests', 'pending-task.json')), pendingRequest);
 
-  // Independent agents may reuse the same request ID. Their request, response,
-  // artifact, and ledger roots remain separate.
-  for (const agentId of ['chatgpt', 'claude', 'planner']) {
+  // Separate ChatGPT conversations must use separate folders even though
+  // they share the same model/platform. Request, response, artifact, and
+  // processing-ledger state must not collide when their request IDs match.
+  const chatgptConversationOneId = 'agent-7f3a91c2d4e6';
+  const chatgptConversationTwoId = 'agent-2b8e4d6a1c9f';
+  const plannerId = 'agent-05c4e7a19b2d';
+  for (const agentId of [chatgptConversationOneId, chatgptConversationTwoId, plannerId]) {
     await fs.mkdir(path.join(agentsRoot, agentId), { recursive: true });
   }
   const agents = await discoverAgentQueuePaths(agentsRoot, stateRoot);
-  assert.deepEqual(agents.map((agent) => agent.agentId), ['chatgpt', 'claude', 'default', 'planner']);
-  const chatgpt = agents.find((agent) => agent.agentId === 'chatgpt');
-  const claude = agents.find((agent) => agent.agentId === 'claude');
-  assert.ok(chatgpt && claude);
-  assert.notEqual(chatgpt.requests, claude.requests);
-  assert.notEqual(chatgpt.responses, claude.responses);
-  assert.notEqual(chatgpt.artifacts, claude.artifacts);
-  assert.notEqual(chatgpt.ledgers, claude.ledgers);
-  assert.equal(chatgpt.requests, path.join(agentsRoot, 'chatgpt', 'requests'));
-  assert.equal(chatgpt.responses, path.join(agentsRoot, 'chatgpt', 'responses'));
-  assert.equal(chatgpt.artifacts, path.join(agentsRoot, 'chatgpt', 'artifacts'));
+  assert.deepEqual(agents.map((agent) => agent.agentId), [
+    plannerId, chatgptConversationTwoId, chatgptConversationOneId, 'agent-default',
+  ]);
+  const chatgptConversationOne = agents.find((agent) => agent.agentId === chatgptConversationOneId);
+  const chatgptConversationTwo = agents.find((agent) => agent.agentId === chatgptConversationTwoId);
+  assert.ok(chatgptConversationOne && chatgptConversationTwo);
+  assert.notEqual(chatgptConversationOne.requests, chatgptConversationTwo.requests);
+  assert.notEqual(chatgptConversationOne.responses, chatgptConversationTwo.responses);
+  assert.notEqual(chatgptConversationOne.artifacts, chatgptConversationTwo.artifacts);
+  assert.notEqual(chatgptConversationOne.ledgers, chatgptConversationTwo.ledgers);
+  assert.equal(chatgptConversationOne.requests,
+    path.join(agentsRoot, chatgptConversationOneId, 'requests'));
+  assert.equal(chatgptConversationTwo.requests,
+    path.join(agentsRoot, chatgptConversationTwoId, 'requests'));
 
-  await fs.writeFile(path.join(chatgpt.requests, 'same-id.json'), 'chatgpt');
-  await fs.writeFile(path.join(claude.requests, 'same-id.json'), 'claude');
-  assert.equal(await fs.readFile(path.join(chatgpt.requests, 'same-id.json'), 'utf8'), 'chatgpt');
-  assert.equal(await fs.readFile(path.join(claude.requests, 'same-id.json'), 'utf8'), 'claude');
+  await fs.writeFile(path.join(chatgptConversationOne.requests, 'same-id.json'), 'conversation one');
+  await fs.writeFile(path.join(chatgptConversationTwo.requests, 'same-id.json'), 'conversation two');
+  await fs.writeFile(path.join(chatgptConversationOne.responses, 'same-id.json'), 'response one');
+  await fs.writeFile(path.join(chatgptConversationTwo.responses, 'same-id.json'), 'response two');
+  await fs.writeFile(path.join(chatgptConversationOne.artifacts, 'same-id.bin'), 'artifact one');
+  await fs.writeFile(path.join(chatgptConversationTwo.artifacts, 'same-id.bin'), 'artifact two');
+  await fs.writeFile(path.join(chatgptConversationOne.ledgers, 'same-id.json'), 'ledger one');
+  await fs.writeFile(path.join(chatgptConversationTwo.ledgers, 'same-id.json'), 'ledger two');
+  assert.equal(
+    await fs.readFile(path.join(chatgptConversationOne.requests, 'same-id.json'), 'utf8'),
+    'conversation one',
+  );
+  assert.equal(
+    await fs.readFile(path.join(chatgptConversationTwo.requests, 'same-id.json'), 'utf8'),
+    'conversation two',
+  );
+  for (const [folder, expected] of [
+    [chatgptConversationOne, ['response one', 'artifact one', 'ledger one']],
+    [chatgptConversationTwo, ['response two', 'artifact two', 'ledger two']],
+  ]) {
+    assert.deepEqual([
+      await fs.readFile(path.join(folder.responses, 'same-id.json'), 'utf8'),
+      await fs.readFile(path.join(folder.artifacts, 'same-id.bin'), 'utf8'),
+      await fs.readFile(path.join(folder.ledgers, 'same-id.json'), 'utf8'),
+    ], expected, 'responses, artifacts, and durable ledgers are scoped to the same conversation folder');
+  }
+
+  // Migrate the previously released nested agents/<name>/ layout into
+  // root-level agent-<name>/ folders without losing pending request bytes.
+  const previousLayoutRoot = path.join(temporaryRoot, 'previous-layout');
+  const previousStateRoot = path.join(temporaryRoot, 'previous-state');
+  const previousAgentRequests = path.join(previousLayoutRoot, 'agents', 'chatgpt-old-conversation', 'requests');
+  const previousPrefixedAgentRequests = path.join(previousLayoutRoot, 'agents', 'agent-cli-old', 'requests');
+  const previousReservedNameRequests = path.join(previousLayoutRoot, 'agents', 'agent-default', 'requests');
+  const previousAgentsSentinel = path.join(previousLayoutRoot, 'agents', '.gitkeep');
+  const previousAgentLedger = path.join(previousStateRoot, 'requests', 'chatgpt-old-conversation');
+  const previousPrefixedAgentLedger = path.join(previousStateRoot, 'requests', 'agent-cli-old');
+  const previousReservedNameLedger = path.join(previousStateRoot, 'requests', 'agent-default');
+  await fs.mkdir(path.join(previousLayoutRoot, 'agents'), { recursive: true });
+  await Promise.all([
+    fs.mkdir(previousAgentRequests, { recursive: true }),
+    fs.mkdir(previousPrefixedAgentRequests, { recursive: true }),
+    fs.mkdir(previousReservedNameRequests, { recursive: true }),
+    fs.writeFile(previousAgentsSentinel, 'Desktop Commander agent-scoped queues.\n'),
+    fs.mkdir(previousAgentLedger, { recursive: true }),
+    fs.mkdir(previousPrefixedAgentLedger, { recursive: true }),
+    fs.mkdir(previousReservedNameLedger, { recursive: true }),
+  ]);
+  const firstLedgerBytes = Buffer.from('first conversation ledger');
+  const secondLedgerBytes = Buffer.from('second conversation ledger');
+  const reservedNameLedgerBytes = Buffer.from('old agent-default ledger');
+  const flatLegacyLedgerBytes = Buffer.from('flat legacy ledger');
+  await Promise.all([
+    fs.writeFile(path.join(previousAgentRequests, 'legacy.json'), pendingRequest),
+    fs.writeFile(path.join(previousPrefixedAgentRequests, 'prefixed-legacy.json'), pendingRequest),
+    fs.writeFile(path.join(previousReservedNameRequests, 'reserved-legacy.json'), pendingRequest),
+    fs.writeFile(path.join(previousAgentLedger, 'same-id.json'), firstLedgerBytes),
+    fs.writeFile(path.join(previousPrefixedAgentLedger, 'same-id.json'), secondLedgerBytes),
+    fs.writeFile(path.join(previousReservedNameLedger, 'same-id.json'), reservedNameLedgerBytes),
+    fs.writeFile(path.join(previousStateRoot, 'requests', 'flat-legacy.json'), flatLegacyLedgerBytes),
+  ]);
+  await initializeAgentLayout(previousLayoutRoot, previousStateRoot);
+  assert.deepEqual(
+    await fs.readFile(path.join(previousLayoutRoot, 'agent-chatgpt-old-conversation', 'requests', 'legacy.json')),
+    pendingRequest,
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(previousLayoutRoot, 'agent-agent-cli-old', 'requests', 'prefixed-legacy.json')),
+    pendingRequest,
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(previousLayoutRoot, 'agent-agent-default', 'requests', 'reserved-legacy.json')),
+    pendingRequest,
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(previousStateRoot, 'requests', 'agent-chatgpt-old-conversation', 'same-id.json')),
+    firstLedgerBytes,
+    'the old per-conversation idempotency ledger must follow its migrated queue folder',
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(previousStateRoot, 'requests', 'agent-agent-cli-old', 'same-id.json')),
+    secondLedgerBytes,
+    'old IDs beginning with agent- must not be mistaken for already-migrated root agent folder names',
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(previousStateRoot, 'requests', 'agent-agent-default', 'same-id.json')),
+    reservedNameLedgerBytes,
+    'a legacy agent already named agent-default must remain distinct from the reserved flat-queue bucket',
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(previousStateRoot, 'requests', 'agent-default', 'flat-legacy.json')),
+    flatLegacyLedgerBytes,
+    'flat legacy ledgers must remain paired with the agent-default migration bucket',
+  );
+  for (const oldLedgerPath of [previousAgentLedger, previousPrefixedAgentLedger]) {
+    await assert.rejects(() => fs.access(oldLedgerPath), { code: 'ENOENT' });
+  }
+  await assert.rejects(
+    () => fs.access(path.join(previousStateRoot, 'requests', 'agent-default', 'same-id.json')),
+    { code: 'ENOENT' },
+    'the old agent-default ledger must not be mistaken for the reserved flat-queue ledger folder',
+  );
+  await assert.rejects(() => fs.access(previousAgentsSentinel), { code: 'ENOENT' },
+    'the known generated namespace sentinel is removed during migration');
+  await assert.rejects(
+    () => fs.access(path.join(previousLayoutRoot, 'agents')),
+    { code: 'ENOENT' },
+    'the obsolete agents/ wrapper is removed after its folders are migrated',
+  );
 
   assert.equal(isValidAgentDirectoryName('agent-01'), true);
-  assert.equal(isValidAgentDirectoryName('chatgpt.web'), true);
-  assert.equal(isValidAgentDirectoryName('chatgpt.'), false,
+  assert.equal(isValidAgentDirectoryName('chatgpt.web'), false);
+  assert.equal(isValidAgentDirectoryName('agent-chatgpt-web'), true);
+  assert.equal(isValidAgentDirectoryName('agent-chatgpt.web'), true,
+    'the root-level prefix must preserve legacy names containing dots');
+  assert.equal(isValidAgentDirectoryName('agent-chat_gpt'), true,
+    'the root-level prefix must preserve legacy names containing underscores');
+  assert.equal(isValidAgentDirectoryName('agent-chatgpt-'), false,
     'trailing dots are not portable across Windows filesystems');
   assert.equal(isValidAgentDirectoryName('Agent'), false,
     'agent folder names are lowercase for cross-platform identity consistency');
   assert.equal(isValidAgentDirectoryName('../chatgpt'), false);
-  assert.equal(isValidAgentDirectoryName('con'), false,
-    'Windows reserved device names cannot be agent folder names');
-  assert.equal(isValidAgentDirectoryName('nul.txt'), false,
-    'Windows reserved device names remain prohibited when followed by an extension');
+  assert.equal(isValidAgentDirectoryName('agent-con'), true,
+    'the agent- prefix keeps names distinct from Windows reserved device names');
 
   // Conflicting legacy files must stop migration without overwriting either
   // side or deleting the old source.
   const conflictRoot = path.join(temporaryRoot, 'conflict-bridge');
   const conflictState = path.join(temporaryRoot, 'conflict-state');
   const conflictSource = path.join(conflictRoot, 'requests', 'task.json');
-  const conflictDestination = path.join(conflictRoot, 'agents', 'default', 'requests', 'task.json');
+  const conflictDestination = path.join(conflictRoot, 'agent-default', 'requests', 'task.json');
   await fs.mkdir(path.dirname(conflictSource), { recursive: true });
   await fs.mkdir(path.dirname(conflictDestination), { recursive: true });
   await fs.writeFile(conflictSource, 'legacy-content');

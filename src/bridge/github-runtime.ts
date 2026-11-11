@@ -354,6 +354,12 @@ async function chooseRepository(
   return visible[index].full_name;
 }
 
+function resolveWorkerStateDirectory(workerStateRoot: string): string {
+  return process.platform === 'win32'
+    ? path.join(workerStateRoot, 'localappdata', 'DesktopCommanderBridge')
+    : path.join(workerStateRoot, 'xdg-state', 'desktop-commander-bridge');
+}
+
 async function startWorker(
   cacheRoot: string,
   workerStateRoot: string,
@@ -361,9 +367,7 @@ async function startWorker(
 ): Promise<ChildProcess> {
   const workerLocalAppData = path.join(workerStateRoot, 'localappdata');
   const workerXdgStateHome = path.join(workerStateRoot, 'xdg-state');
-  const workerStateDir = process.platform === 'win32'
-    ? path.join(workerLocalAppData, 'DesktopCommanderBridge')
-    : path.join(workerXdgStateHome, 'desktop-commander-bridge');
+  const workerStateDir = resolveWorkerStateDirectory(workerStateRoot);
 
   await writeJsonAtomic(path.join(workerStateDir, 'settings.json'), {
     directory: cacheRoot,
@@ -575,7 +579,6 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     const cacheRoot = cacheRoots.cacheRoot;
     const paths = {
       root: cacheRoot,
-      agents: path.join(cacheRoot, 'agents'),
     };
     const workerStateRoot = cacheRoots.workerStateRoot;
 
@@ -613,7 +616,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
       console.error(prefix + message);
     };
 
-    let sync = new GitHubBridgeSync(client, paths);
+    let sync = new GitHubBridgeSync(client, paths, resolveWorkerStateDirectory(workerStateRoot));
     let queueInitialized = false;
     let queueInitializationPromise: Promise<void> | undefined;
     const ensureQueueInitialized = async (): Promise<void> => {
@@ -650,10 +653,10 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
 
     // Prepare only the agent namespace before starting the worker. The
     // recursive watcher observes responses from every agent and subagent.
-    await fs.mkdir(paths.agents, { recursive: true });
+    await fs.mkdir(paths.root, { recursive: true });
 
     try {
-      responseWatcher = watch(paths.agents, { persistent: true, recursive: true }, () => { void syncPoll(); });
+      responseWatcher = watch(paths.root, { persistent: true, recursive: true }, () => { void syncPoll(); });
       responseWatcherHealthy = true;
       responseWatcher.on('error', (error) => {
         responseWatcherHealthy = false;
@@ -755,7 +758,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
           const refreshedToken = await refreshGitHubAccessTokenForWebhooks();
           client = await GitHubRepositoryClient.connect(repository, refreshedToken);
           await ensureQueueInitialized();
-          sync = new GitHubBridgeSync(client, paths);
+          sync = new GitHubBridgeSync(client, paths, resolveWorkerStateDirectory(workerStateRoot));
           hookId = await client.upsertPushWebhook(
             savedHookId,
             quickTunnel.url + webhookServer.path,
