@@ -391,7 +391,7 @@ async function uploadResponseArtifact(
     wholeHash.update(bytes);
     totalBytes += bytes.length;
     await client.createFileIfAbsent(
-      'agents/' + agentId + '/' + part.path,
+      agentId + '/' + part.path,
       bytes,
       'Store Desktop Commander bridge artifact ' + agentId + '/' + requestId,
     );
@@ -446,7 +446,7 @@ export class GitHubBridgeSync {
     };
     const realRoot = await fs.realpath(this.paths.root);
     const realAgents = await fs.realpath(this.paths.agents);
-    if (!samePath(realAgents, path.join(realRoot, 'agents'))) {
+    if (!samePath(realAgents, realRoot)) {
       throw new Error('The local GitHub agent cache root resolves outside the repository cache.');
     }
 
@@ -477,10 +477,10 @@ export class GitHubBridgeSync {
   private parseQueueEntry(entry: GitHubContentEntry, queueName: 'requests' | 'responses'):
     { agentId: string; requestId: string } | undefined {
     const segments = entry.path.split('/');
-    if (segments.length !== 4 || segments[0] !== 'agents' || segments[2] !== queueName) return undefined;
-    if (!isValidAgentDirectoryName(segments[1])) return undefined;
+    if (segments.length !== 3 || segments[1] !== queueName) return undefined;
+    if (!isValidAgentDirectoryName(segments[0])) return undefined;
     const match = (queueName === 'requests' ? REQUEST_PATTERN : RESPONSE_PATTERN).exec(segments[3]);
-    return match ? { agentId: segments[1], requestId: match[1] } : undefined;
+    return match ? { agentId: segments[0], requestId: match[1] } : undefined;
   }
 
   private async migrateLegacyRemoteQueue(): Promise<void> {
@@ -488,9 +488,19 @@ export class GitHubBridgeSync {
     const transfers: Array<{ source: string; destination: string }> = [];
 
     for (const entry of [...legacy.requests, ...legacy.responses]) {
-      if (!entry.path.startsWith('requests/') && !entry.path.startsWith('responses/')) continue;
-      const queue = entry.path.split('/')[0];
-      const destination = 'agents/default/' + queue + '/' + entry.name;
+      if (entry.path.startsWith('requests/') || entry.path.startsWith('responses/')) {
+        const queue = entry.path.split('/')[0];
+        const destination = 'agent-default/' + queue + '/' + entry.name;
+        transfers.push({ source: entry.path, destination });
+        continue;
+      }
+      const previousAgent = /^agents\/([a-z0-9][a-z0-9._-]{0,63})\/(requests|responses)\/([^/]+)$/.exec(entry.path);
+      if (previousAgent) {
+        transfers.push({
+          source: entry.path,
+          destination: 'agent-' + previousAgent[1] + '/' + previousAgent[2] + '/' + previousAgent[3],
+        });
+      }
       transfers.push({ source: entry.path, destination });
     }
 
@@ -499,7 +509,7 @@ export class GitHubBridgeSync {
       if (!match) continue;
       transfers.push({
         source: entry.path,
-        destination: 'agents/default/artifacts/' + match[1] + '/' + match[2],
+        destination: 'agent-default/artifacts/' + match[1] + '/' + match[2],
       });
     }
 
@@ -537,7 +547,7 @@ export class GitHubBridgeSync {
     }
 
     // The old flat sentinels are removed only after all real queue items have
-    // been copied and verified inside agents/default.
+    // been copied and verified inside agent-default.
     for (const directory of ['requests', 'responses', 'artifacts']) {
       await this.client.deleteFileIfPresent(
         directory + '/.gitkeep',
@@ -565,8 +575,8 @@ export class GitHubBridgeSync {
     // Keep the agents root tracked even before the first named agent submits
     // a request. This is the only root-level queue marker in the new layout.
     await this.client.createFileIfAbsent(
-      'agents/.gitkeep',
-      Buffer.from('Desktop Commander agent-scoped queues.\n', 'utf8'),
+      'agent-default/.gitkeep',
+      Buffer.from('Desktop Commander root-level agent queues.\n', 'utf8'),
       'Create Desktop Commander agent queue root',
     );
 
@@ -779,7 +789,7 @@ export class GitHubBridgeSync {
           await uploadResponseArtifact(this.client, entry.paths, entry.agentId, entry.requestId, artifact);
         }
 
-        const remoteResponsePath = 'agents/' + entry.agentId + '/responses/' + entry.name;
+        const remoteResponsePath = entry.agentId + '/responses/' + entry.name;
         await this.client.createFileIfAbsent(
           remoteResponsePath,
           responseBytes,
