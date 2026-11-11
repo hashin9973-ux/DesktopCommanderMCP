@@ -138,8 +138,8 @@ jobs:
         shell: pwsh
         run: |
           $cloudDir = Join-Path $env:TEMP "DesktopCommanderBridgeSmoke"
-          $agentRoot = Join-Path $cloudDir "agents\smoke"
-          $otherAgentRoot = Join-Path $cloudDir "agents\planner"
+          $agentRoot = Join-Path $cloudDir "agents\chatgpt-smoke-1a2b3c4d5e6f"
+          $otherAgentRoot = Join-Path $cloudDir "agents\chatgpt-smoke-7a8b9c0d1e2f"
           $stateDir = Join-Path $env:LOCALAPPDATA "DesktopCommanderBridge"
           New-Item -ItemType Directory -Force -Path $agentRoot, (Join-Path $agentRoot 'requests'), (Join-Path $agentRoot 'responses'), $otherAgentRoot, (Join-Path $otherAgentRoot 'requests'), (Join-Path $otherAgentRoot 'responses'), $stateDir | Out-Null
 
