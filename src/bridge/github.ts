@@ -662,6 +662,41 @@ export class GitHubRepositoryClient {
             }
           }
         }
+        if (agentDirectory.prefix.startsWith('agents/')) {
+          const artifactDirectory = (agentTree.tree as TreeEntry[]).find((entry) =>
+            entry.type === 'tree' && entry.path === 'artifacts' && typeof entry.sha === 'string',
+          );
+          if (artifactDirectory) {
+            const artifactRootTree = await this.requestJson(
+              treeUrl + encodeURIComponent(String(artifactDirectory.sha)),
+            ) as { tree?: unknown };
+            if (!Array.isArray(artifactRootTree.tree)) {
+              throw new Error('GitHub returned an invalid artifact tree for previous agent ' + agentDirectory.name + '.');
+            }
+            for (const requestDirectory of artifactRootTree.tree as TreeEntry[]) {
+              if (requestDirectory.type !== 'tree' || typeof requestDirectory.path !== 'string'
+                || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(requestDirectory.path)
+                || typeof requestDirectory.sha !== 'string') continue;
+              const requestArtifactTree = await this.requestJson(
+                treeUrl + encodeURIComponent(requestDirectory.sha) + '?recursive=1',
+              ) as { tree?: unknown; truncated?: unknown };
+              if (requestArtifactTree.truncated === true || !Array.isArray(requestArtifactTree.tree)) {
+                throw new Error(
+                  'Previous GitHub agent artifact folder ' + agentDirectory.prefix + '/artifacts/' + requestDirectory.path +
+                  ' exceeds the Git Trees API listing limit. Archive it before continuing.',
+                );
+              }
+              for (const entry of requestArtifactTree.tree as TreeEntry[]) {
+                if (typeof entry.path === 'string' && !entry.path.includes('/')) {
+                  addFile(
+                    agentDirectory.prefix + '/artifacts/' + requestDirectory.path + '/' + entry.path,
+                    entry,
+                  );
+                }
+              }
+            }
+          }
+        }
       }
     }
 
