@@ -14,7 +14,6 @@ import {
 
 export interface GitHubBridgeCachePaths {
   root: string;
-  agents: string;
 }
 
 interface AgentGitHubBridgeCachePaths {
@@ -415,7 +414,7 @@ export class GitHubBridgeSync {
     if (!isValidAgentDirectoryName(agentId)) {
       throw new Error('Invalid agent folder name in GitHub bridge queue: ' + agentId);
     }
-    const root = path.join(this.paths.agents, agentId);
+    const root = path.join(this.paths.root, agentId);
     return {
       root,
       requests: path.join(root, 'requests'),
@@ -432,11 +431,6 @@ export class GitHubBridgeSync {
       throw new Error('The local GitHub bridge cache root must be a real directory.');
     }
 
-    await fs.mkdir(this.paths.agents, { recursive: true });
-    const agentsStat = await fs.lstat(this.paths.agents);
-    if (!agentsStat.isDirectory() || agentsStat.isSymbolicLink()) {
-      throw new Error('The local GitHub agent cache root must be a real directory.');
-    }
     const samePath = (left: string, right: string): boolean => {
       const resolvedLeft = path.resolve(left);
       const resolvedRight = path.resolve(right);
@@ -445,18 +439,13 @@ export class GitHubBridgeSync {
         : resolvedLeft === resolvedRight;
     };
     const realRoot = await fs.realpath(this.paths.root);
-    const realAgents = await fs.realpath(this.paths.agents);
-    if (!samePath(realAgents, realRoot)) {
-      throw new Error('The local GitHub agent cache root resolves outside the repository cache.');
-    }
-
     await fs.mkdir(paths.root, { recursive: true });
     const agentStat = await fs.lstat(paths.root);
     if (!agentStat.isDirectory() || agentStat.isSymbolicLink()) {
       throw new Error('The local cache directory for agent ' + agentId + ' must be a real directory.');
     }
     const realAgent = await fs.realpath(paths.root);
-    if (!samePath(realAgent, path.join(realAgents, agentId))) {
+    if (!samePath(realAgent, path.join(realRoot, agentId))) {
       throw new Error('The local cache directory for agent ' + agentId + ' resolves outside the agent cache root.');
     }
 
@@ -558,15 +547,10 @@ export class GitHubBridgeSync {
   }
 
   async initialize(): Promise<void> {
-    await Promise.all([
-      fs.mkdir(this.paths.root, { recursive: true }),
-      fs.mkdir(this.paths.agents, { recursive: true }),
-    ]);
+    await fs.mkdir(this.paths.root, { recursive: true });
     const rootStat = await fs.lstat(this.paths.root);
-    const agentsStat = await fs.lstat(this.paths.agents);
-    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()
-      || !agentsStat.isDirectory() || agentsStat.isSymbolicLink()) {
-      throw new Error('The local GitHub bridge cache and agents paths must be real directories.');
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      throw new Error('The local GitHub bridge cache root must be a real directory.');
     }
 
     // Move any existing flat queue into the explicit default agent. This
@@ -651,7 +635,7 @@ export class GitHubBridgeSync {
     }> = [];
     let agentEntries;
     try {
-      agentEntries = await fs.readdir(this.paths.agents, { withFileTypes: true });
+      agentEntries = await fs.readdir(this.paths.root, { withFileTypes: true });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return results;
       throw error;
