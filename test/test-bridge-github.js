@@ -549,7 +549,9 @@ try {
   }), 'utf8');
   const legacyArtifactBytes = Buffer.from([4, 3, 2, 1]);
   for (const directory of ['requests', 'responses', 'artifacts']) {
-    const sentinel = Buffer.from('legacy queue sentinel\n');
+    const sentinel = directory === 'responses'
+      ? Buffer.from('user-owned sentinel\n')
+      : Buffer.from('legacy queue sentinel\n');
     api.files.set(directory + '/.gitkeep', { bytes: sentinel, sha: gitBlobSha(sentinel) });
   }
   api.files.set('requests/legacy-pending.json', {
@@ -669,7 +671,9 @@ try {
     'initialization must not list the requests/responses directories through the 1,000-entry-limited Contents API');
   assert.ok(!api.files.has('agent-default/.gitkeep'),
     'the bridge must not create a synthetic shared conversation folder');
-  assert.ok(!api.files.has('requests/.gitkeep') && !api.files.has('responses/.gitkeep'));
+  assert.ok(!api.files.has('requests/.gitkeep'));
+  assert.deepEqual(api.files.get('responses/.gitkeep')?.bytes, Buffer.from('user-owned sentinel\n'),
+    'migration must preserve a same-named legacy sentinel with unknown user-owned content');
   assert.ok(!api.files.has('artifacts/.gitkeep'));
   assert.ok(api.files.has('agent-default/requests/legacy-pending.json'));
   assert.ok(api.files.has('agent-default/responses/legacy-completed.json'));
