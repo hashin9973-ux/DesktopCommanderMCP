@@ -305,6 +305,12 @@ jobs:
             if (Test-Path (Join-Path $cloudDir "requests")) {
               throw "The bridge created a legacy flat requests folder instead of a root-level agent-<uniqueid> folder."
             }
+            if (Test-Path (Join-Path $cloudDir "agents")) {
+              throw "The bridge created the obsolete agents/ parent folder."
+            }
+            if (Test-Path (Join-Path $cloudDir "agent-default")) {
+              throw "A fresh bridge root must not create a synthetic shared agent-default folder."
+            }
             if ($guideContent.Contains("status/status-") -or $guideContent.Contains("status/worker.json")) {
               throw "Generated bridge README refers to status files that this bridge does not publish."
             }
