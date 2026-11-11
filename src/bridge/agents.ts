@@ -99,11 +99,10 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
       throw new Error('The previous bridge agents namespace must be a real directory: ' + previousAgentsRoot);
     }
     for (const entry of await fs.readdir(previousAgentsRoot, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.isSymbolicLink()
-        || !LEGACY_AGENT_DIRECTORY_PATTERN.test(entry.name)) continue;
-      previousAgentNames.add(entry.name);
-      const destination = path.join(bridgeRoot, 'agent-' + entry.name);
-      await moveTreeWithoutOverwrite(path.join(previousAgentsRoot, entry.name), destination);
+      if (entry.isDirectory() && !entry.isSymbolicLink()
+        && LEGACY_AGENT_DIRECTORY_PATTERN.test(entry.name)) {
+        previousAgentNames.add(entry.name);
+      }
     }
   }
 
@@ -119,15 +118,14 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
     const ledgerEntries = await fs.readdir(legacyLedgers, { withFileTypes: true });
     const migratedLegacyAgentLedgers = new Set<string>();
 
-    // Process known old folder identities before creating agent-default. This
-    // handles an old agent literally named "agent-default" without mistaking
-    // its ledger for the reserved flat-queue migration bucket.
+    // Move ledgers for known nested agents before moving their queue folders.
+    // If startup is interrupted, the old queue folder remains available to
+    // identify its ledger on the next start.
     for (const entry of ledgerEntries) {
       if (!entry.isDirectory() || entry.isSymbolicLink() || !previousAgentNames.has(entry.name)) continue;
-      await moveTreeWithoutOverwrite(
-        path.join(legacyLedgers, entry.name),
-        path.join(legacyLedgers, 'agent-' + entry.name),
-      );
+      const source = path.join(legacyLedgers, entry.name);
+      if (!await pathExists(source)) continue;
+      await moveTreeWithoutOverwrite(source, path.join(legacyLedgers, 'agent-' + entry.name));
       migratedLegacyAgentLedgers.add(entry.name);
     }
 
@@ -141,6 +139,7 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
     for (const entry of ledgerEntries) {
       if (migratedLegacyAgentLedgers.has(entry.name) || entry.name === LEGACY_DEFAULT_AGENT) continue;
       const source = path.join(legacyLedgers, entry.name);
+      if (!await pathExists(source)) continue;
       if (entry.isFile()) {
         await moveTreeWithoutOverwrite(source, path.join(defaultLedgers, entry.name));
         continue;
@@ -160,7 +159,16 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
       );
     }
   }
+
+  // Migrate old queue folders only after their corresponding durable ledgers
+  // have moved. A restart can then safely resume any partially-completed move.
   if (await pathExists(previousAgentsRoot)) {
+    for (const entry of await fs.readdir(previousAgentsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()
+        || !LEGACY_AGENT_DIRECTORY_PATTERN.test(entry.name)) continue;
+      const destination = path.join(bridgeRoot, 'agent-' + entry.name);
+      await moveTreeWithoutOverwrite(path.join(previousAgentsRoot, entry.name), destination);
+    }
     const remainingEntries = await fs.readdir(previousAgentsRoot);
     if (remainingEntries.length === 0) {
       await fs.rmdir(previousAgentsRoot);
