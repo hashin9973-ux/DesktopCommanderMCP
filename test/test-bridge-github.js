@@ -582,9 +582,45 @@ try {
   });
 
   const workerStateDirectory = path.join(temporaryRoot, 'worker-state', 'localappdata', 'DesktopCommanderBridge');
-const sync = new GitHubBridgeSync(client, paths, workerStateDirectory);
+  const previousLocalAgentRoot = path.join(paths.root, 'agents', 'chatgpt-cache-old');
+  const previousLocalRequests = path.join(previousLocalAgentRoot, 'requests');
+  const previousLocalResponses = path.join(previousLocalAgentRoot, 'responses');
+  const previousLocalArtifacts = path.join(previousLocalAgentRoot, 'artifacts', 'cached-task');
+  const previousLocalLedger = path.join(workerStateDirectory, 'requests', 'chatgpt-cache-old');
+  await Promise.all([
+    fs.mkdir(previousLocalRequests, { recursive: true }),
+    fs.mkdir(previousLocalResponses, { recursive: true }),
+    fs.mkdir(previousLocalArtifacts, { recursive: true }),
+    fs.mkdir(previousLocalLedger, { recursive: true }),
+  ]);
+  const previousLocalRequestBytes = Buffer.from('cached local request');
+  const previousLocalArtifactBytes = Buffer.from([9, 8, 7, 6]);
+  const previousLocalLedgerBytes = Buffer.from('cached local processing ledger');
+  await Promise.all([
+    fs.writeFile(path.join(previousLocalRequests, 'cached-task.json'), previousLocalRequestBytes),
+    fs.writeFile(path.join(previousLocalArtifacts, 'result.bin'), previousLocalArtifactBytes),
+    fs.writeFile(path.join(previousLocalLedger, 'cached-task.json'), previousLocalLedgerBytes),
+  ]);
+  const sync = new GitHubBridgeSync(client, paths, workerStateDirectory);
   api.resetDirectoryListingCalls();
   await sync.initialize();
+  assert.deepEqual(
+    await fs.readFile(path.join(paths.root, 'agent-chatgpt-cache-old', 'requests', 'cached-task.json')),
+    previousLocalRequestBytes,
+    'old local GitHub cache requests must move to root-level conversation folders',
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(paths.root, 'agent-chatgpt-cache-old', 'artifacts', 'cached-task', 'result.bin')),
+    previousLocalArtifactBytes,
+    'old local GitHub cache artifacts must follow the same conversation folder',
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(workerStateDirectory, 'requests', 'agent-chatgpt-cache-old', 'cached-task.json')),
+    previousLocalLedgerBytes,
+    'old local GitHub idempotency ledgers must follow their conversation cache',
+  );
+  await assert.rejects(() => fs.access(path.join(paths.root, 'agents')), { code: 'ENOENT' },
+    'the obsolete local cache agents/ wrapper is removed when all known data migrates');
   assert.deepEqual(api.getDirectoryListingCalls().filter(Boolean), [],
     'initialization must not list the requests/responses directories through the 1,000-entry-limited Contents API');
   assert.ok(api.files.has('agent-default/.gitkeep'));
