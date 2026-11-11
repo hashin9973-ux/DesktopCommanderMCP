@@ -92,7 +92,6 @@ interface BridgeResponse {
 interface BridgePaths extends AgentQueuePaths {}
 interface BridgeRootPaths {
   root: string;
-  agents: string;
   stateDirectory: string;
 }
 
@@ -1436,7 +1435,7 @@ async function runBridgeRuntime(rootPaths: BridgeRootPaths, settings: BridgeSett
   };
 
   const discoverAgents = async (): Promise<BridgePaths[]> => {
-    const discovered = await discoverAgentQueuePaths(rootPaths.agents, rootPaths.stateDirectory) as BridgePaths[];
+    const discovered = await discoverAgentQueuePaths(rootPaths.root, rootPaths.stateDirectory) as BridgePaths[];
     for (const paths of discovered) {
       agentPathsByName.set(paths.agentId, paths);
       addRequestWatcher(paths.requests);
@@ -1535,7 +1534,7 @@ async function runBridgeRuntime(rootPaths: BridgeRootPaths, settings: BridgeSett
   };
 
   try {
-    agentsWatcher = watch(rootPaths.agents, { persistent: true }, () => { void scanRequests(); });
+    agentsWatcher = watch(rootPaths.root, { persistent: true }, () => { void scanRequests(); });
     agentsWatcher.on('error', (error) => {
       console.warn('Agent-folder watcher error; fallback polling remains active: ' + error.message);
     });
@@ -1644,10 +1643,9 @@ export async function runBridge(args: string[] = []): Promise<void> {
     settings.directory = realRoot;
     await writeJsonAtomic(settingsPath, settings);
 
-    const agentsRoot = await initializeAgentLayout(realRoot, stateDir);
+    await initializeAgentLayout(realRoot, stateDir);
     const paths: BridgeRootPaths = {
       root: realRoot,
-      agents: agentsRoot,
       stateDirectory: stateDir,
     };
     await createGuideIfMissing(realRoot);
