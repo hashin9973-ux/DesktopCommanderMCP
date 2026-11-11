@@ -72,10 +72,9 @@ async function moveTreeWithoutOverwrite(source: string, destination: string): Pr
 }
 
 export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: string): Promise<string> {
-  const agentsRoot = bridgeRoot;
-  const rootStat = await fs.lstat(agentsRoot);
+  const rootStat = await fs.lstat(bridgeRoot);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
-    throw new Error('The bridge root must be a real directory: ' + agentsRoot);
+    throw new Error('The bridge root must be a real directory: ' + bridgeRoot);
   }
 
   // Move existing flat queues into one explicit default-agent namespace. This
@@ -85,7 +84,7 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
   for (const queueName of ['requests', 'artifacts', 'responses']) {
     const legacyPath = path.join(bridgeRoot, queueName);
     if (!await pathExists(legacyPath)) continue;
-    const destination = path.join(agentsRoot, LEGACY_DEFAULT_AGENT, queueName);
+    const destination = path.join(bridgeRoot, LEGACY_DEFAULT_AGENT, queueName);
     await moveTreeWithoutOverwrite(legacyPath, destination);
   }
 
@@ -157,22 +156,22 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
       );
     }
   }
-  return agentsRoot;
+  return bridgeRoot;
 }
 
 export async function discoverAgentQueuePaths(
-  agentsRoot: string,
+  bridgeRoot: string,
   stateDirectory: string,
 ): Promise<AgentQueuePaths[]> {
-  const entries = await fs.readdir(agentsRoot, { withFileTypes: true });
+  const entries = await fs.readdir(bridgeRoot, { withFileTypes: true });
   const result: AgentQueuePaths[] = [];
   for (const entry of entries) {
     if (!isValidAgentDirectoryName(entry.name)) continue;
     if (entry.isSymbolicLink()) {
-      throw new Error('Agent folder must not be a symbolic link: ' + path.join(agentsRoot, entry.name));
+      throw new Error('Agent folder must not be a symbolic link: ' + path.join(bridgeRoot, entry.name));
     }
     if (!entry.isDirectory()) continue;
-    const root = path.join(agentsRoot, entry.name);
+    const root = path.join(bridgeRoot, entry.name);
     const requests = path.join(root, 'requests');
     const responses = path.join(root, 'responses');
     const artifacts = path.join(root, 'artifacts');
