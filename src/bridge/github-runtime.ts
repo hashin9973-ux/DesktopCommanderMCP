@@ -575,7 +575,7 @@ export async function runGitHubBridge(args: string[] = []): Promise<void> {
     const cacheRoot = cacheRoots.cacheRoot;
     const paths = {
       root: cacheRoot,
-      agents: path.join(cacheRoot, 'agents'),
+      agents: cacheRoot,
     };
     const workerStateRoot = cacheRoots.workerStateRoot;
 
