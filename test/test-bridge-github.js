@@ -568,8 +568,13 @@ try {
       sha256: crypto.createHash('sha256').update(legacyArtifactBytes).digest('hex'),
     }],
   }), 'utf8');
+  const previousAgentsSentinel = Buffer.from('Desktop Commander agent-scoped queues.\\n', 'utf8');
   api.files.set('agents/.gitkeep', {
-    bytes: Buffer.from('old nested namespace\n'), sha: gitBlobSha(Buffer.from('old nested namespace\n')),
+    bytes: previousAgentsSentinel, sha: gitBlobSha(previousAgentsSentinel),
+  });
+  const previousAgentsUserFile = Buffer.from('user-owned note\\n', 'utf8');
+  api.files.set('agents/keep-me.txt', {
+    bytes: previousAgentsUserFile, sha: gitBlobSha(previousAgentsUserFile),
   });
   api.files.set('agents/chatgpt-old/requests/previous-agent-pending.json', {
     bytes: previousAgentRequest, sha: gitBlobSha(previousAgentRequest),
@@ -675,6 +680,8 @@ try {
   assert.ok(!api.files.has('agents/chatgpt-old/responses/previous-agent-completed.json'));
   assert.ok(!api.files.has('agents/chatgpt-old/artifacts/previous-agent-completed/output.bin'));
   assert.ok(!api.files.has('agents/.gitkeep'));
+  assert.deepEqual(api.files.get('agents/keep-me.txt')?.bytes, previousAgentsUserFile,
+    'migration must preserve unrelated files in the old agents namespace');
   assert.ok(api.files.has('README.md'));
   assert.ok(!api.files.has('DESKTOP_COMMANDER_BRIDGE.md'),
     'initialization must remove the obsolete separate bridge guide');
