@@ -604,10 +604,12 @@ try {
     fs.mkdir(previousLocalLedger, { recursive: true }),
   ]);
   const previousLocalRequestBytes = Buffer.from('cached local request');
+  const previousLocalResponseBytes = Buffer.from('cached local response');
   const previousLocalArtifactBytes = Buffer.from([9, 8, 7, 6]);
   const previousLocalLedgerBytes = Buffer.from('cached local processing ledger');
   await Promise.all([
     fs.writeFile(path.join(previousLocalRequests, 'cached-task.json'), previousLocalRequestBytes),
+    fs.writeFile(path.join(previousLocalResponses, 'cached-task.json'), previousLocalResponseBytes),
     fs.writeFile(path.join(previousLocalArtifacts, 'result.bin'), previousLocalArtifactBytes),
     fs.writeFile(path.join(previousLocalLedger, 'cached-task.json'), previousLocalLedgerBytes),
   ]);
@@ -618,6 +620,11 @@ try {
     await fs.readFile(path.join(paths.root, 'agent-chatgpt-cache-old', 'requests', 'cached-task.json')),
     previousLocalRequestBytes,
     'old local GitHub cache requests must move to root-level conversation folders',
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(paths.root, 'agent-chatgpt-cache-old', 'responses', 'cached-task.json')),
+    previousLocalResponseBytes,
+    'old local GitHub cache responses must be preserved with their conversation',
   );
   assert.deepEqual(
     await fs.readFile(path.join(paths.root, 'agent-chatgpt-cache-old', 'artifacts', 'cached-task', 'result.bin')),
