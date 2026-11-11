@@ -562,8 +562,8 @@ export class GitHubBridgeSync {
     // Migrate remote requests/responses/artifacts with byte verification.
     await this.migrateLegacyRemoteQueue();
 
-    // Keep the agents root tracked even before the first named agent submits
-    // a request. This is the only root-level queue marker in the new layout.
+    // Keep the reserved agent-default migration bucket tracked. New
+    // conversations create their own root-level agent-<uniqueid>/ folders.
     await this.client.createFileIfAbsent(
       'agent-default/.gitkeep',
       Buffer.from('Desktop Commander root-level agent queues.\n', 'utf8'),
