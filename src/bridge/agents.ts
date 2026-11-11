@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-export const AGENT_DIRECTORY_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
-export const LEGACY_DEFAULT_AGENT = 'default';
+export const AGENT_DIRECTORY_PATTERN = /^agent-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$/;
+export const LEGACY_DEFAULT_AGENT = 'agent-default';
 
 const WINDOWS_RESERVED_AGENT_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 
@@ -71,11 +71,10 @@ async function moveTreeWithoutOverwrite(source: string, destination: string): Pr
 }
 
 export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: string): Promise<string> {
-  const agentsRoot = path.join(bridgeRoot, 'agents');
-  await fs.mkdir(agentsRoot, { recursive: true });
-  const agentsStat = await fs.lstat(agentsRoot);
-  if (!agentsStat.isDirectory() || agentsStat.isSymbolicLink()) {
-    throw new Error('The bridge agents path must be a real directory: ' + agentsRoot);
+  const agentsRoot = bridgeRoot;
+  const rootStat = await fs.lstat(agentsRoot);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error('The bridge root must be a real directory: ' + agentsRoot);
   }
 
   // Move existing flat queues into one explicit default-agent namespace. This
@@ -105,6 +104,21 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
       if (entry.name === LEGACY_DEFAULT_AGENT) continue;
       await moveTreeWithoutOverwrite(path.join(legacyLedgers, entry.name), path.join(defaultLedgers, entry.name));
     }
+  }
+  // Migrate the previous agents/<name>/ layout into root-level agent-<name>/ folders.
+  const previousAgentsRoot = path.join(bridgeRoot, 'agents');
+  if (await pathExists(previousAgentsRoot)) {
+    const previousStat = await fs.lstat(previousAgentsRoot);
+    if (!previousStat.isDirectory() || previousStat.isSymbolicLink()) {
+      throw new Error('The previous bridge agents namespace must be a real directory: ' + previousAgentsRoot);
+    }
+    for (const entry of await fs.readdir(previousAgentsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()
+        || !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(entry.name)) continue;
+      const destination = path.join(bridgeRoot, 'agent-' + entry.name);
+      await moveTreeWithoutOverwrite(path.join(previousAgentsRoot, entry.name), destination);
+    }
+    await fs.rmdir(previousAgentsRoot);
   }
   return agentsRoot;
 }
