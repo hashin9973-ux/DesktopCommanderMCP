@@ -85,7 +85,7 @@ try {
   }
   const agents = await discoverAgentQueuePaths(agentsRoot, stateRoot);
   assert.deepEqual(agents.map((agent) => agent.agentId), [
-    chatgptConversationOneId, chatgptConversationTwoId, 'agent-default', plannerId,
+    plannerId, chatgptConversationTwoId, chatgptConversationOneId, 'agent-default',
   ]);
   const chatgptConversationOne = agents.find((agent) => agent.agentId === chatgptConversationOneId);
   const chatgptConversationTwo = agents.find((agent) => agent.agentId === chatgptConversationTwoId);
@@ -113,14 +113,54 @@ try {
   // Migrate the previously released nested agents/<name>/ layout into
   // root-level agent-<name>/ folders without losing pending request bytes.
   const previousLayoutRoot = path.join(temporaryRoot, 'previous-layout');
+  const previousStateRoot = path.join(temporaryRoot, 'previous-state');
   const previousAgentRequests = path.join(previousLayoutRoot, 'agents', 'chatgpt-old-conversation', 'requests');
-  await fs.mkdir(previousAgentRequests, { recursive: true });
-  await fs.writeFile(path.join(previousAgentRequests, 'legacy.json'), pendingRequest);
-  await initializeAgentLayout(previousLayoutRoot, path.join(temporaryRoot, 'previous-state'));
+  const previousPrefixedAgentRequests = path.join(previousLayoutRoot, 'agents', 'agent-cli-old', 'requests');
+  const previousAgentLedger = path.join(previousStateRoot, 'requests', 'chatgpt-old-conversation');
+  const previousPrefixedAgentLedger = path.join(previousStateRoot, 'requests', 'agent-cli-old');
+  await Promise.all([
+    fs.mkdir(previousAgentRequests, { recursive: true }),
+    fs.mkdir(previousPrefixedAgentRequests, { recursive: true }),
+    fs.mkdir(previousAgentLedger, { recursive: true }),
+    fs.mkdir(previousPrefixedAgentLedger, { recursive: true }),
+  ]);
+  const firstLedgerBytes = Buffer.from('first conversation ledger');
+  const secondLedgerBytes = Buffer.from('second conversation ledger');
+  const flatLegacyLedgerBytes = Buffer.from('flat legacy ledger');
+  await Promise.all([
+    fs.writeFile(path.join(previousAgentRequests, 'legacy.json'), pendingRequest),
+    fs.writeFile(path.join(previousPrefixedAgentRequests, 'prefixed-legacy.json'), pendingRequest),
+    fs.writeFile(path.join(previousAgentLedger, 'same-id.json'), firstLedgerBytes),
+    fs.writeFile(path.join(previousPrefixedAgentLedger, 'same-id.json'), secondLedgerBytes),
+    fs.writeFile(path.join(previousStateRoot, 'requests', 'flat-legacy.json'), flatLegacyLedgerBytes),
+  ]);
+  await initializeAgentLayout(previousLayoutRoot, previousStateRoot);
   assert.deepEqual(
     await fs.readFile(path.join(previousLayoutRoot, 'agent-chatgpt-old-conversation', 'requests', 'legacy.json')),
     pendingRequest,
   );
+  assert.deepEqual(
+    await fs.readFile(path.join(previousLayoutRoot, 'agent-agent-cli-old', 'requests', 'prefixed-legacy.json')),
+    pendingRequest,
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(previousStateRoot, 'requests', 'agent-chatgpt-old-conversation', 'same-id.json')),
+    firstLedgerBytes,
+    'the old per-conversation idempotency ledger must follow its migrated queue folder',
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(previousStateRoot, 'requests', 'agent-agent-cli-old', 'same-id.json')),
+    secondLedgerBytes,
+    'old IDs beginning with agent- must not be mistaken for already-migrated root agent folder names',
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(previousStateRoot, 'requests', 'agent-default', 'flat-legacy.json')),
+    flatLegacyLedgerBytes,
+    'flat legacy ledgers must remain paired with the agent-default migration bucket',
+  );
+  for (const oldLedgerPath of [previousAgentLedger, previousPrefixedAgentLedger]) {
+    await assert.rejects(() => fs.access(oldLedgerPath), { code: 'ENOENT' });
+  }
   await assert.rejects(
     () => fs.access(path.join(previousLayoutRoot, 'agents')),
     { code: 'ENOENT' },
@@ -130,6 +170,10 @@ try {
   assert.equal(isValidAgentDirectoryName('agent-01'), true);
   assert.equal(isValidAgentDirectoryName('chatgpt.web'), false);
   assert.equal(isValidAgentDirectoryName('agent-chatgpt-web'), true);
+  assert.equal(isValidAgentDirectoryName('agent-chatgpt.web'), true,
+    'the root-level prefix must preserve legacy names containing dots');
+  assert.equal(isValidAgentDirectoryName('agent-chat_gpt'), true,
+    'the root-level prefix must preserve legacy names containing underscores');
   assert.equal(isValidAgentDirectoryName('agent-chatgpt-'), false,
     'trailing dots are not portable across Windows filesystems');
   assert.equal(isValidAgentDirectoryName('Agent'), false,
