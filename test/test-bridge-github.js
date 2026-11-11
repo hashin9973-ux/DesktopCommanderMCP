@@ -581,7 +581,9 @@ try {
     bytes: legacyArtifactBytes, sha: gitBlobSha(legacyArtifactBytes),
   });
 
-  const workerStateDirectory = path.join(temporaryRoot, 'worker-state', 'localappdata', 'DesktopCommanderBridge');
+  const workerStateDirectory = process.platform === 'win32'
+    ? path.join(temporaryRoot, 'worker-state', 'localappdata', 'DesktopCommanderBridge')
+    : path.join(temporaryRoot, 'worker-state', 'xdg-state', 'desktop-commander-bridge');
   const previousLocalAgentRoot = path.join(paths.root, 'agents', 'chatgpt-cache-old');
   const previousLocalRequests = path.join(previousLocalAgentRoot, 'requests');
   const previousLocalResponses = path.join(previousLocalAgentRoot, 'responses');
