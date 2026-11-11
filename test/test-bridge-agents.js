@@ -137,6 +137,7 @@ try {
   const previousAgentLedger = path.join(previousStateRoot, 'requests', 'chatgpt-old-conversation');
   const previousPrefixedAgentLedger = path.join(previousStateRoot, 'requests', 'agent-cli-old');
   const previousReservedNameLedger = path.join(previousStateRoot, 'requests', 'agent-default');
+  await fs.mkdir(path.join(previousLayoutRoot, 'agents'), { recursive: true });
   await Promise.all([
     fs.mkdir(previousAgentRequests, { recursive: true }),
     fs.mkdir(previousPrefixedAgentRequests, { recursive: true }),
