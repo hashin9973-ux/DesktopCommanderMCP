@@ -169,6 +169,18 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
       const destination = path.join(bridgeRoot, 'agent-' + entry.name);
       await moveTreeWithoutOverwrite(path.join(previousAgentsRoot, entry.name), destination);
     }
+    // The old GitHub layout used this exact generated sentinel to keep
+    // agents/ tracked. Remove only that known file; preserve unknown content.
+    const legacySentinel = path.join(previousAgentsRoot, '.gitkeep');
+    if (await pathExists(legacySentinel)) {
+      const sentinelStat = await fs.lstat(legacySentinel);
+      if (sentinelStat.isFile() && !sentinelStat.isSymbolicLink()) {
+        const sentinelBytes = await fs.readFile(legacySentinel);
+        if (sentinelBytes.equals(Buffer.from('Desktop Commander agent-scoped queues.\\n', 'utf8'))) {
+          await fs.unlink(legacySentinel);
+        }
+      }
+    }
     const remainingEntries = await fs.readdir(previousAgentsRoot);
     if (remainingEntries.length === 0) {
       await fs.rmdir(previousAgentsRoot);
