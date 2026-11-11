@@ -1058,7 +1058,7 @@ try {
   try {
     const restartedPaths = {
       root: restartRoot,
-      agents: path.join(restartRoot, 'agents'),
+      agents: restartRoot,
     };
     const restartedDefaultPaths = {
       root: path.join(restartedPaths.agents, 'default'),
