@@ -479,7 +479,7 @@ export class GitHubBridgeSync {
     const segments = entry.path.split('/');
     if (segments.length !== 3 || segments[1] !== queueName) return undefined;
     if (!isValidAgentDirectoryName(segments[0])) return undefined;
-    const match = (queueName === 'requests' ? REQUEST_PATTERN : RESPONSE_PATTERN).exec(segments[3]);
+    const match = (queueName === 'requests' ? REQUEST_PATTERN : RESPONSE_PATTERN).exec(segments[2]);
     return match ? { agentId: segments[0], requestId: match[1] } : undefined;
   }
 
@@ -501,23 +501,20 @@ export class GitHubBridgeSync {
           destination: 'agent-' + previousAgent[1] + '/' + previousAgent[2] + '/' + previousAgent[3],
         });
       }
-      transfers.push({ source: entry.path, destination });
     }
 
     for (const entry of legacy.legacyArtifacts) {
       const match = /^artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)$/i.exec(entry.path);
-      if (!match) continue;
-      transfers.push({
-        source: entry.path,
-        destination: 'agent-default/artifacts/' + match[1] + '/' + match[2],
-      });
+      const previous = /^agents\/([a-z0-9][a-z0-9._-]{0,63})\/artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)$/i.exec(entry.path);
+      if (match) transfers.push({ source: entry.path, destination: 'agent-default/artifacts/' + match[1] + '/' + match[2] });
+      else if (previous) transfers.push({ source: entry.path, destination: 'agent-' + previous[1] + '/artifacts/' + previous[2] + '/' + previous[3] });
     }
 
     // A response is the durable completion marker. Move requests first,
     // artifacts next, and responses last so an agent never observes a migrated
     // response before its referenced artifacts are available.
     const migrationOrder = (source: string): number =>
-      source.startsWith('requests/') ? 0 : source.startsWith('artifacts/') ? 1 : 2;
+      /(?:^|\/)requests\//.test(source) ? 0 : /(?:^|\/)artifacts\//.test(source) ? 1 : 2;
     transfers.sort((left, right) =>
       migrationOrder(left.source) - migrationOrder(right.source)
       || left.source.localeCompare(right.source),
