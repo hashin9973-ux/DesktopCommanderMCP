@@ -580,6 +580,14 @@ try {
   api.files.set('agents/chatgpt-old/artifacts/previous-agent-completed/output.bin', {
     bytes: legacyArtifactBytes, sha: gitBlobSha(legacyArtifactBytes),
   });
+  const legacyNamedRequestBytes = Buffer.from(JSON.stringify({
+    protocol_version: 1,
+    id: 'legacy-named-request',
+    commands: [{ tool: 'get_config', arguments: {} }],
+  }), 'utf8');
+  api.files.set('agents/legacy_agent.v2/requests/legacy-named-request.json', {
+    bytes: legacyNamedRequestBytes, sha: gitBlobSha(legacyNamedRequestBytes),
+  });
 
   const workerStateDirectory = process.platform === 'win32'
     ? path.join(temporaryRoot, 'worker-state', 'localappdata', 'DesktopCommanderBridge')
@@ -643,6 +651,9 @@ try {
   assert.ok(api.files.has('agent-chatgpt-old/requests/previous-agent-pending.json'));
   assert.ok(api.files.has('agent-chatgpt-old/responses/previous-agent-completed.json'));
   assert.ok(api.files.has('agent-chatgpt-old/artifacts/previous-agent-completed/output.bin'));
+  assert.ok(api.files.has('agent-legacy_agent.v2/requests/legacy-named-request.json'),
+    'legacy folder names containing dots and underscores must migrate without changing identity');
+  assert.ok(!api.files.has('agents/legacy_agent.v2/requests/legacy-named-request.json'));
   assert.ok(!api.files.has('agents/chatgpt-old/requests/previous-agent-pending.json'));
   assert.ok(!api.files.has('agents/chatgpt-old/responses/previous-agent-completed.json'));
   assert.ok(!api.files.has('agents/chatgpt-old/artifacts/previous-agent-completed/output.bin'));
