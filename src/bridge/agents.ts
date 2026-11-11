@@ -182,7 +182,7 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
       const sentinelStat = await fs.lstat(legacySentinel);
       if (sentinelStat.isFile() && !sentinelStat.isSymbolicLink()) {
         const sentinelBytes = await fs.readFile(legacySentinel);
-        if (sentinelBytes.equals(Buffer.from('Desktop Commander agent-scoped queues.\\n', 'utf8'))) {
+        if (sentinelBytes.equals(Buffer.from('Desktop Commander agent-scoped queues.\n', 'utf8'))) {
           await fs.unlink(legacySentinel);
         }
       }
