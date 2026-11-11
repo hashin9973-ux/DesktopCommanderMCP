@@ -74,28 +74,41 @@ try {
   await initializeAgentLayout(bridgeRoot, stateRoot);
   assert.deepEqual(await fs.readFile(path.join(defaultRoot, 'requests', 'pending-task.json')), pendingRequest);
 
-  // Independent agents may reuse the same request ID. Their request, response,
-  // artifact, and ledger roots remain separate.
-  for (const agentId of ['chatgpt', 'claude', 'planner']) {
+  // Separate ChatGPT conversations must use separate folders even though
+  // they share the same model/platform. Request, response, artifact, and
+  // processing-ledger state must not collide when their request IDs match.
+  const chatgptConversationOneId = 'chatgpt-7f3a91c2d4e6';
+  const chatgptConversationTwoId = 'chatgpt-2b8e4d6a1c9f';
+  const plannerId = 'planner-05c4e7a19b2d';
+  for (const agentId of [chatgptConversationOneId, chatgptConversationTwoId, plannerId]) {
     await fs.mkdir(path.join(agentsRoot, agentId), { recursive: true });
   }
   const agents = await discoverAgentQueuePaths(agentsRoot, stateRoot);
-  assert.deepEqual(agents.map((agent) => agent.agentId), ['chatgpt', 'claude', 'default', 'planner']);
-  const chatgpt = agents.find((agent) => agent.agentId === 'chatgpt');
-  const claude = agents.find((agent) => agent.agentId === 'claude');
-  assert.ok(chatgpt && claude);
-  assert.notEqual(chatgpt.requests, claude.requests);
-  assert.notEqual(chatgpt.responses, claude.responses);
-  assert.notEqual(chatgpt.artifacts, claude.artifacts);
-  assert.notEqual(chatgpt.ledgers, claude.ledgers);
-  assert.equal(chatgpt.requests, path.join(agentsRoot, 'chatgpt', 'requests'));
-  assert.equal(chatgpt.responses, path.join(agentsRoot, 'chatgpt', 'responses'));
-  assert.equal(chatgpt.artifacts, path.join(agentsRoot, 'chatgpt', 'artifacts'));
+  assert.deepEqual(agents.map((agent) => agent.agentId), [
+    chatgptConversationTwoId, chatgptConversationOneId, 'default', plannerId,
+  ]);
+  const chatgptConversationOne = agents.find((agent) => agent.agentId === chatgptConversationOneId);
+  const chatgptConversationTwo = agents.find((agent) => agent.agentId === chatgptConversationTwoId);
+  assert.ok(chatgptConversationOne && chatgptConversationTwo);
+  assert.notEqual(chatgptConversationOne.requests, chatgptConversationTwo.requests);
+  assert.notEqual(chatgptConversationOne.responses, chatgptConversationTwo.responses);
+  assert.notEqual(chatgptConversationOne.artifacts, chatgptConversationTwo.artifacts);
+  assert.notEqual(chatgptConversationOne.ledgers, chatgptConversationTwo.ledgers);
+  assert.equal(chatgptConversationOne.requests,
+    path.join(agentsRoot, chatgptConversationOneId, 'requests'));
+  assert.equal(chatgptConversationTwo.requests,
+    path.join(agentsRoot, chatgptConversationTwoId, 'requests'));
 
-  await fs.writeFile(path.join(chatgpt.requests, 'same-id.json'), 'chatgpt');
-  await fs.writeFile(path.join(claude.requests, 'same-id.json'), 'claude');
-  assert.equal(await fs.readFile(path.join(chatgpt.requests, 'same-id.json'), 'utf8'), 'chatgpt');
-  assert.equal(await fs.readFile(path.join(claude.requests, 'same-id.json'), 'utf8'), 'claude');
+  await fs.writeFile(path.join(chatgptConversationOne.requests, 'same-id.json'), 'conversation one');
+  await fs.writeFile(path.join(chatgptConversationTwo.requests, 'same-id.json'), 'conversation two');
+  assert.equal(
+    await fs.readFile(path.join(chatgptConversationOne.requests, 'same-id.json'), 'utf8'),
+    'conversation one',
+  );
+  assert.equal(
+    await fs.readFile(path.join(chatgptConversationTwo.requests, 'same-id.json'), 'utf8'),
+    'conversation two',
+  );
 
   assert.equal(isValidAgentDirectoryName('agent-01'), true);
   assert.equal(isValidAgentDirectoryName('chatgpt.web'), true);
