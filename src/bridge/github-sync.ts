@@ -549,7 +549,7 @@ export class GitHubBridgeSync {
     } catch (error) {
       if (!(error instanceof GitHubApiError) || error.status !== 404) throw error;
     }
-    if (previousAgentSentinel?.equals(Buffer.from('Desktop Commander agent-scoped queues.\\n', 'utf8'))) {
+    if (previousAgentSentinel?.equals(Buffer.from('Desktop Commander agent-scoped queues.\n', 'utf8'))) {
       await this.client.deleteFileIfPresent(
         'agents/.gitkeep',
         'Remove verified generated nested agent namespace sentinel after root-level migration',
