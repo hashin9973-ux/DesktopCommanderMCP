@@ -606,47 +606,59 @@ export class GitHubRepositoryClient {
         }
       }
 
-      const agentsDirectory = rootEntries.find((entry) =>
+      const agentDirectories: Array<{ name: string; sha: string; prefix: string }> = [];
+      for (const entry of rootEntries) {
+        if (entry.type === 'tree' && typeof entry.path === 'string'
+          && isValidAgentDirectoryName(entry.path) && typeof entry.sha === 'string') {
+          agentDirectories.push({ name: entry.path, sha: entry.sha, prefix: entry.path });
+        }
+      }
+
+      // Also enumerate the previous agents/<name>/ layout so initialization
+      // can migrate those queues into the new root-level agent-<uniqueid> form.
+      const previousAgentsDirectory = rootEntries.find((entry) =>
         entry.type === 'tree' && entry.path === 'agents' && typeof entry.sha === 'string',
       );
-      if (agentsDirectory) {
-        const agentsTree = await this.requestJson(
-          treeUrl + encodeURIComponent(String(agentsDirectory.sha)),
+      if (previousAgentsDirectory) {
+        const previousAgentsTree = await this.requestJson(
+          treeUrl + encodeURIComponent(String(previousAgentsDirectory.sha)),
         ) as { tree?: unknown };
-        if (!Array.isArray(agentsTree.tree)) {
-          throw new Error('GitHub returned an invalid agents directory tree.');
+        if (!Array.isArray(previousAgentsTree.tree)) {
+          throw new Error('GitHub returned an invalid previous agents directory tree.');
         }
-
-        for (const agentDirectory of agentsTree.tree as TreeEntry[]) {
-          const agentName = agentDirectory.path;
-          if (agentDirectory.type !== 'tree' || typeof agentName !== 'string'
-            || !isValidAgentDirectoryName(agentName)
-            || typeof agentDirectory.sha !== 'string') continue;
-
-          const agentTree = await this.requestJson(
-            treeUrl + encodeURIComponent(agentDirectory.sha),
-          ) as { tree?: unknown };
-          if (!Array.isArray(agentTree.tree)) {
-            throw new Error('GitHub returned an invalid tree for agent ' + agentName + '.');
+        for (const entry of previousAgentsTree.tree as TreeEntry[]) {
+          if (entry.type === 'tree' && typeof entry.path === 'string'
+            && /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(entry.path)
+            && typeof entry.sha === 'string') {
+            agentDirectories.push({ name: entry.path, sha: entry.sha, prefix: 'agents/' + entry.path });
           }
-          for (const queueName of ['requests', 'responses'] as const) {
-            const queueDirectory = (agentTree.tree as TreeEntry[]).find((entry) =>
-              entry.type === 'tree' && entry.path === queueName && typeof entry.sha === 'string',
+        }
+      }
+
+      for (const agentDirectory of agentDirectories) {
+        const agentTree = await this.requestJson(
+          treeUrl + encodeURIComponent(agentDirectory.sha),
+        ) as { tree?: unknown };
+        if (!Array.isArray(agentTree.tree)) {
+          throw new Error('GitHub returned an invalid tree for agent ' + agentDirectory.name + '.');
+        }
+        for (const queueName of ['requests', 'responses'] as const) {
+          const queueDirectory = (agentTree.tree as TreeEntry[]).find((entry) =>
+            entry.type === 'tree' && entry.path === queueName && typeof entry.sha === 'string',
+          );
+          if (!queueDirectory) continue;
+          const queueTree = await this.requestJson(
+            treeUrl + encodeURIComponent(String(queueDirectory.sha)) + '?recursive=1',
+          ) as { tree?: unknown; truncated?: unknown };
+          if (queueTree.truncated === true || !Array.isArray(queueTree.tree)) {
+            throw new Error(
+              'GitHub agent queue ' + agentDirectory.prefix + '/' + queueName +
+              ' exceeds the Git Trees API listing limit. Archive completed queue entries before continuing.',
             );
-            if (!queueDirectory) continue;
-            const queueTree = await this.requestJson(
-              treeUrl + encodeURIComponent(String(queueDirectory.sha)) + '?recursive=1',
-            ) as { tree?: unknown; truncated?: unknown };
-            if (queueTree.truncated === true || !Array.isArray(queueTree.tree)) {
-              throw new Error(
-                'GitHub agent queue agents/' + agentName + '/' + queueName +
-                ' exceeds the Git Trees API listing limit. Archive completed queue entries before continuing.',
-              );
-            }
-            for (const entry of queueTree.tree as TreeEntry[]) {
-              if (typeof entry.path === 'string' && !entry.path.includes('/')) {
-                addFile('agents/' + agentName + '/' + queueName + '/' + entry.path, entry);
-              }
+          }
+          for (const entry of queueTree.tree as TreeEntry[]) {
+            if (typeof entry.path === 'string' && !entry.path.includes('/')) {
+              addFile(agentDirectory.prefix + '/' + queueName + '/' + entry.path, entry);
             }
           }
         }
