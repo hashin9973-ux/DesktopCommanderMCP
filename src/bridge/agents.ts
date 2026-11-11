@@ -1,9 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 export const LEGACY_AGENT_DIRECTORY_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 export const AGENT_DIRECTORY_PATTERN = /^agent-[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 export const LEGACY_DEFAULT_AGENT = 'agent-default';
+export const LEGACY_FLAT_MIGRATION_MARKER = '.desktop-commander-flat-migration.json';
+const GENERATED_LEGACY_FLAT_AGENT_PATTERN = /^agent-legacy-flat-[0-9a-f]{32}$/;
 
 const WINDOWS_RESERVED_AGENT_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 
@@ -30,7 +33,36 @@ async function pathExists(target: string): Promise<boolean> {
   }
 }
 
-async function moveTreeWithoutOverwrite(source: string, destination: string): Promise<void> {
+async function ensureSafeDestinationParent(boundaryRoot: string, destination: string): Promise<void> {
+  const relative = path.relative(boundaryRoot, path.dirname(destination));
+  if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+    throw new Error('Legacy bridge migration destination escapes its storage root: ' + destination);
+  }
+  let current = boundaryRoot;
+  const rootStat = await fs.lstat(boundaryRoot);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error('Legacy bridge migration storage root must be a real directory: ' + boundaryRoot);
+  }
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      await fs.mkdir(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    const stat = await fs.lstat(current);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error('Legacy bridge migration refuses a symlink or non-directory destination parent: ' + current);
+    }
+  }
+}
+
+async function moveTreeWithoutOverwrite(
+  source: string,
+  destination: string,
+  boundaryRoot: string,
+): Promise<void> {
+  await ensureSafeDestinationParent(boundaryRoot, destination);
   const sourceStat = await fs.lstat(source);
   if (sourceStat.isSymbolicLink()) {
     throw new Error('Legacy bridge migration refuses to follow symbolic links: ' + source);
@@ -45,7 +77,7 @@ async function moveTreeWithoutOverwrite(source: string, destination: string): Pr
       await fs.mkdir(destination, { recursive: true });
     }
     for (const entry of await fs.readdir(source)) {
-      await moveTreeWithoutOverwrite(path.join(source, entry), path.join(destination, entry));
+      await moveTreeWithoutOverwrite(path.join(source, entry), path.join(destination, entry), boundaryRoot);
     }
     await fs.rmdir(source);
     return;
@@ -68,29 +100,150 @@ async function moveTreeWithoutOverwrite(source: string, destination: string): Pr
     await fs.unlink(source);
     return;
   }
-  await fs.rename(source, destination);
+  // Build and verify a complete temporary file, then publish it with a
+  // same-directory hard link. link() is atomic and fails rather than replacing
+  // a destination created by another process. A crash can leave only an
+  // unreferenced temporary file; the legacy source remains available to retry.
+  const sourceBytes = await fs.readFile(source);
+  const temporary = destination + '.dc-migrate-' + randomUUID().replaceAll('-', '') + '.tmp';
+  let tempCreated = false;
+  try {
+    const handle = await fs.open(temporary, 'wx', sourceStat.mode & 0o777);
+    tempCreated = true;
+    try {
+      await handle.writeFile(sourceBytes);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    const temporaryBytes = await fs.readFile(temporary);
+    if (!temporaryBytes.equals(sourceBytes)) {
+      throw new Error('Legacy bridge migration could not verify temporary data for ' + destination + '; the source was preserved.');
+    }
+    try {
+      await fs.link(temporary, destination);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const existingStat = await fs.lstat(destination);
+      if (!existingStat.isFile() || existingStat.isSymbolicLink()) {
+        throw new Error('Legacy bridge migration found a conflicting destination: ' + destination);
+      }
+      const destinationBytes = await fs.readFile(destination);
+      if (!destinationBytes.equals(sourceBytes)) {
+        throw new Error(
+          'Legacy bridge migration stopped rather than overwrite different data at ' + destination +
+          '. Resolve the conflict manually, then restart the bridge.',
+        );
+      }
+    }
+    await fs.unlink(temporary);
+    tempCreated = false;
+    const destinationBytes = await fs.readFile(destination);
+    if (!destinationBytes.equals(sourceBytes)) {
+      throw new Error('Legacy bridge migration could not verify published data at ' + destination + '; the source was preserved.');
+    }
+    await fs.unlink(source);
+  } finally {
+    if (tempCreated) {
+      await fs.unlink(temporary).catch(() => undefined);
+    }
+  }
 }
 
-export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: string): Promise<string> {
+async function readFlatMigrationMarker(bridgeRoot: string): Promise<string | undefined> {
+  const markerPath = path.join(bridgeRoot, LEGACY_FLAT_MIGRATION_MARKER);
+  if (!await pathExists(markerPath)) return undefined;
+  const stat = await fs.lstat(markerPath);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error('Legacy flat-queue migration marker must be a regular file: ' + markerPath);
+  }
+  let marker: unknown;
+  try {
+    marker = JSON.parse(await fs.readFile(markerPath, 'utf8'));
+  } catch (error) {
+    throw new Error('Legacy flat-queue migration marker is invalid; the original data was preserved: ' + String(error));
+  }
+  if (!marker || typeof marker !== 'object'
+    || (marker as Record<string, unknown>).version !== 1
+    || typeof (marker as Record<string, unknown>).agentId !== 'string') {
+    throw new Error('Legacy flat-queue migration marker has an unsupported format: ' + markerPath);
+  }
+  const agentId = (marker as { agentId: string }).agentId;
+  if (agentId !== LEGACY_DEFAULT_AGENT && !GENERATED_LEGACY_FLAT_AGENT_PATTERN.test(agentId)) {
+    throw new Error('Legacy flat-queue migration marker contains an invalid destination: ' + markerPath);
+  }
+  return agentId;
+}
+
+async function writeFlatMigrationMarker(bridgeRoot: string, agentId: string): Promise<void> {
+  const markerPath = path.join(bridgeRoot, LEGACY_FLAT_MIGRATION_MARKER);
+  const bytes = Buffer.from(JSON.stringify({ version: 1, agentId }) + '\n', 'utf8');
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(markerPath, 'wx', 0o600);
+    await handle.writeFile(bytes);
+    await handle.sync();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    const existing = await readFlatMigrationMarker(bridgeRoot);
+    if (existing !== agentId) {
+      throw new Error('A different legacy flat-queue migration is already recorded; no data was overwritten.');
+    }
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function resolveFlatMigrationAgent(
+  bridgeRoot: string,
+  previousAgentNames: Set<string>,
+  preferredAgentId?: string,
+): Promise<string> {
+  const recordedAgentId = await readFlatMigrationMarker(bridgeRoot);
+  if (recordedAgentId) {
+    if (preferredAgentId && preferredAgentId !== recordedAgentId) {
+      throw new Error('Local and GitHub legacy flat-queue migration destinations disagree; migration was stopped safely.');
+    }
+    return recordedAgentId;
+  }
+
+  if (preferredAgentId) {
+    if (preferredAgentId !== LEGACY_DEFAULT_AGENT && !GENERATED_LEGACY_FLAT_AGENT_PATTERN.test(preferredAgentId)) {
+      throw new Error('The supplied legacy flat-queue destination is invalid: ' + preferredAgentId);
+    }
+    await writeFlatMigrationMarker(bridgeRoot, preferredAgentId);
+    return preferredAgentId;
+  }
+
+  // An existing agent-default folder or an old agents/default conversation
+  // already owns that identity. Never merge flat legacy data into it.
+  const defaultDestinationOccupied = await pathExists(path.join(bridgeRoot, LEGACY_DEFAULT_AGENT))
+    || previousAgentNames.has('default');
+  let agentId = LEGACY_DEFAULT_AGENT;
+  if (defaultDestinationOccupied) {
+    do {
+      agentId = 'agent-legacy-flat-' + randomUUID().replaceAll('-', '');
+    } while (
+      await pathExists(path.join(bridgeRoot, agentId))
+      || previousAgentNames.has(agentId.slice('agent-'.length))
+    );
+  }
+  await writeFlatMigrationMarker(bridgeRoot, agentId);
+  return agentId;
+}
+
+export async function initializeAgentLayout(
+  bridgeRoot: string,
+  stateDirectory: string,
+  preferredLegacyFlatAgentId?: string,
+): Promise<string> {
   const rootStat = await fs.lstat(bridgeRoot);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
     throw new Error('The bridge root must be a real directory: ' + bridgeRoot);
   }
 
-  // Move existing flat queues into one explicit default-agent namespace. This
-  // preserves pending work and completed results without exposing flat queues.
-  // Requests move first, then their artifacts, and responses last because a
-  // response file is the durable completion marker consumed by the agent.
-  for (const queueName of ['requests', 'artifacts', 'responses']) {
-    const legacyPath = path.join(bridgeRoot, queueName);
-    if (!await pathExists(legacyPath)) continue;
-    const destination = path.join(bridgeRoot, LEGACY_DEFAULT_AGENT, queueName);
-    await moveTreeWithoutOverwrite(legacyPath, destination);
-  }
-
-  // Migrate the previous agents/<name>/ layout into root-level agent-<name>/ folders.
-  // Capture the old names before moving them so the matching durable request
-  // ledgers can be moved into the same new conversation folder.
+  // Capture old agent identities before flat data moves. An old
+  // agents/default folder is a conversation, not the flat-queue bucket.
   const previousAgentsRoot = path.join(bridgeRoot, 'agents');
   const previousAgentNames = new Set<string>();
   if (await pathExists(previousAgentsRoot)) {
@@ -106,56 +259,94 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
     }
   }
 
-  // Durable idempotency ledgers use the same folder identity as queue data.
-  // Older releases stored per-agent ledgers at requests/<old-agent-name>/,
-  // while flat legacy queues stored their ledgers directly under requests/.
   const legacyLedgers = path.join(stateDirectory, 'requests');
+  let ledgerEntries: import('node:fs').Dirent[] = [];
   if (await pathExists(legacyLedgers)) {
     const legacyLedgerStat = await fs.lstat(legacyLedgers);
     if (!legacyLedgerStat.isDirectory() || legacyLedgerStat.isSymbolicLink()) {
       throw new Error('Legacy bridge request ledgers must be stored in a real directory: ' + legacyLedgers);
     }
-    const ledgerEntries = await fs.readdir(legacyLedgers, { withFileTypes: true });
-    const migratedLegacyAgentLedgers = new Set<string>();
+    ledgerEntries = await fs.readdir(legacyLedgers, { withFileTypes: true });
+  }
 
-    // Move ledgers for known nested agents before moving their queue folders.
-    // If startup is interrupted, the old queue folder remains available to
-    // identify its ledger on the next start.
+  const flatQueueDirs = await Promise.all(
+    ['requests', 'artifacts', 'responses'].map(name => pathExists(path.join(bridgeRoot, name))),
+  );
+  const hasFlatLedgerFiles = ledgerEntries.some(entry => entry.isFile() && !entry.isSymbolicLink());
+  const hasUnscopedDefaultLedger = ledgerEntries.some(entry =>
+    entry.isDirectory() && !entry.isSymbolicLink() && entry.name === 'default'
+      && !previousAgentNames.has('default'));
+  const hasFlatLegacyData = flatQueueDirs.some(Boolean) || hasFlatLedgerFiles || hasUnscopedDefaultLedger;
+  let flatAgentId = await readFlatMigrationMarker(bridgeRoot);
+  if (hasFlatLegacyData) {
+    flatAgentId = await resolveFlatMigrationAgent(bridgeRoot, previousAgentNames, preferredLegacyFlatAgentId);
+  } else if (preferredLegacyFlatAgentId && flatAgentId && preferredLegacyFlatAgentId !== flatAgentId) {
+    throw new Error('Local and GitHub legacy flat-queue migration destinations disagree.');
+  }
+
+  // Keep one stable compatibility destination while a flat migration runs.
+  // Requests move first, artifacts next, and responses last.
+  if (flatAgentId) {
+    for (const queueName of ['requests', 'artifacts', 'responses']) {
+      const legacyPath = path.join(bridgeRoot, queueName);
+      if (!await pathExists(legacyPath)) continue;
+      const destination = path.join(bridgeRoot, flatAgentId, queueName);
+      await moveTreeWithoutOverwrite(legacyPath, destination, bridgeRoot);
+    }
+  }
+
+  // Migrate per-conversation ledgers before their old queue folders.
+  if (ledgerEntries.length) {
+    const migratedLegacyAgentLedgers = new Set<string>();
     for (const entry of ledgerEntries) {
       if (!entry.isDirectory() || entry.isSymbolicLink() || !previousAgentNames.has(entry.name)) continue;
       const source = path.join(legacyLedgers, entry.name);
       if (!await pathExists(source)) continue;
-      await moveTreeWithoutOverwrite(source, path.join(legacyLedgers, 'agent-' + entry.name));
+      await moveTreeWithoutOverwrite(
+        source,
+        path.join(legacyLedgers, 'agent-' + entry.name),
+        stateDirectory,
+      );
       migratedLegacyAgentLedgers.add(entry.name);
     }
 
-    const defaultLedgers = path.join(legacyLedgers, LEGACY_DEFAULT_AGENT);
-    const ensureDefaultLedgers = async (): Promise<void> => {
-      await fs.mkdir(defaultLedgers, { recursive: true });
-      const defaultLedgerStat = await fs.lstat(defaultLedgers);
-      if (!defaultLedgerStat.isDirectory() || defaultLedgerStat.isSymbolicLink()) {
-        throw new Error('The default agent ledger path must be a real directory: ' + defaultLedgers);
+    const ensureFlatLedgers = async (): Promise<string> => {
+      if (!flatAgentId) throw new Error('Legacy flat request ledgers have no migration destination.');
+      const destination = path.join(legacyLedgers, flatAgentId);
+      await ensureSafeDestinationParent(stateDirectory, path.join(destination, '.migration-check'));
+      await fs.mkdir(destination, { recursive: true });
+      const destinationStat = await fs.lstat(destination);
+      if (!destinationStat.isDirectory() || destinationStat.isSymbolicLink()) {
+        throw new Error('The flat legacy agent ledger path must be a real directory: ' + destination);
       }
+      return destination;
     };
 
     for (const entry of ledgerEntries) {
-      if (migratedLegacyAgentLedgers.has(entry.name) || entry.name === LEGACY_DEFAULT_AGENT) continue;
+      if (migratedLegacyAgentLedgers.has(entry.name)) continue;
+      if (entry.name === 'default' && previousAgentNames.has('default')) continue;
       const source = path.join(legacyLedgers, entry.name);
       if (!await pathExists(source)) continue;
       if (entry.isFile()) {
-        await ensureDefaultLedgers();
-        await moveTreeWithoutOverwrite(source, path.join(defaultLedgers, entry.name));
+        await moveTreeWithoutOverwrite(
+          source,
+          path.join(await ensureFlatLedgers(), entry.name),
+          stateDirectory,
+        );
         continue;
       }
       if (entry.name === 'default' && entry.isDirectory() && !entry.isSymbolicLink()) {
-        await ensureDefaultLedgers();
-        await moveTreeWithoutOverwrite(source, defaultLedgers);
+        await moveTreeWithoutOverwrite(source, await ensureFlatLedgers(), stateDirectory);
         continue;
       }
       if (entry.isDirectory() && !entry.isSymbolicLink()
         && LEGACY_AGENT_DIRECTORY_PATTERN.test(entry.name)
         && !entry.name.startsWith('agent-')) {
-        await moveTreeWithoutOverwrite(source, path.join(legacyLedgers, 'agent-' + entry.name));
+        await moveTreeWithoutOverwrite(
+          source,
+          path.join(legacyLedgers, 'agent-' + entry.name),
+          stateDirectory,
+        );
         continue;
       }
       if (entry.isDirectory() && !entry.isSymbolicLink()
@@ -166,17 +357,14 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
     }
   }
 
-  // Migrate old queue folders only after their corresponding durable ledgers
-  // have moved. A restart can then safely resume any partially-completed move.
+  // Migrate old nested queues after their corresponding ledgers.
   if (await pathExists(previousAgentsRoot)) {
     for (const entry of await fs.readdir(previousAgentsRoot, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.isSymbolicLink()
         || !LEGACY_AGENT_DIRECTORY_PATTERN.test(entry.name)) continue;
       const destination = path.join(bridgeRoot, 'agent-' + entry.name);
-      await moveTreeWithoutOverwrite(path.join(previousAgentsRoot, entry.name), destination);
+      await moveTreeWithoutOverwrite(path.join(previousAgentsRoot, entry.name), destination, bridgeRoot);
     }
-    // The old GitHub layout used this exact generated sentinel to keep
-    // agents/ tracked. Remove only that known file; preserve unknown content.
     const legacySentinel = path.join(previousAgentsRoot, '.gitkeep');
     if (await pathExists(legacySentinel)) {
       const sentinelStat = await fs.lstat(legacySentinel);
@@ -195,6 +383,27 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
         'Preserved unrecognized content in the previous agents/ directory rather than deleting user data: ' +
         previousAgentsRoot,
       );
+    }
+  }
+
+  // Retain the marker while any flat source remains. It makes an interrupted
+  // migration restart at the same destination rather than inventing a new one.
+  if (flatAgentId) {
+    const flatQueuesRemain = await Promise.all(
+      ['requests', 'artifacts', 'responses'].map(name => pathExists(path.join(bridgeRoot, name))),
+    ).then(values => values.some(Boolean));
+    let flatLedgersRemain = false;
+    if (await pathExists(legacyLedgers)) {
+      const remaining = await fs.readdir(legacyLedgers, { withFileTypes: true });
+      flatLedgersRemain = remaining.some(entry =>
+        (entry.isFile() && !entry.isSymbolicLink())
+        || (entry.name === 'default' && entry.isDirectory() && !entry.isSymbolicLink()
+          && !previousAgentNames.has('default')));
+    }
+    if (!flatQueuesRemain && !flatLedgersRemain) {
+      await fs.unlink(path.join(bridgeRoot, LEGACY_FLAT_MIGRATION_MARKER)).catch(error => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      });
     }
   }
   return bridgeRoot;

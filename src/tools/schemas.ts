@@ -246,11 +246,10 @@ export const MailboxArgsSchema = z.object({
   from: z.string().optional(),
   unreadOnly: z.boolean().optional(),
   limit: z.number().int().min(1).max(1000).optional(),
-  mailbox_user_id: z.string().optional(),
 }).superRefine((value, context) => {
   if (value.action === 'register' && !value.username?.trim()) context.addIssue({ code: z.ZodIssueCode.custom, message: 'username is required for register', path: ['username'] });
-  if (value.action === 'send' && (!value.to?.trim() || !value.message?.trim())) context.addIssue({ code: z.ZodIssueCode.custom, message: 'to and message are required for send', path: ['to'] });
-  if (value.action === 'inbox_unread' && !value.mailbox_user_id?.trim()) context.addIssue({ code: z.ZodIssueCode.custom, message: 'mailbox_user_id is required for inbox_unread', path: ['mailbox_user_id'] });
+  if (value.action === 'send' && (!value.username?.trim() || !value.to?.trim() || !value.message?.trim())) context.addIssue({ code: z.ZodIssueCode.custom, message: 'username, to, and message are required for send', path: ['username'] });
+  if (value.action === 'inbox_unread' && !value.username?.trim()) context.addIssue({ code: z.ZodIssueCode.custom, message: 'username is required for inbox_unread', path: ['username'] });
 });
 
 export const TrackUiEventArgsSchema = z.object({

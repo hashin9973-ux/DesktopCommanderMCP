@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { initializeAgentLayout, isValidAgentDirectoryName } from './agents.js';
-import { createHash } from 'node:crypto';
+import { initializeAgentLayout, isValidAgentDirectoryName, LEGACY_AGENT_DIRECTORY_PATTERN, LEGACY_DEFAULT_AGENT, LEGACY_FLAT_MIGRATION_MARKER } from './agents.js';
+import { createHash, randomUUID } from 'node:crypto';
 import { writeFileAtomic } from '../utils/atomic-write.js';
 import { createGuideIfMissing } from './runtime.js';
 
@@ -473,15 +473,54 @@ export class GitHubBridgeSync {
     return match ? { agentId: segments[0], requestId: match[1] } : undefined;
   }
 
-  private async migrateLegacyRemoteQueue(): Promise<void> {
+  private async readRemoteFlatMigrationAgent(): Promise<string | undefined> {
+    let bytes: Buffer;
+    try {
+      bytes = await this.client.readFile(LEGACY_FLAT_MIGRATION_MARKER);
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) return undefined;
+      throw error;
+    }
+    let marker: unknown;
+    try {
+      marker = JSON.parse(bytes.toString('utf8'));
+    } catch (error) {
+      throw new Error('GitHub legacy flat-queue migration marker is invalid; source files were preserved: ' + errorMessage(error));
+    }
+    if (!marker || typeof marker !== 'object'
+      || (marker as Record<string, unknown>).version !== 1
+      || typeof (marker as Record<string, unknown>).agentId !== 'string') {
+      throw new Error('GitHub legacy flat-queue migration marker has an unsupported format.');
+    }
+    const agentId = (marker as { agentId: string }).agentId;
+    if (agentId !== LEGACY_DEFAULT_AGENT && !/^agent-legacy-flat-[0-9a-f]{32}$/.test(agentId)) {
+      throw new Error('GitHub legacy flat-queue migration marker contains an invalid destination.');
+    }
+    return agentId;
+  }
+
+  private async writeRemoteFlatMigrationAgent(agentId: string): Promise<void> {
+    const bytes = Buffer.from(JSON.stringify({ version: 1, agentId }) + '\n', 'utf8');
+    await this.client.createFileIfAbsent(
+      LEGACY_FLAT_MIGRATION_MARKER,
+      bytes,
+      'Record the destination for an interrupted legacy flat-queue migration',
+    );
+    const verified = await this.client.readFile(LEGACY_FLAT_MIGRATION_MARKER);
+    if (!verified.equals(bytes)) {
+      throw new Error('A different GitHub flat-queue migration marker already exists; no data was overwritten.');
+    }
+  }
+
+  private async migrateLegacyRemoteQueue(localAgentIds: Set<string>, hasLocalFlatLegacyData: boolean): Promise<string | undefined> {
     const legacy = await this.client.listQueueFiles();
     const transfers: Array<{ source: string; destination: string }> = [];
+    const flatTransfers: Array<{ source: string; queue: string; name: string }> = [];
 
     for (const entry of [...legacy.requests, ...legacy.responses]) {
       if (entry.path.startsWith('requests/') || entry.path.startsWith('responses/')) {
         const queue = entry.path.split('/')[0];
-        const destination = 'agent-default/' + queue + '/' + entry.name;
-        transfers.push({ source: entry.path, destination });
+        flatTransfers.push({ source: entry.path, queue, name: entry.name });
         continue;
       }
       const previousAgent = /^agents\/([a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?)\/(requests|responses)\/([^/]+)$/.exec(entry.path);
@@ -496,13 +535,39 @@ export class GitHubBridgeSync {
     for (const entry of legacy.legacyArtifacts) {
       const match = /^artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)$/i.exec(entry.path);
       const previous = /^agents\/([a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?)\/artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)$/i.exec(entry.path);
-      if (match) transfers.push({ source: entry.path, destination: 'agent-default/artifacts/' + match[1] + '/' + match[2] });
-      else if (previous) transfers.push({ source: entry.path, destination: 'agent-' + previous[1] + '/artifacts/' + previous[2] + '/' + previous[3] });
+      if (match) {
+        flatTransfers.push({ source: entry.path, queue: 'artifacts', name: match[1] + '/' + match[2] });
+      } else if (previous) {
+        transfers.push({
+          source: entry.path,
+          destination: 'agent-' + previous[1] + '/artifacts/' + previous[2] + '/' + previous[3],
+        });
+      }
+    }
+
+    let flatAgentId = await this.readRemoteFlatMigrationAgent();
+    if (!flatAgentId && (flatTransfers.length > 0 || hasLocalFlatLegacyData)) {
+      const occupied = new Set([...legacy.agentDirectories, ...localAgentIds]);
+      flatAgentId = LEGACY_DEFAULT_AGENT;
+      if (occupied.has(LEGACY_DEFAULT_AGENT)) {
+        do {
+          flatAgentId = 'agent-legacy-flat-' + randomUUID().replaceAll('-', '');
+        } while (occupied.has(flatAgentId));
+      }
+      await this.writeRemoteFlatMigrationAgent(flatAgentId);
+    }
+    if (flatAgentId && flatTransfers.length > 0) {
+      for (const transfer of flatTransfers) {
+        const destination = transfer.queue === 'artifacts'
+          ? flatAgentId + '/artifacts/' + transfer.name
+          : flatAgentId + '/' + transfer.queue + '/' + transfer.name;
+        transfers.push({ source: transfer.source, destination });
+      }
     }
 
     // A response is the durable completion marker. Move requests first,
-    // artifacts next, and responses last so an agent never observes a migrated
-    // response before its referenced artifacts are available.
+    // artifacts next, and responses last so agents cannot observe a response
+    // before its referenced artifacts are present.
     const migrationOrder = (source: string): number =>
       /(?:^|\/)requests\//.test(source) ? 0 : /(?:^|\/)artifacts\//.test(source) ? 1 : 2;
     transfers.sort((left, right) =>
@@ -511,7 +576,8 @@ export class GitHubBridgeSync {
     );
 
     // Copy, verify exact bytes, and only then delete the legacy source. A
-    // conflict aborts migration without overwriting either copy.
+    // conflict aborts without overwriting either copy. The marker remains so
+    // an interrupted migration resumes to the same destination.
     for (const transfer of transfers) {
       if (transfer.source === transfer.destination) continue;
       const sourceBytes = await this.client.readFile(transfer.source);
@@ -533,16 +599,8 @@ export class GitHubBridgeSync {
       );
     }
 
-    // The old flat sentinels are removed only after all real queue items have
-    // been copied and verified inside agent-default.
-    for (const directory of ['requests', 'responses', 'artifacts']) {
-      await this.client.deleteFileIfPresent(
-        directory + '/.gitkeep',
-        'Remove obsolete flat Desktop Commander bridge directory sentinel',
-      );
-    }
-    // The previous release wrote this exact generated sentinel to keep
-    // agents/ tracked. Preserve any same-named user file with different bytes.
+    // The old release wrote this exact sentinel to keep agents/ tracked.
+    // Preserve unrelated user files, including unknown sentinels.
     let previousAgentSentinel: Buffer | undefined;
     try {
       previousAgentSentinel = await this.client.readFile('agents/.gitkeep');
@@ -555,6 +613,14 @@ export class GitHubBridgeSync {
         'Remove verified generated nested agent namespace sentinel after root-level migration',
       );
     }
+
+    // Do not delete flat queue sentinels or other unrecognized content. They
+    // are not protocol requests and may be user-owned files.
+    // Keep the marker in the repository as durable migration identity. The
+    // local cache may still contain old flat files which must move to this
+    // same compatibility folder on a later restart. It is tiny metadata, not
+    // an agent registry or a source of identity for new conversations.
+    return flatAgentId;
   }
 
   async initialize(): Promise<void> {
@@ -564,13 +630,59 @@ export class GitHubBridgeSync {
       throw new Error('The local GitHub bridge cache root must be a real directory.');
     }
 
-    // Upgrade local staged requests/responses/artifacts and their idempotency
-    // ledgers before reconciling remote state or starting the worker. This
-    // prevents the old cacheRoot/agents/<name>/ layout from being stranded.
-    await initializeAgentLayout(this.paths.root, this.workerStateDirectory);
+    // Collect local agent identities and old nested names before choosing a
+    // compatibility destination for any unscoped flat cache/remote queues.
+    const localAgentIds = new Set<string>();
+    let hasLocalFlatLegacyData = false;
+    for (const entry of await fs.readdir(this.paths.root, { withFileTypes: true })) {
+      if (entry.isDirectory() && !entry.isSymbolicLink() && isValidAgentDirectoryName(entry.name)) {
+        localAgentIds.add(entry.name);
+      }
+      if (['requests', 'responses', 'artifacts'].includes(entry.name)) {
+        hasLocalFlatLegacyData = true;
+      }
+    }
+    const previousAgentsRoot = path.join(this.paths.root, 'agents');
+    try {
+      const previousStat = await fs.lstat(previousAgentsRoot);
+      if (!previousStat.isDirectory() || previousStat.isSymbolicLink()) {
+        throw new Error('The previous local GitHub agents namespace must be a real directory.');
+      }
+      for (const entry of await fs.readdir(previousAgentsRoot, { withFileTypes: true })) {
+        if (entry.isDirectory() && !entry.isSymbolicLink()
+          && LEGACY_AGENT_DIRECTORY_PATTERN.test(entry.name)) {
+          localAgentIds.add('agent-' + entry.name);
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
 
-    // Migrate remote requests/responses/artifacts with byte verification.
-    await this.migrateLegacyRemoteQueue();
+    // A local worker state may contain legacy flat request ledgers even when
+    // its cache queue folders are empty. Preserve those records in the same
+    // destination selected for remote flat queues.
+    const legacyLedgerRoot = path.join(this.workerStateDirectory, 'requests');
+    try {
+      const ledgerStat = await fs.lstat(legacyLedgerRoot);
+      if (!ledgerStat.isDirectory() || ledgerStat.isSymbolicLink()) {
+        throw new Error('The local GitHub ledger root must be a real directory.');
+      }
+      const entries = await fs.readdir(legacyLedgerRoot, { withFileTypes: true });
+      if (entries.some(entry => entry.isFile() && !entry.isSymbolicLink()
+        || entry.name === 'default' && entry.isDirectory() && !entry.isSymbolicLink())) {
+        hasLocalFlatLegacyData = true;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+
+    // Reconcile the remote legacy layout first so local cache requests and
+    // their durable ledgers use exactly the same compatibility destination.
+    const flatMigrationAgentId = await this.migrateLegacyRemoteQueue(localAgentIds, hasLocalFlatLegacyData);
+
+    // Move local staged queues, artifacts, and durable idempotency ledgers
+    // together before the worker starts processing anything.
+    await initializeAgentLayout(this.paths.root, this.workerStateDirectory, flatMigrationAgentId);
 
     // README.md is the repository-root marker; actual queue folders are
     // created only when a conversation or legacy queue has work to store.

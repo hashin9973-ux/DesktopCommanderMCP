@@ -348,6 +348,19 @@ const recoveredTreeListing = await client.listQueueFiles();
 assert.ok(Array.isArray(recoveredTreeListing.requests));
 assert.ok(Array.isArray(recoveredTreeListing.responses));
 api.restoreRecursiveTree();
+const dottedAgentRequest = Buffer.from(JSON.stringify({
+  protocol_version: 1,
+  id: 'dotted-id',
+  commands: [{ tool: 'get_config', arguments: {} }],
+}), 'utf8');
+api.files.set('agent-client.one_test/requests/dotted-id.json', {
+  bytes: dottedAgentRequest, sha: gitBlobSha(dottedAgentRequest),
+});
+const dottedQueue = await client.listQueueFiles();
+assert.ok(dottedQueue.requests.some(entry =>
+  entry.path === 'agent-client.one_test/requests/dotted-id.json'),
+'GitHub queue discovery must accept valid root-level agent IDs containing dots and underscores');
+api.files.delete('agent-client.one_test/requests/dotted-id.json');
 await assert.rejects(
   () => GitHubRepositoryClient.connect('archived/repo', token, api.fetcher),
   /archived/,
@@ -693,6 +706,9 @@ try {
   assert.ok(generatedReadme.includes('## Tool catalog'));
   assert.ok(!generatedReadme.includes('mailbox_user_id'));
   assert.ok(!generatedReadme.includes('## Optional local mailbox'));
+  assert.ok(generatedReadme.includes('## Transport behavior'));
+  assert.ok(generatedReadme.includes('### Cloud-folder synchronization'));
+  assert.ok(generatedReadme.includes('### GitHub Repository Bridge'));
   assert.ok(generatedReadme.includes('### read_file'));
   assert.ok(generatedReadme.includes('cloud-folder and GitHub repository transports'));
   assert.ok(!generatedReadme.includes('cloud-storage connector'));
@@ -735,6 +751,15 @@ try {
       agentRequestBytes.get(agentId),
       'same request ID must be staged independently for conversation ' + agentId,
     );
+    const artifactBytes = Buffer.from('artifact from ' + agentId, 'utf8');
+    const artifactPath = 'artifacts/' + sharedId + '/same-name.bin';
+    await fs.mkdir(path.join(agentRoot, 'artifacts', sharedId), { recursive: true });
+    await fs.writeFile(path.join(agentRoot, artifactPath), artifactBytes);
+    const artifact = {
+      path: artifactPath,
+      bytes: artifactBytes.length,
+      sha256: crypto.createHash('sha256').update(artifactBytes).digest('hex'),
+    };
     const responseHash = crypto.createHash('sha256').update(agentRequestBytes.get(agentId)).digest('hex');
     const localResponsePath = path.join(agentRoot, 'responses', sharedId + '.json');
     await fs.writeFile(localResponsePath, JSON.stringify({
@@ -744,8 +769,8 @@ try {
       status: 'completed',
       started_at: '2026-01-01T00:00:00.000Z',
       completed_at: '2026-01-01T00:00:01.000Z',
-      results: [{ index: 0, tool: 'get_config', status: 'succeeded', isError: false }],
-      artifacts: [],
+      results: [{ index: 0, tool: 'get_config', status: 'succeeded', isError: false, artifacts: [artifact] }],
+      artifacts: [artifact],
     }));
   }
   await sync.syncOnce();
@@ -754,6 +779,11 @@ try {
       'each ChatGPT conversation must receive its own response: ' + agentId);
     assert.ok(api.files.has(agentId + '/requests/' + sharedId + '.json'),
       'remote request history is retained for conversation ' + agentId);
+    const uploadedArtifactPath = agentId + '/artifacts/' + sharedId + '/same-name.bin';
+    assert.ok(api.files.has(uploadedArtifactPath),
+      'artifacts must be uploaded inside their own conversation folder: ' + agentId);
+    assert.equal(api.files.get(uploadedArtifactPath).bytes.toString('utf8'), 'artifact from ' + agentId,
+      'two agents may reuse artifact filenames without sharing file contents');
     await assert.rejects(
       () => fs.access(path.join(paths.root, agentId, 'requests', sharedId + '.json')),
       /ENOENT/,
@@ -1271,6 +1301,55 @@ try {
     () => resolveRepositoryCacheRoots(cacheStateRoot, 'owner/legacy', 504),
     /older local GitHub bridge cache exists/,
     'unmarked legacy caches require an explicit interactive decision rather than being reused silently',
+  );
+
+  // Verify legacy flat-queue migration does not collide with an existing
+  // root-level agent-default conversation. This uses a fresh remote repository
+  // state so no earlier migration marker can influence the result.
+  const collisionApi = createGitHubApiDouble();
+  const collisionClient = await GitHubRepositoryClient.connect('owner/repo', token, collisionApi.fetcher);
+  const collisionCacheRoot = path.join(temporaryRoot, 'collision-github-cache');
+  const collisionWorkerState = path.join(temporaryRoot, 'collision-worker-state');
+  const existingDefaultBytes = Buffer.from('existing agent-default request');
+  const newFlatBytes = Buffer.from(JSON.stringify({
+    protocol_version: 1,
+    id: 'collision-id',
+    commands: [{ tool: 'get_config', arguments: {} }],
+  }), 'utf8');
+  collisionApi.files.set('agent-default/requests/collision-id.json', {
+    bytes: existingDefaultBytes, sha: gitBlobSha(existingDefaultBytes),
+  });
+  collisionApi.files.set('requests/collision-id.json', {
+    bytes: newFlatBytes, sha: gitBlobSha(newFlatBytes),
+  });
+  const collisionSync = new GitHubBridgeSync(
+    collisionClient,
+    { root: collisionCacheRoot },
+    collisionWorkerState,
+  );
+  await collisionSync.initialize();
+  const compatibilityPath = [...collisionApi.files.keys()].find(filePath =>
+    filePath.startsWith('agent-legacy-flat-') && filePath.endsWith('/requests/collision-id.json'));
+  assert.match(compatibilityPath.split('/')[0], /^agent-legacy-flat-[0-9a-f]{32}$/);
+  assert.ok(compatibilityPath,
+    'flat remote queues use a separate compatibility folder when agent-default already exists');
+  assert.deepEqual(
+    collisionApi.files.get('agent-default/requests/collision-id.json').bytes,
+    existingDefaultBytes,
+    'an existing agent-default request must not be overwritten or merged with flat legacy data',
+  );
+  assert.deepEqual(collisionApi.files.get(compatibilityPath).bytes, newFlatBytes);
+  assert.ok(!collisionApi.files.has('requests/collision-id.json'),
+    'the old flat request is removed only after its new compatibility copy is verified');
+  const recordedCompatibility = JSON.parse(
+    collisionApi.files.get('.desktop-commander-flat-migration.json').bytes.toString('utf8'),
+  );
+  assert.equal(recordedCompatibility.agentId, compatibilityPath.split('/')[0]);
+  await collisionSync.initialize();
+  assert.equal(
+    JSON.parse(collisionApi.files.get('.desktop-commander-flat-migration.json').bytes.toString('utf8')).agentId,
+    recordedCompatibility.agentId,
+    'a GitHub restart must retain the same compatibility destination',
   );
 
 } finally {

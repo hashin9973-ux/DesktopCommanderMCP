@@ -16,7 +16,7 @@ try {
 
   const generatedGuidePath = path.join(generatedRoot, 'README.md');
   const generatedGuide = await fs.readFile(generatedGuidePath, 'utf8');
-  assert.match(generatedGuide, /desktop-commander:bridge-guide:v5/);
+  assert.match(generatedGuide, /desktop-commander:bridge-guide:v6/);
   assert.match(generatedGuide, /agent-<uniqueid>\//);
   assert.match(generatedGuide, /agent-7f3a91c2d4e6\/requests\/task-a1\.json/);
   assert.match(generatedGuide, /agent-<uniqueid>\/responses\/<id>\.json/);
@@ -27,6 +27,14 @@ try {
   assert.match(generatedGuide, /NEW unique folder for this conversation/);
   assert.match(generatedGuide, /Never share a folder between conversations/);
   assert.match(generatedGuide, /reuse it only when continuing that same conversation/);
+  assert.match(generatedGuide, /## Transport behavior/);
+  assert.match(generatedGuide, /### Cloud-folder synchronization/);
+  assert.match(generatedGuide, /### GitHub Repository Bridge/);
+  assert.match(generatedGuide, /immutable GitHub repository ID/);
+  assert.match(generatedGuide, /Durable processing ledgers are stored locally under that repository worker state/);
+  assert.match(generatedGuide, /Files are committed directly to the repository default branch/);
+  assert.match(generatedGuide, /one-second fallback scan/);
+  assert.match(generatedGuide, /signed push webhooks/);
   assert.match(generatedGuide, /only agent-facing guide/);
   assert.doesNotMatch(generatedGuide, /(?:^|\n)- requests\//);
   assert.doesNotMatch(generatedGuide, /(?:^|\n)- responses\//);
@@ -54,7 +62,7 @@ try {
   const upgradedGuide = await fs.readFile(path.join(oldGeneratedRoot, 'README.md'), 'utf8');
   assert.notEqual(upgradedGuide, staleGeneratedGuide,
     'an existing generated README with the previous marker must be refreshed');
-  assert.match(upgradedGuide, /desktop-commander:bridge-guide:v5/);
+  assert.match(upgradedGuide, /desktop-commander:bridge-guide:v6/);
   assert.match(upgradedGuide, /agent-<uniqueid>/);
   assert.doesNotMatch(upgradedGuide, /Old structure: requests\//);
 
