@@ -1061,10 +1061,10 @@ try {
       agents: restartRoot,
     };
     const restartedDefaultPaths = {
-      root: path.join(restartedPaths.agents, 'default'),
-      requests: path.join(restartedPaths.agents, 'default', 'requests'),
-      responses: path.join(restartedPaths.agents, 'default', 'responses'),
-      artifacts: path.join(restartedPaths.agents, 'default', 'artifacts'),
+      root: path.join(restartedPaths.agents, 'agent-default'),
+      requests: path.join(restartedPaths.agents, 'agent-default', 'requests'),
+      responses: path.join(restartedPaths.agents, 'agent-default', 'responses'),
+      artifacts: path.join(restartedPaths.agents, 'agent-default', 'artifacts'),
     };
     const restartedSync = new GitHubBridgeSync(client, restartedPaths);
     await restartedSync.initialize();
