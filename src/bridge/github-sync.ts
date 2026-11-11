@@ -518,7 +518,7 @@ export class GitHubBridgeSync {
       await this.client.createFileIfAbsent(
         transfer.destination,
         sourceBytes,
-        'Migrate legacy Desktop Commander queue item to agent/default',
+        'Migrate legacy Desktop Commander queue item into its root-level agent folder',
       );
       const destinationBytes = await this.client.readFile(transfer.destination);
       if (!destinationBytes.equals(sourceBytes)) {
