@@ -39,7 +39,6 @@ The bridge initializes this repository namespace on the existing default branch:
 - `agent-<uniqueid>/requests/` — submit `<id>.json` or `<id>.md` requests.
 - `agent-<uniqueid>/responses/` — completed `<id>.json` results for that agent.
 - `agent-<uniqueid>/artifacts/` — binary outputs and JSON files containing large tool results referenced by a response.
-- `agent-default/.gitkeep` — keeps the reserved legacy-migration bucket present in Git; new conversations create their own root-level `agent-<uniqueid>/` folder.
 - `README.md` — the only agent-facing guide, with quick-start steps, protocol instructions, and every tool's argument schema.
 
 Create one unique root-level folder per conversation or agent instance using exactly `agent-<uniqueid>`, for example `agent-7f3a91c2d4e6`. A second simultaneous ChatGPT conversation must use a different unique ID, for example `agent-2b8e4d6a1c9f`. Do not create an `agents/` parent folder, and do not share a folder between conversations. Reuse the same folder only when continuing that same conversation; every subagent gets its own unique folder. The folder itself identifies the conversation, so no bridge registration or mailbox ID is needed. Request IDs are scoped to that folder. The legacy `agent-default/` folder is reserved for migrated old root-level queue data; do not use it for new conversations.
