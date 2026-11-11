@@ -568,11 +568,11 @@ try {
       sha256: crypto.createHash('sha256').update(legacyArtifactBytes).digest('hex'),
     }],
   }), 'utf8');
-  const previousAgentsSentinel = Buffer.from('Desktop Commander agent-scoped queues.\\n', 'utf8');
+  const previousAgentsSentinel = Buffer.from('Desktop Commander agent-scoped queues.\n', 'utf8');
   api.files.set('agents/.gitkeep', {
     bytes: previousAgentsSentinel, sha: gitBlobSha(previousAgentsSentinel),
   });
-  const previousAgentsUserFile = Buffer.from('user-owned note\\n', 'utf8');
+  const previousAgentsUserFile = Buffer.from('user-owned note\n', 'utf8');
   api.files.set('agents/keep-me.txt', {
     bytes: previousAgentsUserFile, sha: gitBlobSha(previousAgentsUserFile),
   });
