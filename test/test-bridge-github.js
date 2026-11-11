@@ -335,13 +335,13 @@ assert.equal(listed[1].push, false);
 const client = await GitHubRepositoryClient.connect('owner/repo', token, api.fetcher);
 assert.equal(client.defaultBranch, 'main');
 assert.equal(client.repositoryId, 1001, 'the connected repository exposes its immutable GitHub ID');
-api.conflictNextCreateFile('agents/default/responses/stale-head-retry.json');
+api.conflictNextCreateFile('agent-default/responses/stale-head-retry.json');
 assert.equal(await client.createFileIfAbsent(
-  'agents/default/responses/stale-head-retry.json',
+  'agent-default/responses/stale-head-retry.json',
   Buffer.from('retry after stale branch head'),
   'Test stale branch retry',
 ), true, 'a 422 stale-head conflict with an absent target must be retried');
-assert.equal(api.files.get('agents/default/responses/stale-head-retry.json').bytes.toString('utf8'), 'retry after stale branch head');
+assert.equal(api.files.get('agent-default/responses/stale-head-retry.json').bytes.toString('utf8'), 'retry after stale branch head');
 
 api.truncateNextRecursiveTree();
 const recoveredTreeListing = await client.listQueueFiles();
@@ -505,13 +505,13 @@ await assert.rejects(
 const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-github-bridge-'));
 const paths = {
   root: temporaryRoot,
-  agents: path.join(temporaryRoot, 'agents'),
+  agents: temporaryRoot,
 };
 const defaultPaths = {
-  root: path.join(paths.agents, 'default'),
-  requests: path.join(paths.agents, 'default', 'requests'),
-  responses: path.join(paths.agents, 'default', 'responses'),
-  artifacts: path.join(paths.agents, 'default', 'artifacts'),
+  root: path.join(paths.agents, 'agent-default'),
+  requests: path.join(paths.agents, 'agent-default', 'requests'),
+  responses: path.join(paths.agents, 'agent-default', 'responses'),
+  artifacts: path.join(paths.agents, 'agent-default', 'artifacts'),
 };
 
 try {
@@ -555,15 +555,15 @@ try {
   await sync.initialize();
   assert.deepEqual(api.getDirectoryListingCalls().filter(Boolean), [],
     'initialization must not list the requests/responses directories through the 1,000-entry-limited Contents API');
-  assert.ok(api.files.has('agents/.gitkeep'));
+  assert.ok(api.files.has('agent-default/.gitkeep'));
   assert.ok(!api.files.has('requests/.gitkeep') && !api.files.has('responses/.gitkeep'));
   assert.ok(!api.files.has('artifacts/.gitkeep'));
-  assert.ok(api.files.has('agents/default/requests/legacy-pending.json'));
-  assert.ok(api.files.has('agents/default/responses/legacy-completed.json'));
-  assert.ok(api.files.has('agents/default/artifacts/legacy-completed/output.bin'));
+  assert.ok(api.files.has('agent-default/requests/legacy-pending.json'));
+  assert.ok(api.files.has('agent-default/responses/legacy-completed.json'));
+  assert.ok(api.files.has('agent-default/artifacts/legacy-completed/output.bin'));
   assert.ok(
-    api.commits.findIndex((commit) => commit.path === 'agents/default/artifacts/legacy-completed/output.bin')
-      < api.commits.findIndex((commit) => commit.path === 'agents/default/responses/legacy-completed.json'),
+    api.commits.findIndex((commit) => commit.path === 'agent-default/artifacts/legacy-completed/output.bin')
+      < api.commits.findIndex((commit) => commit.path === 'agent-default/responses/legacy-completed.json'),
     'legacy artifacts must be committed before the migrated response completion marker',
   );
   assert.ok(!api.files.has('requests/legacy-pending.json'));
@@ -576,8 +576,8 @@ try {
   const generatedReadme = api.files.get('README.md').bytes.toString('utf8');
   assert.ok(generatedReadme.startsWith('# Desktop Commander Bridge\n'));
   assert.ok(generatedReadme.includes('## AI Quick Start'));
-  assert.ok(generatedReadme.includes('agents/<agent-name>/requests/'));
-  assert.ok(generatedReadme.includes('agents/<agent-name>/responses/'));
+  assert.ok(generatedReadme.includes('agent-<uniqueid>/requests/'));
+  assert.ok(generatedReadme.includes('agent-<uniqueid>/responses/'));
   assert.ok(generatedReadme.includes('## Tool catalog'));
   assert.ok(!generatedReadme.includes('mailbox_user_id'));
   assert.ok(!generatedReadme.includes('## Optional local mailbox'));
@@ -603,7 +603,7 @@ try {
   // Two separate ChatGPT conversations share the same model/platform but
   // must never share queue, response, artifact, or durable-idempotency state.
   const sharedId = 'same-id';
-  const chatgptConversationIds = ['chatgpt-7f3a91c2d4e6', 'chatgpt-2b8e4d6a1c9f'];
+  const chatgptConversationIds = ['agent-7f3a91c2d4e6', 'agent-2b8e4d6a1c9f'];
   const agentRequestBytes = new Map();
   for (const agentId of chatgptConversationIds) {
     const bytes = Buffer.from(JSON.stringify({
@@ -612,7 +612,7 @@ try {
       commands: [{ tool: 'get_config', arguments: {} }],
     }), 'utf8');
     agentRequestBytes.set(agentId, bytes);
-    const remotePath = 'agents/' + agentId + '/requests/' + sharedId + '.json';
+    const remotePath = agentId + '/requests/' + sharedId + '.json';
     api.files.set(remotePath, { bytes, sha: gitBlobSha(bytes) });
   }
   await sync.syncOnce();
@@ -638,9 +638,9 @@ try {
   }
   await sync.syncOnce();
   for (const agentId of chatgptConversationIds) {
-    assert.ok(api.files.has('agents/' + agentId + '/responses/' + sharedId + '.json'),
+    assert.ok(api.files.has(agentId + '/responses/' + sharedId + '.json'),
       'each ChatGPT conversation must receive its own response: ' + agentId);
-    assert.ok(api.files.has('agents/' + agentId + '/requests/' + sharedId + '.json'),
+    assert.ok(api.files.has(agentId + '/requests/' + sharedId + '.json'),
       'remote request history is retained for conversation ' + agentId);
     await assert.rejects(
       () => fs.access(path.join(paths.agents, agentId, 'requests', sharedId + '.json')),
@@ -654,7 +654,7 @@ try {
     id: 'sample-01',
     commands: [{ tool: 'get_config', arguments: {} }],
   }), 'utf8');
-  const requestPath = 'agents/default/requests/request-sample-01.json';
+  const requestPath = 'agent-default/requests/request-sample-01.json';
   api.files.set(requestPath, { bytes: requestBytes, sha: gitBlobSha(requestBytes) });
 
   await sync.syncOnce();
@@ -670,7 +670,7 @@ try {
     'unchanged staged requests should not be downloaded again on every poll');
 
   const cachedRequestId = 'cached-at-startup';
-  const cachedRequestPath = 'agents/default/requests/request-' + cachedRequestId + '.json';
+  const cachedRequestPath = 'agent-default/requests/request-' + cachedRequestId + '.json';
   const cachedRequestBytes = Buffer.from('already staged request bytes');
   api.files.set(cachedRequestPath, {
     bytes: cachedRequestBytes,
@@ -693,7 +693,7 @@ try {
   assert.equal(api.getRawReadCount(cachedRequestPath), 0,
     'a verified local cache entry must not be downloaded again after restart');
   assert.equal(stagingLogs.filter((message) =>
-    message.includes('agents/default/requests/request-' + cachedRequestId)
+    message.includes('agent-default/requests/request-' + cachedRequestId)
     && message.includes('staged ')
     && message.includes('locally for execution'),
   ).length, 1,
@@ -726,11 +726,11 @@ try {
   await fs.writeFile(responsePath, JSON.stringify(response));
 
   await sync.syncOnce();
-  assert.deepEqual(api.files.get('agents/default/' + artifactPath).bytes, artifactBytes);
-  assert.ok(api.files.has('agents/default/responses/response-sample-01.json'));
+  assert.deepEqual(api.files.get('agent-default/' + artifactPath).bytes, artifactBytes);
+  assert.ok(api.files.has('agent-default/responses/response-sample-01.json'));
   assert.ok(
-    api.commits.findIndex((commit) => commit.path === 'agents/default/' + artifactPath)
-      < api.commits.findIndex((commit) => commit.path === 'agents/default/responses/response-sample-01.json'),
+    api.commits.findIndex((commit) => commit.path === 'agent-default/' + artifactPath)
+      < api.commits.findIndex((commit) => commit.path === 'agent-default/responses/response-sample-01.json'),
     'artifacts must be committed before the response completion marker',
   );
   await assert.rejects(
@@ -746,7 +746,7 @@ try {
   await sync.syncOnce();
   assert.equal(api.getRawReadCount(requestPath), 1,
     'unchanged completed requests should be skipped without downloading the request or response again');
-  assert.equal(api.getRawReadCount('agents/default/responses/response-sample-01.json'), 0);
+  assert.equal(api.getRawReadCount('agent-default/responses/response-sample-01.json'), 0);
 
   const compactId = 'task-a1';
   const compactRequestBytes = Buffer.from(JSON.stringify({
@@ -754,7 +754,7 @@ try {
     id: compactId,
     commands: [{ tool: 'get_config', arguments: {} }],
   }), 'utf8');
-  api.files.set('agents/default/requests/' + compactId + '.json', {
+  api.files.set('agent-default/requests/' + compactId + '.json', {
     bytes: compactRequestBytes,
     sha: gitBlobSha(compactRequestBytes),
   });
@@ -776,7 +776,7 @@ try {
     artifacts: [],
   }));
   await sync.syncOnce();
-  assert.ok(api.files.has('agents/default/responses/' + compactId + '.json'),
+  assert.ok(api.files.has('agent-default/responses/' + compactId + '.json'),
     'GitHub sync must publish compact response filenames without a response- prefix');
   await assert.rejects(
     () => fs.access(path.join(defaultPaths.requests, compactId + '.json')),
@@ -832,8 +832,8 @@ try {
   const secondConcurrentSignal = sync.syncOnce();
   uploadGate.release();
   await Promise.all([firstConcurrentSync, secondConcurrentSignal]);
-  assert.ok(api.files.has('agents/default/responses/response-sample-02.json'));
-  assert.ok(api.files.has('agents/default/responses/response-sample-03.json'),
+  assert.ok(api.files.has('agent-default/responses/response-sample-02.json'));
+  assert.ok(api.files.has('agent-default/responses/response-sample-03.json'),
     'a response arriving during synchronization must be published by the queued follow-up pass');
   await assert.rejects(
     () => fs.access(path.join(defaultPaths.responses, 'response-sample-03.json')),
@@ -895,7 +895,7 @@ try {
   await fs.writeFile(largeResponsePath, JSON.stringify(largeResponse));
   await sync.syncOnce();
 
-  const publishedLargeResponseBytes = api.files.get('agents/default/responses/response-' + largeResponseId + '.json')?.bytes;
+  const publishedLargeResponseBytes = api.files.get('agent-default/responses/response-' + largeResponseId + '.json')?.bytes;
   assert.ok(publishedLargeResponseBytes, 'the compact response marker should be committed to GitHub');
   assert.ok(publishedLargeResponseBytes.length < MAX_GITHUB_BRIDGE_FILE_BYTES,
     'the response marker must stay below the GitHub per-file limit');
@@ -911,7 +911,7 @@ try {
     assert.ok(Array.isArray(reference.parts) && reference.parts.length > 0,
       'chunked artifacts must expose their remote parts');
     const chunks = reference.parts.map((part) => {
-      const stored = api.files.get('agents/default/' + part.path);
+      const stored = api.files.get('agent-default/' + part.path);
       assert.ok(stored, 'each declared artifact part must be uploaded: ' + part.path);
       assert.equal(stored.bytes.length, part.bytes);
       assert.equal(crypto.createHash('sha256').update(stored.bytes).digest('hex'), part.sha256);
@@ -946,7 +946,7 @@ try {
     artifacts: [],
   }));
   await sync.syncOnce();
-  const autoDumpRemotePath = 'agents/default/responses/response-' + autoDumpId + '.json';
+  const autoDumpRemotePath = 'agent-default/responses/response-' + autoDumpId + '.json';
   const autoDumpMarker = api.files.get(autoDumpRemotePath)?.bytes;
   assert.ok(autoDumpMarker, 'a response slightly over 1 MB must still publish a completion marker');
   assert.ok(autoDumpMarker.length <= 1_000_000,
@@ -956,7 +956,7 @@ try {
   assert.ok(autoDumpReference, 'the oversized result must be replaced by a JSON artifact reference');
   const autoDumpContentBytes = autoDumpReference.parts
     ? reconstructArtifact(autoDumpReference)
-    : api.files.get('agents/default/' + autoDumpReference.path).bytes;
+    : api.files.get('agent-default/' + autoDumpReference.path).bytes;
   assert.deepEqual(
     JSON.parse(autoDumpContentBytes.toString('utf8')),
     [{ type: 'text', text: autoDumpText }],
@@ -1006,7 +1006,7 @@ try {
     () => sync.syncOnce(),
     /Could not synchronize 1 local response file/,
   );
-  assert.ok(api.files.has('agents/default/responses/response-' + validResponseId + '.json'),
+  assert.ok(api.files.has('agent-default/responses/response-' + validResponseId + '.json'),
     'a malformed response must not block another response from the same sync pass');
   await fs.access(path.join(defaultPaths.responses, 'response-' + invalidResponseId + '.json'));
   await fs.rm(path.join(defaultPaths.responses, 'response-' + invalidResponseId + '.json'), { force: true });
@@ -1028,7 +1028,7 @@ try {
     /local response publication was still attempted/,
     'remote queue discovery errors should still be reported after trying to publish completed local responses',
   );
-  assert.ok(api.files.has('agents/default/responses/response-' + listingFailureId + '.json'),
+  assert.ok(api.files.has('agent-default/responses/response-' + listingFailureId + '.json'),
     'a temporary remote request-listing failure must not block a completed response upload');
 
   const followupId = 'sync-followup-01';
@@ -1041,7 +1041,7 @@ try {
   api.failNextQueueTreeList();
   const failedPassWithQueuedSignal = sync.syncOnce();
   await queueListGate.started;
-  api.files.set('agents/default/requests/' + followupId + '.json', {
+  api.files.set('agent-default/requests/' + followupId + '.json', {
     bytes: followupRequestBytes,
     sha: gitBlobSha(followupRequestBytes),
   });
@@ -1076,12 +1076,12 @@ try {
     );
     assert.equal(api.getRawReadCount(requestPath), 1,
       'a restarted bridge must not download a request whose response completion marker already exists');
-    assert.equal(api.getRawReadCount('agents/default/responses/response-sample-01.json'), 0,
+    assert.equal(api.getRawReadCount('agent-default/responses/response-sample-01.json'), 0,
       'a restarted bridge must not download historical completed responses');
     await restartedSync.syncOnce();
     assert.equal(api.getRawReadCount(requestPath), 1,
       'completed request history must remain excluded from every later synchronization');
-    assert.equal(api.getRawReadCount('agents/default/responses/response-sample-01.json'), 0,
+    assert.equal(api.getRawReadCount('agent-default/responses/response-sample-01.json'), 0,
       'completed response history must remain excluded from every later synchronization');
   } finally {
     await fs.rm(restartRoot, { recursive: true, force: true });
@@ -1094,8 +1094,8 @@ try {
   const historyCount = 2_000;
   for (let index = 0; index < historyCount; index++) {
     const id = 'history-' + String(index).padStart(4, '0');
-    const requestName = 'agents/default/requests/request-' + id + '.json';
-    const responseName = 'agents/default/responses/response-' + id + '.json';
+    const requestName = 'agent-default/requests/request-' + id + '.json';
+    const responseName = 'agent-default/responses/response-' + id + '.json';
     const oldRequest = Buffer.from('historical request ' + index);
     const oldResponse = Buffer.from('historical response ' + index);
     api.files.set(requestName, { bytes: oldRequest, sha: gitBlobSha(oldRequest) });
