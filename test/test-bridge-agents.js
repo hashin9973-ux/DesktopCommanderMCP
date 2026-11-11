@@ -101,6 +101,12 @@ try {
 
   await fs.writeFile(path.join(chatgptConversationOne.requests, 'same-id.json'), 'conversation one');
   await fs.writeFile(path.join(chatgptConversationTwo.requests, 'same-id.json'), 'conversation two');
+  await fs.writeFile(path.join(chatgptConversationOne.responses, 'same-id.json'), 'response one');
+  await fs.writeFile(path.join(chatgptConversationTwo.responses, 'same-id.json'), 'response two');
+  await fs.writeFile(path.join(chatgptConversationOne.artifacts, 'same-id.bin'), 'artifact one');
+  await fs.writeFile(path.join(chatgptConversationTwo.artifacts, 'same-id.bin'), 'artifact two');
+  await fs.writeFile(path.join(chatgptConversationOne.ledgers, 'same-id.json'), 'ledger one');
+  await fs.writeFile(path.join(chatgptConversationTwo.ledgers, 'same-id.json'), 'ledger two');
   assert.equal(
     await fs.readFile(path.join(chatgptConversationOne.requests, 'same-id.json'), 'utf8'),
     'conversation one',
@@ -109,6 +115,16 @@ try {
     await fs.readFile(path.join(chatgptConversationTwo.requests, 'same-id.json'), 'utf8'),
     'conversation two',
   );
+  for (const [folder, expected] of [
+    [chatgptConversationOne, ['response one', 'artifact one', 'ledger one']],
+    [chatgptConversationTwo, ['response two', 'artifact two', 'ledger two']],
+  ]) {
+    assert.deepEqual([
+      await fs.readFile(path.join(folder.responses, 'same-id.json'), 'utf8'),
+      await fs.readFile(path.join(folder.artifacts, 'same-id.bin'), 'utf8'),
+      await fs.readFile(path.join(folder.ledgers, 'same-id.json'), 'utf8'),
+    ], expected, 'responses, artifacts, and durable ledgers are scoped to the same conversation folder');
+  }
 
   // Migrate the previously released nested agents/<name>/ layout into
   // root-level agent-<name>/ folders without losing pending request bytes.
