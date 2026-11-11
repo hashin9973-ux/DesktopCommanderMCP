@@ -550,6 +550,38 @@ try {
     bytes: legacyArtifactBytes, sha: gitBlobSha(legacyArtifactBytes),
   });
 
+  // Upgrade the previous nested agents/<name>/ layout into root-level
+  // agent-<name>/ folders, including artifacts referenced by old responses.
+  const previousAgentRequest = Buffer.from(JSON.stringify({
+    protocol_version: 1,
+    id: 'previous-agent-pending',
+    commands: [{ tool: 'get_config', arguments: {} }],
+  }), 'utf8');
+  const previousAgentResponse = Buffer.from(JSON.stringify({
+    protocol_version: 1,
+    id: 'previous-agent-completed',
+    request_hash: 'previous-agent-hash',
+    status: 'completed',
+    results: [],
+    artifacts: [{
+      path: 'artifacts/previous-agent-completed/output.bin',
+      bytes: 4,
+      sha256: crypto.createHash('sha256').update(legacyArtifactBytes).digest('hex'),
+    }],
+  }), 'utf8');
+  api.files.set('agents/.gitkeep', {
+    bytes: Buffer.from('old nested namespace\n'), sha: gitBlobSha(Buffer.from('old nested namespace\n')),
+  });
+  api.files.set('agents/chatgpt-old/requests/previous-agent-pending.json', {
+    bytes: previousAgentRequest, sha: gitBlobSha(previousAgentRequest),
+  });
+  api.files.set('agents/chatgpt-old/responses/previous-agent-completed.json', {
+    bytes: previousAgentResponse, sha: gitBlobSha(previousAgentResponse),
+  });
+  api.files.set('agents/chatgpt-old/artifacts/previous-agent-completed/output.bin', {
+    bytes: legacyArtifactBytes, sha: gitBlobSha(legacyArtifactBytes),
+  });
+
   const sync = new GitHubBridgeSync(client, paths);
   api.resetDirectoryListingCalls();
   await sync.initialize();
@@ -570,6 +602,13 @@ try {
   assert.ok(!api.files.has('responses/legacy-completed.json'));
   assert.ok(!api.files.has('artifacts/legacy-completed/output.bin'),
     'legacy remote files are removed only after their agent/default copies are verified');
+  assert.ok(api.files.has('agent-chatgpt-old/requests/previous-agent-pending.json'));
+  assert.ok(api.files.has('agent-chatgpt-old/responses/previous-agent-completed.json'));
+  assert.ok(api.files.has('agent-chatgpt-old/artifacts/previous-agent-completed/output.bin'));
+  assert.ok(!api.files.has('agents/chatgpt-old/requests/previous-agent-pending.json'));
+  assert.ok(!api.files.has('agents/chatgpt-old/responses/previous-agent-completed.json'));
+  assert.ok(!api.files.has('agents/chatgpt-old/artifacts/previous-agent-completed/output.bin'));
+  assert.ok(!api.files.has('agents/.gitkeep'));
   assert.ok(api.files.has('README.md'));
   assert.ok(!api.files.has('DESKTOP_COMMANDER_BRIDGE.md'),
     'initialization must remove the obsolete separate bridge guide');
