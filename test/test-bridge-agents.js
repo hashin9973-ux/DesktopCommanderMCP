@@ -193,9 +193,14 @@ try {
     flatLegacyLedgerBytes,
     'flat legacy ledgers must remain paired with the agent-default migration bucket',
   );
-  for (const oldLedgerPath of [previousAgentLedger, previousPrefixedAgentLedger, previousReservedNameLedger]) {
+  for (const oldLedgerPath of [previousAgentLedger, previousPrefixedAgentLedger]) {
     await assert.rejects(() => fs.access(oldLedgerPath), { code: 'ENOENT' });
   }
+  await assert.rejects(
+    () => fs.access(path.join(previousStateRoot, 'requests', 'agent-default', 'same-id.json')),
+    { code: 'ENOENT' },
+    'the old agent-default ledger must not be mistaken for the reserved flat-queue ledger folder',
+  );
   await assert.rejects(() => fs.access(previousAgentsSentinel), { code: 'ENOENT' },
     'the known generated namespace sentinel is removed during migration');
   await assert.rejects(
