@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-export const AGENT_DIRECTORY_PATTERN = /^agent-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$/;
+export const LEGACY_AGENT_DIRECTORY_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
+export const AGENT_DIRECTORY_PATTERN = /^agent-[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 export const LEGACY_DEFAULT_AGENT = 'agent-default';
 
 const WINDOWS_RESERVED_AGENT_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
@@ -88,25 +89,11 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
     await moveTreeWithoutOverwrite(legacyPath, destination);
   }
 
-  const legacyLedgers = path.join(stateDirectory, 'requests');
-  if (await pathExists(legacyLedgers)) {
-    const legacyLedgerStat = await fs.lstat(legacyLedgers);
-    if (!legacyLedgerStat.isDirectory() || legacyLedgerStat.isSymbolicLink()) {
-      throw new Error('Legacy bridge request ledgers must be stored in a real directory: ' + legacyLedgers);
-    }
-    const defaultLedgers = path.join(legacyLedgers, LEGACY_DEFAULT_AGENT);
-    if (!await pathExists(defaultLedgers)) await fs.mkdir(defaultLedgers, { recursive: true });
-    const defaultLedgerStat = await fs.lstat(defaultLedgers);
-    if (!defaultLedgerStat.isDirectory() || defaultLedgerStat.isSymbolicLink()) {
-      throw new Error('The default agent ledger path must be a real directory: ' + defaultLedgers);
-    }
-    for (const entry of await fs.readdir(legacyLedgers, { withFileTypes: true })) {
-      if (entry.name === LEGACY_DEFAULT_AGENT) continue;
-      await moveTreeWithoutOverwrite(path.join(legacyLedgers, entry.name), path.join(defaultLedgers, entry.name));
-    }
-  }
   // Migrate the previous agents/<name>/ layout into root-level agent-<name>/ folders.
+  // Capture the old names before moving them so the matching durable request
+  // ledgers can be moved into the same new conversation folder.
   const previousAgentsRoot = path.join(bridgeRoot, 'agents');
+  const previousAgentNames = new Set<string>();
   if (await pathExists(previousAgentsRoot)) {
     const previousStat = await fs.lstat(previousAgentsRoot);
     if (!previousStat.isDirectory() || previousStat.isSymbolicLink()) {
@@ -114,10 +101,52 @@ export async function initializeAgentLayout(bridgeRoot: string, stateDirectory: 
     }
     for (const entry of await fs.readdir(previousAgentsRoot, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.isSymbolicLink()
-        || !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(entry.name)) continue;
+        || !LEGACY_AGENT_DIRECTORY_PATTERN.test(entry.name)) continue;
+      previousAgentNames.add(entry.name);
       const destination = path.join(bridgeRoot, 'agent-' + entry.name);
       await moveTreeWithoutOverwrite(path.join(previousAgentsRoot, entry.name), destination);
     }
+  }
+
+  // Durable idempotency ledgers use the same folder identity as queue data.
+  // Older releases stored per-agent ledgers at requests/<old-agent-name>/,
+  // while flat legacy queues stored their ledgers directly under requests/.
+  const legacyLedgers = path.join(stateDirectory, 'requests');
+  if (await pathExists(legacyLedgers)) {
+    const legacyLedgerStat = await fs.lstat(legacyLedgers);
+    if (!legacyLedgerStat.isDirectory() || legacyLedgerStat.isSymbolicLink()) {
+      throw new Error('Legacy bridge request ledgers must be stored in a real directory: ' + legacyLedgers);
+    }
+    for (const entry of await fs.readdir(legacyLedgers, { withFileTypes: true })) {
+      if (entry.name === LEGACY_DEFAULT_AGENT) continue;
+      const source = path.join(legacyLedgers, entry.name);
+      if (entry.isFile()) {
+        await moveTreeWithoutOverwrite(source, path.join(legacyLedgers, LEGACY_DEFAULT_AGENT, entry.name));
+        continue;
+      }
+      if (entry.isDirectory() && !entry.isSymbolicLink()
+        && entry.name !== 'default'
+        && !entry.name.startsWith('agent-')
+        && LEGACY_AGENT_DIRECTORY_PATTERN.test(entry.name)) {
+        const destinationAgent = 'agent-' + entry.name;
+        await moveTreeWithoutOverwrite(source, path.join(legacyLedgers, destinationAgent));
+        continue;
+      }
+      if (entry.name === 'default' && entry.isDirectory() && !entry.isSymbolicLink()) {
+        await moveTreeWithoutOverwrite(source, path.join(legacyLedgers, LEGACY_DEFAULT_AGENT));
+        continue;
+      }
+      if (entry.isDirectory() && previousAgentNames.has(entry.name)) {
+        await moveTreeWithoutOverwrite(source, path.join(legacyLedgers, 'agent-' + entry.name));
+        continue;
+      }
+      console.warn(
+        'Preserved unrecognized legacy request-ledger content rather than changing its identity: ' + source,
+      );
+    }
+  }
+
+  if (await pathExists(previousAgentsRoot)) {
     const remainingEntries = await fs.readdir(previousAgentsRoot);
     if (remainingEntries.length === 0) {
       await fs.rmdir(previousAgentsRoot);
