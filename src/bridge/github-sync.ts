@@ -494,7 +494,7 @@ export class GitHubBridgeSync {
         transfers.push({ source: entry.path, destination });
         continue;
       }
-      const previousAgent = /^agents\/([a-z0-9][a-z0-9._-]{0,63})\/(requests|responses)\/([^/]+)$/.exec(entry.path);
+      const previousAgent = /^agents\/([a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?)\/(requests|responses)\/([^/]+)$/.exec(entry.path);
       if (previousAgent) {
         transfers.push({
           source: entry.path,
@@ -505,7 +505,7 @@ export class GitHubBridgeSync {
 
     for (const entry of legacy.legacyArtifacts) {
       const match = /^artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)$/i.exec(entry.path);
-      const previous = /^agents\/([a-z0-9][a-z0-9._-]{0,63})\/artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)$/i.exec(entry.path);
+      const previous = /^agents\/([a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?)\/artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)$/i.exec(entry.path);
       if (match) transfers.push({ source: entry.path, destination: 'agent-default/artifacts/' + match[1] + '/' + match[2] });
       else if (previous) transfers.push({ source: entry.path, destination: 'agent-' + previous[1] + '/artifacts/' + previous[2] + '/' + previous[3] });
     }
