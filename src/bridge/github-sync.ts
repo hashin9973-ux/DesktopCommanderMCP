@@ -551,6 +551,10 @@ export class GitHubBridgeSync {
         'Remove obsolete flat Desktop Commander bridge directory sentinel',
       );
     }
+    await this.client.deleteFileIfPresent(
+      'agents/.gitkeep',
+      'Remove obsolete nested agent namespace sentinel after root-level migration',
+    );
   }
 
   async initialize(): Promise<void> {
