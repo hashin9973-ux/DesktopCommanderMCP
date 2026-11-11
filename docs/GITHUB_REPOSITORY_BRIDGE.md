@@ -21,7 +21,7 @@ For headless deployments, set `GITHUB_TOKEN` or `GH_TOKEN` in the process enviro
 Start the portable executable and choose **GitHub repository bridge**. The first connection offers two choices:
 
 1. Select an existing, non-archived repository where the authenticated account has write permission. Private repositories are strongly recommended.
-2. Create a new repository under the authenticated personal account. The bridge requests that GitHub create it as **private**, initializes it, and prepares the `agents/` namespace.
+2. Create a new repository under the authenticated personal account. The bridge requests that GitHub create it as **private**, initializes it, and prepares root-level `agent-<uniqueid>/` folders.
 
 The created repository is a dedicated queue repository; it is not a clone of your application source repository. To create a private repository through the GitHub API, the credential must have repository-creation permissions. For a fine-grained personal access token, GitHub documents either the Administration or Repository creation repository permission with write access as required for this endpoint; classic tokens need the `repo` scope. See [GitHub's create-a-repository endpoint](https://docs.github.com/en/rest/repos/repos#create-a-repository-for-the-authenticated-user).
 
