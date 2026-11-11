@@ -178,8 +178,8 @@ jobs:
             )
           } | ConvertTo-Json -Depth 20
 
-          # A second agent intentionally reuses this request ID. Its processing
-          # ledger and response must remain isolated in its own folder.
+          # A second ChatGPT conversation intentionally reuses this request ID.
+          # Its queue and processing ledger must remain isolated in its own folder.
           $sameIdOtherAgentRequest = @{
             protocol_version = 1
             id = "smoke-config"
@@ -271,7 +271,7 @@ jobs:
               throw "Independent config request failed: $($configResponse | ConvertTo-Json -Depth 10)"
             }
             if ($otherAgentResponse.status -ne "completed" -or $otherAgentResponse.id -ne $configResponse.id -or $otherAgentResponse.results.Count -ne 1) {
-              throw "The second agent did not receive an independent response for its reused request ID: $($otherAgentResponse | ConvertTo-Json -Depth 10)"
+              throw "The second ChatGPT conversation did not receive an independent response for its reused request ID: $($otherAgentResponse | ConvertTo-Json -Depth 10)"
             }
             if ($imageResponse.artifacts.Count -lt 1) {
               throw "Image read did not produce an artifact reference."
@@ -287,16 +287,19 @@ jobs:
               throw "Bridge did not generate README.md in the configured cloud folder."
             }
             $guideContent = Get-Content $guidePath -Raw
-            if (!$guideContent.Contains("agents/<agent-name>/requests/") -or !$guideContent.Contains("agents/<agent-name>/responses/") -or !$guideContent.Contains("agents/<agent-name>/artifacts/")) {
+            if (!$guideContent.Contains("agents/<agent-instance-id>/requests/") -or !$guideContent.Contains("agents/<agent-instance-id>/responses/") -or !$guideContent.Contains("agents/<agent-instance-id>/artifacts/")) {
               throw "Generated bridge README is missing the agent-scoped queue folder layout."
             }
-            if (!$guideContent.Contains("folder name identifies your agent")) {
+            if (!$guideContent.Contains("folder identifies this agent instance")) {
               throw "Generated bridge README does not describe folder-based agent identity."
             }
             if ($guideContent.Contains("mailbox_user_id") -or $guideContent.Contains("## Optional local mailbox")) {
               throw "Generated bridge README still couples bridge agents to mailbox identities."
             }
-            if (!$guideContent.Contains("agents/chatgpt/requests/task-a1.json") -or !$guideContent.Contains("agents/chatgpt/responses/task-a1.json")) {
+            if (!$guideContent.Contains("NEW unique folder for this conversation") -or !$guideContent.Contains("Never use a shared platform-only folder such as chatgpt")) {
+              throw "Generated bridge README does not require separate folders for concurrent conversations from the same platform."
+            }
+            if (!$guideContent.Contains("agents/chatgpt-7f3a91c2d4e6/requests/task-a1.json") -or !$guideContent.Contains("agents/chatgpt-7f3a91c2d4e6/responses/task-a1.json")) {
               throw "Generated bridge README is missing the compact agent-scoped request/response filename convention."
             }
             if (Test-Path (Join-Path $cloudDir "requests")) {
