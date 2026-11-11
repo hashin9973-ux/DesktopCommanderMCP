@@ -55,7 +55,7 @@ try {
   ]);
 
   const agentsRoot = await initializeAgentLayout(bridgeRoot, stateRoot);
-  assert.equal(agentsRoot, path.join(bridgeRoot, 'agents'));
+  assert.equal(agentsRoot, bridgeRoot);
   const defaultRoot = path.join(agentsRoot, LEGACY_DEFAULT_AGENT);
   assert.deepEqual(await fs.readFile(path.join(defaultRoot, 'requests', 'pending-task.json')), pendingRequest);
   assert.deepEqual(await fs.readFile(path.join(defaultRoot, 'responses', 'completed-task.json')), completedResponse);
@@ -77,15 +77,15 @@ try {
   // Separate ChatGPT conversations must use separate folders even though
   // they share the same model/platform. Request, response, artifact, and
   // processing-ledger state must not collide when their request IDs match.
-  const chatgptConversationOneId = 'chatgpt-7f3a91c2d4e6';
-  const chatgptConversationTwoId = 'chatgpt-2b8e4d6a1c9f';
-  const plannerId = 'planner-05c4e7a19b2d';
+  const chatgptConversationOneId = 'agent-7f3a91c2d4e6';
+  const chatgptConversationTwoId = 'agent-2b8e4d6a1c9f';
+  const plannerId = 'agent-05c4e7a19b2d';
   for (const agentId of [chatgptConversationOneId, chatgptConversationTwoId, plannerId]) {
     await fs.mkdir(path.join(agentsRoot, agentId), { recursive: true });
   }
   const agents = await discoverAgentQueuePaths(agentsRoot, stateRoot);
   assert.deepEqual(agents.map((agent) => agent.agentId), [
-    chatgptConversationTwoId, chatgptConversationOneId, 'default', plannerId,
+    chatgptConversationOneId, chatgptConversationTwoId, 'agent-default', plannerId,
   ]);
   const chatgptConversationOne = agents.find((agent) => agent.agentId === chatgptConversationOneId);
   const chatgptConversationTwo = agents.find((agent) => agent.agentId === chatgptConversationTwoId);
@@ -111,8 +111,9 @@ try {
   );
 
   assert.equal(isValidAgentDirectoryName('agent-01'), true);
-  assert.equal(isValidAgentDirectoryName('chatgpt.web'), true);
-  assert.equal(isValidAgentDirectoryName('chatgpt.'), false,
+  assert.equal(isValidAgentDirectoryName('chatgpt.web'), false);
+  assert.equal(isValidAgentDirectoryName('agent-chatgpt.web'), true);
+  assert.equal(isValidAgentDirectoryName('agent-chatgpt.'), false,
     'trailing dots are not portable across Windows filesystems');
   assert.equal(isValidAgentDirectoryName('Agent'), false,
     'agent folder names are lowercase for cross-platform identity consistency');
@@ -127,7 +128,7 @@ try {
   const conflictRoot = path.join(temporaryRoot, 'conflict-bridge');
   const conflictState = path.join(temporaryRoot, 'conflict-state');
   const conflictSource = path.join(conflictRoot, 'requests', 'task.json');
-  const conflictDestination = path.join(conflictRoot, 'agents', 'default', 'requests', 'task.json');
+  const conflictDestination = path.join(conflictRoot, 'agent-default', 'requests', 'task.json');
   await fs.mkdir(path.dirname(conflictSource), { recursive: true });
   await fs.mkdir(path.dirname(conflictDestination), { recursive: true });
   await fs.writeFile(conflictSource, 'legacy-content');
