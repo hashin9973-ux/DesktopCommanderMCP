@@ -16,17 +16,20 @@ try {
 
   const generatedGuidePath = path.join(generatedRoot, 'README.md');
   const generatedGuide = await fs.readFile(generatedGuidePath, 'utf8');
-  assert.match(generatedGuide, /desktop-commander:bridge-guide:v6/);
-  assert.match(generatedGuide, /agent-<uniqueid>\//);
-  assert.match(generatedGuide, /agent-7f3a91c2d4e6\/requests\/task-a1\.json/);
-  assert.match(generatedGuide, /agent-<uniqueid>\/responses\/<id>\.json/);
-  assert.match(generatedGuide, /agent-<uniqueid>\/artifacts/);
-  assert.match(generatedGuide, /folder identifies this agent instance/);
-  assert.match(generatedGuide, /Request IDs need only be unique within this conversation's folder/);
-  assert.match(generatedGuide, /one isolated workspace per conversation or subagent instance/);
-  assert.match(generatedGuide, /NEW unique folder for this conversation/);
-  assert.match(generatedGuide, /Never share a folder between conversations/);
-  assert.match(generatedGuide, /reuse it only when continuing that same conversation/);
+  assert.match(generatedGuide, /desktop-commander:bridge-guide:v7/);
+  assert.match(generatedGuide, /agent-<uniqueid>\/\{requests,responses,artifacts\}/);
+  assert.match(generatedGuide, /agent-<parent>\/subagents\/agent-<child>/);
+  assert.match(generatedGuide, /agent-4l\/requests\/task-a1\.json/);
+  assert.match(generatedGuide, /<your-workspace>\/responses\/<id>\.json/);
+  assert.match(generatedGuide, /<your-workspace>\/artifacts/);
+  assert.match(generatedGuide, /Request IDs need only be unique within your own workspace/);
+  assert.match(generatedGuide, /subagents\/ recursively/);
+  assert.match(generatedGuide, /## Subagents and parent coordination/);
+  assert.match(generatedGuide, /continue\. action sends only/);
+  assert.match(generatedGuide, /direct MCP `mailbox` tool/);
+  assert.match(generatedGuide, /normal direct MCP `mailbox` tool/);
+  assert.match(generatedGuide, /Never share a workspace between conversations/);
+  assert.match(generatedGuide, /Keep your assigned workspace path/);
   assert.match(generatedGuide, /## Transport behavior/);
   assert.match(generatedGuide, /### Cloud-folder synchronization/);
   assert.match(generatedGuide, /### GitHub Repository Bridge/);
@@ -42,6 +45,8 @@ try {
   assert.doesNotMatch(generatedGuide, /mailbox_user_id|mailbox identity|## Optional local mailbox/);
   assert.ok(!BRIDGE_TOOL_NAMES.includes('mailbox'),
     'the generated bridge catalog must not advertise mailbox identity registration');
+  assert.ok(BRIDGE_TOOL_NAMES.includes('subagent'),
+    'the generated bridge catalog must include subagent lifecycle actions');
 
   // Existing generated README content must be replaced when the guide changes,
   // even if it already contains a version marker from an earlier release.
@@ -62,8 +67,9 @@ try {
   const upgradedGuide = await fs.readFile(path.join(oldGeneratedRoot, 'README.md'), 'utf8');
   assert.notEqual(upgradedGuide, staleGeneratedGuide,
     'an existing generated README with the previous marker must be refreshed');
-  assert.match(upgradedGuide, /desktop-commander:bridge-guide:v6/);
+  assert.match(upgradedGuide, /desktop-commander:bridge-guide:v7/);
   assert.match(upgradedGuide, /agent-<uniqueid>/);
+  assert.match(upgradedGuide, /subagents\/agent-<id>/);
   assert.doesNotMatch(upgradedGuide, /Old structure: requests\//);
 
   // Custom user-authored README files are deliberately preserved.
