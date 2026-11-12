@@ -22,7 +22,7 @@ const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_STORAGE_BYTES = 3_000_000_000;
 const STABILITY_CHECK_MS = 200;
 const REQUEST_PARSE_SETTLE_MS = 2_000;
-const BRIDGE_GUIDE_MARKER = '<!-- desktop-commander:bridge-guide:v8 -->';
+const BRIDGE_GUIDE_MARKER = '<!-- desktop-commander:bridge-guide:v9 -->';
 const BRIDGE_TRANSPORT: BridgeTransport = process.env.DC_BRIDGE_PROVIDER === 'github' ? 'github' : 'cloud';
 const RECENT_FILE_CLEANUP_GRACE_MS = 60_000;
 const MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
@@ -362,7 +362,7 @@ export async function createGuideIfMissing(
       ? 'Parent-child messages in GitHub mode use the `mailbox` tool through ordinary GitHub Bridge request/response files; do not call it through a separate direct MCP connection. The GitHub worker executes these actions on the host against the shared local mailbox database. Message bodies and inbox results are present in the GitHub request/response files, so use a private repository and grant access only to people authorized to read those messages. Register each agent under its own ID; children send from their own ID to the parent ID.'
       : 'The cloud-folder Bridge protocol intentionally does not expose `mailbox`, because mailbox request arguments and results would be synchronized with the shared folder. Use your own response files for parent-visible task results. Direct local MCP mailbox calls are separate from the cloud-folder Bridge protocol.',
     '',
-    'The browser integration uses a dedicated persistent Chromium profile. On first use, the browser opens visibly so the user can sign in to ChatGPT. The tool selects and verifies a Thinking/reasoning option before sending a prompt; it fails closed when the current ChatGPT interface does not expose a verifiable reasoning mode. It does not extract conversation output or store browser passwords/cookies in the Bridge repository.',
+    'The browser integration uses a dedicated persistent Chromium profile and runs headlessly by default, controlled through the local DevTools Protocol without opening a browser window. It reuses a signed-in session saved in that profile. For first-time sign-in only, set DC_SUBAGENT_HEADLESS=0, sign in to ChatGPT in the dedicated profile, then unset the variable and restart Desktop Commander. The tool verifies the actual Chromium launch mode through Browser.getBrowserCommandLine and restarts a mismatched browser process. It selects and verifies a Thinking/reasoning option before sending a prompt, fails closed when no reasoning mode can be verified, and does not extract conversation output or store browser passwords/cookies in the Bridge repository.',
     '',
     '## Fast asynchronous workflow',
     '',

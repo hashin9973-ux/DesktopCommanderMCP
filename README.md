@@ -601,6 +601,13 @@ The server provides a comprehensive set of tools organized into several categori
 | | `get_recent_tool_calls` | Get recent tool call history with arguments and outputs for debugging and context recovery |
 | | `give_feedback_to_desktop_commander` | Open feedback form in browser to provide feedback to Desktop Commander Team |
 | **Messaging** | `mailbox` | Optional local mailbox for AI/user registration, unread messages, message sending, user lists, and filtered history |
+| **Agent orchestration** | `subagent` | Spawn and manage persistent ChatGPT subagents in isolated nested workspaces |
+
+### Persistent ChatGPT Subagents
+
+The `subagent` tool creates and manages persistent ChatGPT conversations with isolated nested Bridge workspaces. Its actions are `spawn`, `continue`, `status`, and `delete`. Each child can create its own children recursively. The tool controls ChatGPT through a dedicated persistent Chromium profile and does not extract assistant response text.
+
+Chromium runs in **headless mode by default**. The existing signed-in session is reused from the dedicated profile, and the browser's actual launch mode is verified through the DevTools Protocol before a conversation is controlled. The user's normal browser profile is not used. For a first-time sign-in only, set `DC_SUBAGENT_HEADLESS=0`, start Desktop Commander and sign in to ChatGPT in the dedicated profile; then unset the variable and restart Desktop Commander to return to headless mode.
 
 ### Local Mailbox and AI Handoffs
 

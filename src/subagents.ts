@@ -57,6 +57,27 @@ interface SubagentState { version: 1; records: SubagentRecord[]; }
 interface BrowserTarget { targetId: string; sessionId: string; }
 interface BrowserInfo { executable: string; appPath?: string; }
 
+/**
+ * Headless is the default. Set DC_SUBAGENT_HEADLESS=0 only when the dedicated
+ * profile needs a one-time interactive sign-in or UI troubleshooting.
+ */
+export function shouldUseHeadlessBrowser(value = process.env.DC_SUBAGENT_HEADLESS): boolean {
+  return !['0', 'false', 'no', 'off'].includes(value?.trim().toLowerCase() || '');
+}
+
+export function buildBrowserLaunchArgs(profilePath: string, headless = shouldUseHeadlessBrowser()): string[] {
+  return [
+    '--remote-debugging-port=0',
+    '--remote-debugging-address=127.0.0.1',
+    '--user-data-dir=' + profilePath,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--enable-automation',
+    ...(headless ? ['--headless'] : []),
+    CHATGPT_URL,
+  ];
+}
+
 function stateDirectory(): string {
   // This stable per-user location is deliberately independent of XDG_STATE_HOME
   // and LOCALAPPDATA overrides used by the isolated GitHub worker process.
@@ -205,7 +226,10 @@ class DevToolsConnection {
       const socket = new WebSocket(this.url, { handshakeTimeout: 10000 });
       this.socket = socket;
       socket.once('open', resolve);
-      socket.once('error', reject);
+      socket.once('error', error => {
+        socket.close();
+        reject(error);
+      });
       socket.on('message', raw => {
         let message: { id?: number; result?: unknown; error?: { message?: string } };
         try { message = JSON.parse(raw.toString()) as typeof message; } catch { return; }
@@ -243,6 +267,17 @@ class DevToolsConnection {
       });
     });
   }
+
+  close(): void {
+    const socket = this.socket;
+    this.socket = undefined;
+    for (const waiter of this.pending.values()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error('The controlled browser connection was closed.'));
+    }
+    this.pending.clear();
+    if (socket && socket.readyState !== WebSocket.CLOSED) socket.close();
+  }
 }
 
 class ChatGptBrowser {
@@ -255,38 +290,77 @@ class ChatGptBrowser {
   }
 
   private async connectActive(): Promise<DevToolsConnection | undefined> {
+    let connection: DevToolsConnection | undefined;
     try {
       const lines = (await fs.readFile(this.portFile, 'utf8')).trim().split(/\r?\n/);
       const port = Number(lines[0]);
       const endpoint = lines[1];
       if (!Number.isInteger(port) || port < 1 || port > 65535 || !endpoint?.startsWith('/devtools/browser/')) return undefined;
-      const connection = new DevToolsConnection('ws://127.0.0.1:' + port + endpoint);
+      connection = new DevToolsConnection('ws://127.0.0.1:' + port + endpoint);
       await connection.connect();
       this.connection = connection;
       return connection;
-    } catch { return undefined; }
+    } catch {
+      connection?.close();
+      return undefined;
+    }
+  }
+
+  private async isConfiguredMode(connection: DevToolsConnection): Promise<boolean> {
+    try {
+      // Chromium exposes this CDP command only when --enable-automation is set.
+      // Checking the real browser arguments prevents silently reusing an older
+      // visible Chromium process after headless mode becomes the default.
+      const result = await connection.send<{ arguments?: string[] }>('Browser.getBrowserCommandLine');
+      if (!Array.isArray(result.arguments)) return false;
+      const actualHeadless = result.arguments.some(argument => /^--headless(?:=|$)/i.test(argument));
+      return actualHeadless === shouldUseHeadlessBrowser();
+    } catch {
+      return false;
+    }
+  }
+
+  private async stopBrowser(connection: DevToolsConnection): Promise<void> {
+    // This profile is dedicated to subagents, never the user's regular browser
+    // profile. Restart it only when its launch mode differs from configuration.
+    await connection.send('Browser.close').catch(() => undefined);
+    connection.close();
+    this.connection = undefined;
+
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      const stillRunning = await this.connectActive();
+      if (!stillRunning) break;
+      stillRunning.close();
+      this.connection = undefined;
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+    const stillRunning = await this.connectActive();
+    if (stillRunning) {
+      stillRunning.close();
+      this.connection = undefined;
+      throw new Error('The existing dedicated Chromium process could not be stopped to apply the configured headless mode.');
+    }
+    await fs.rm(this.portFile, { force: true });
   }
 
   private async connect(): Promise<DevToolsConnection> {
-    if (this.connection?.isOpen()) return this.connection;
+    let active = this.connection?.isOpen() ? this.connection : await this.connectActive();
+    if (active) {
+      if (await this.isConfiguredMode(active)) return active;
+      await this.stopBrowser(active);
+    }
+
     this.connection = undefined;
-    let active = await this.connectActive();
-    if (active) return active;
     await fs.mkdir(this.profilePath, { recursive: true, mode: 0o700 });
     await fs.rm(this.portFile, { force: true });
     const browser = await resolveBrowserExecutable();
-    const args = [
-      '--remote-debugging-port=0',
-      '--remote-debugging-address=127.0.0.1',
-      '--user-data-dir=' + this.profilePath,
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--new-window',
-      CHATGPT_URL,
-    ];
+    const args = buildBrowserLaunchArgs(this.profilePath);
     const child = process.platform === 'darwin' && browser.appPath
-      ? spawn('/usr/bin/open', ['-na', browser.appPath, '--args', ...args], { stdio: 'ignore', detached: true })
-      : spawn(browser.executable, args, { stdio: 'ignore', detached: true, windowsHide: false });
+      ? spawn('/usr/bin/open', ['-na', browser.appPath, '--args', ...args], {
+        stdio: 'ignore', detached: true, windowsHide: true,
+      })
+      : spawn(browser.executable, args, { stdio: 'ignore', detached: true, windowsHide: true });
     child.once('error', error => {
       process.stderr.write('Could not launch the system-default browser: ' + error.message + '\n');
     });
@@ -294,7 +368,11 @@ class ChatGptBrowser {
     const deadline = Date.now() + 20000;
     while (Date.now() < deadline) {
       active = await this.connectActive();
-      if (active) return active;
+      if (active) {
+        if (await this.isConfiguredMode(active)) return active;
+        await this.stopBrowser(active);
+        throw new Error('Chromium started, but its reported command-line switches did not confirm the configured headless mode.');
+      }
       await new Promise(resolve => setTimeout(resolve, 250));
     }
     throw new Error('The default Chromium browser did not expose its local DevTools endpoint.');
@@ -312,9 +390,11 @@ class ChatGptBrowser {
   }
 
   private async connectExisting(): Promise<DevToolsConnection | undefined> {
-    if (this.connection?.isOpen()) return this.connection;
-    this.connection = undefined;
-    return this.connectActive();
+    const active = this.connection?.isOpen() ? this.connection : await this.connectActive();
+    if (!active) return undefined;
+    if (await this.isConfiguredMode(active)) return active;
+    await this.stopBrowser(active);
+    return undefined;
   }
 
   async attach(
@@ -479,7 +559,7 @@ class ChatGptBrowser {
     if (!finalMode.thinkingActive) {
       throw new Error(
         "Could not verify that ChatGPT is in a reasoning mode (Thinking/Medium/High). " +
-        "The prompt was not sent. Choose a Thinking option in the opened ChatGPT browser and retry.",
+        "The prompt was not sent. Retry after choosing a supported Thinking option; set DC_SUBAGENT_HEADLESS=0 only if interactive UI selection is required.",
       );
     }
   }
@@ -504,7 +584,7 @@ class ChatGptBrowser {
       '})()',
     ].join('\n');
     const prepared = await this.evaluate<boolean>(target, expression);
-    if (!prepared) throw new Error('ChatGPT is not signed in or its message composer is unavailable. Sign in in the opened browser window, then retry.');
+    if (!prepared) throw new Error('ChatGPT is not signed in or its message composer is unavailable. The dedicated profile is headless by default; set DC_SUBAGENT_HEADLESS=0 for one-time sign-in, then restore the default headless mode.');
 
     const clicked = await this.evaluate<boolean>(target, [
       '(() => {',
@@ -693,7 +773,7 @@ class SubagentManager {
     let workspace: string | undefined;
     try {
       if (!await this.browser.waitForComposer(target)) {
-        throw new Error('ChatGPT was opened in the dedicated browser profile but no signed-in message composer was detected. Sign in there and retry spawn.');
+        throw new Error('No signed-in ChatGPT composer was detected in the dedicated profile. It runs headlessly by default; set DC_SUBAGENT_HEADLESS=0 for one-time sign-in, then restart Desktop Commander in the default headless mode.');
       }
 
       const state = await readState(this.registryPath);

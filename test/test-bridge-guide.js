@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { BRIDGE_TOOL_NAMES, getBridgeToolNames } from '../dist/bridge/protocol.js';
 import { createGuideIfMissing } from '../dist/bridge/runtime.js';
+import { buildBrowserLaunchArgs, shouldUseHeadlessBrowser } from '../dist/subagents.js';
 
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-bridge-guide-'));
 
@@ -16,7 +17,7 @@ try {
 
   const generatedGuidePath = path.join(generatedRoot, 'README.md');
   const generatedGuide = await fs.readFile(generatedGuidePath, 'utf8');
-  assert.match(generatedGuide, /desktop-commander:bridge-guide:v8/);
+  assert.match(generatedGuide, /desktop-commander:bridge-guide:v9/);
   assert.match(generatedGuide, /agent-<uniqueid>\/\{requests,responses,artifacts\}/);
   assert.match(generatedGuide, /agent-<parent>\/subagents\/agent-<child>/);
   assert.match(generatedGuide, /agent-4l\/requests\/task-a1\.json/);
@@ -26,6 +27,25 @@ try {
   assert.match(generatedGuide, /child agents may create subagents recursively/);
   assert.match(generatedGuide, /## Subagents and parent coordination/);
   assert.match(generatedGuide, /continue action sends only/);
+  assert.match(generatedGuide, /runs headlessly by default/);
+  assert.match(generatedGuide, /DC_SUBAGENT_HEADLESS=0/);
+  assert.match(generatedGuide, /Browser.getBrowserCommandLine/);
+
+  // The browser defaults to headless, but an explicit one-time sign-in
+  // override may launch the same persistent profile with a visible UI.
+  assert.equal(shouldUseHeadlessBrowser(undefined), true);
+  assert.equal(shouldUseHeadlessBrowser('1'), true);
+  assert.equal(shouldUseHeadlessBrowser('0'), false);
+  assert.equal(shouldUseHeadlessBrowser('false'), false);
+  const headlessArgs = buildBrowserLaunchArgs('C:/subagent-profile');
+  assert.ok(headlessArgs.includes('--headless'));
+  assert.ok(headlessArgs.includes('--enable-automation'));
+  assert.ok(headlessArgs.includes('--remote-debugging-port=0'));
+  assert.ok(headlessArgs.includes('--user-data-dir=C:/subagent-profile'));
+  assert.equal(headlessArgs[headlessArgs.length - 1], 'https://chatgpt.com/');
+  const visibleArgs = buildBrowserLaunchArgs('C:/subagent-profile', false);
+  assert.ok(!visibleArgs.includes('--headless'));
+  assert.ok(visibleArgs.includes('--user-data-dir=C:/subagent-profile'));
   assert.match(generatedGuide, /cloud-folder Bridge protocol intentionally does not expose `mailbox`/);
   assert.doesNotMatch(generatedGuide, /normal direct MCP `mailbox` tool/);
   assert.doesNotMatch(generatedGuide, /^### mailbox$/m);
@@ -72,7 +92,7 @@ try {
   const upgradedGuide = await fs.readFile(path.join(oldGeneratedRoot, 'README.md'), 'utf8');
   assert.notEqual(upgradedGuide, staleGeneratedGuide,
     'an existing generated README with the previous marker must be refreshed');
-  assert.match(upgradedGuide, /desktop-commander:bridge-guide:v8/);
+  assert.match(upgradedGuide, /desktop-commander:bridge-guide:v9/);
   assert.match(upgradedGuide, /agent-<uniqueid>/);
   assert.match(upgradedGuide, /subagents\/agent-<id>/);
   assert.doesNotMatch(upgradedGuide, /Old structure: requests\//);
@@ -83,7 +103,7 @@ try {
   await fs.mkdir(githubRoot, { recursive: true });
   await createGuideIfMissing(githubRoot, 'github');
   const githubGuide = await fs.readFile(path.join(githubRoot, 'README.md'), 'utf8');
-  assert.match(githubGuide, /desktop-commander:bridge-guide:v8/);
+  assert.match(githubGuide, /desktop-commander:bridge-guide:v9/);
   assert.match(githubGuide, /^### mailbox$/m);
   assert.match(githubGuide, /Parent-child messages in GitHub mode use the `mailbox` tool through ordinary GitHub Bridge request\/response files/);
   assert.match(githubGuide, /private repository/);
