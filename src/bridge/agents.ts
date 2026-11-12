@@ -423,32 +423,101 @@ export async function initializeAgentLayout(
   return bridgeRoot;
 }
 
+export function isValidAgentWorkspacePath(value: string): boolean {
+  const segments = value.split('/');
+  if (!segments.length || segments.length % 2 === 0) return false;
+  for (let index = 0; index < segments.length; index += 2) {
+    if (!isValidAgentDirectoryName(segments[index])) return false;
+    if (index + 1 < segments.length && segments[index + 1] !== 'subagents') return false;
+  }
+  return true;
+}
+
+async function ensureRealDirectoryTree(root: string, segments: string[]): Promise<string> {
+  await fs.mkdir(root, { recursive: true });
+  let current = root;
+  const rootStat = await fs.lstat(current);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error('Bridge state root must be a real directory: ' + current);
+  }
+  for (const segment of segments) {
+    if (!segment || segment === '.' || segment === '..' || segment.includes('/') || segment.includes('\\')) {
+      throw new Error('Invalid agent workspace path segment: ' + segment);
+    }
+    current = path.join(current, segment);
+    try {
+      await fs.mkdir(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    const stat = await fs.lstat(current);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error('Bridge directory must be a real directory, not a symlink or file: ' + current);
+    }
+  }
+  return current;
+}
+
 export async function discoverAgentQueuePaths(
   bridgeRoot: string,
   stateDirectory: string,
 ): Promise<AgentQueuePaths[]> {
-  const entries = await fs.readdir(bridgeRoot, { withFileTypes: true });
+  const rootStat = await fs.lstat(bridgeRoot);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error('The bridge root must be a real directory: ' + bridgeRoot);
+  }
+  await fs.mkdir(stateDirectory, { recursive: true });
   const result: AgentQueuePaths[] = [];
-  for (const entry of entries) {
-    if (!isValidAgentDirectoryName(entry.name)) continue;
-    if (entry.isSymbolicLink()) {
-      throw new Error('Agent folder must not be a symbolic link: ' + path.join(bridgeRoot, entry.name));
-    }
-    if (!entry.isDirectory()) continue;
-    const root = path.join(bridgeRoot, entry.name);
-    const requests = path.join(root, 'requests');
-    const responses = path.join(root, 'responses');
-    const artifacts = path.join(root, 'artifacts');
-    for (const directory of [requests, responses, artifacts]) {
-      await fs.mkdir(directory, { recursive: true });
-      const stat = await fs.lstat(directory);
-      if (!stat.isDirectory() || stat.isSymbolicLink()) {
-        throw new Error('Agent queue directory must be a real directory: ' + directory);
+
+  const visit = async (parent: string, parentAgentId: string, depth: number): Promise<void> => {
+    if (depth > 24) throw new Error('Subagent nesting exceeds the safe discovery depth.');
+    const entries = await fs.readdir(parent, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!isValidAgentDirectoryName(entry.name)) continue;
+      const root = path.join(parent, entry.name);
+      if (entry.isSymbolicLink()) {
+        throw new Error('Agent folder must not be a symbolic link: ' + root);
+      }
+      if (!entry.isDirectory()) continue;
+      const agentId = parentAgentId
+        ? parentAgentId + '/subagents/' + entry.name
+        : entry.name;
+      if (!isValidAgentWorkspacePath(agentId)) {
+        throw new Error('Invalid nested agent workspace path: ' + agentId);
+      }
+
+      const requests = path.join(root, 'requests');
+      const responses = path.join(root, 'responses');
+      const artifacts = path.join(root, 'artifacts');
+      for (const directory of [requests, responses, artifacts]) {
+        try {
+          await fs.mkdir(directory);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        }
+        const stat = await fs.lstat(directory);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) {
+          throw new Error('Agent queue directory must be a real directory: ' + directory);
+        }
+      }
+
+      const ledgers = await ensureRealDirectoryTree(
+        path.join(stateDirectory, 'requests'),
+        agentId.split('/'),
+      );
+      result.push({ agentId, root, requests, responses, artifacts, ledgers });
+
+      const subagentsDirectory = path.join(root, 'subagents');
+      if (await pathExists(subagentsDirectory)) {
+        const subagentsStat = await fs.lstat(subagentsDirectory);
+        if (!subagentsStat.isDirectory() || subagentsStat.isSymbolicLink()) {
+          throw new Error('Agent subagents directory must be a real directory: ' + subagentsDirectory);
+        }
+        await visit(subagentsDirectory, agentId, depth + 1);
       }
     }
-    const ledgers = path.join(stateDirectory, 'requests', entry.name);
-    await fs.mkdir(ledgers, { recursive: true });
-    result.push({ agentId: entry.name, root, requests, responses, artifacts, ledgers });
-  }
+  };
+
+  await visit(bridgeRoot, '', 0);
   return result.sort((left, right) => left.agentId.localeCompare(right.agentId));
 }

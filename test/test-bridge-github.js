@@ -360,6 +360,50 @@ const dottedQueue = await client.listQueueFiles();
 assert.ok(dottedQueue.requests.some(entry =>
   entry.path === 'agent-client.one_test/requests/dotted-id.json'),
 'GitHub queue discovery must accept valid root-level agent IDs containing dots and underscores');
+
+const nestedRequestPath = 'agent-parent/subagents/agent-child/requests/child-task.json';
+const nestedResponsePath = 'agent-parent/subagents/agent-child/responses/child-task.json';
+const nestedArtifactPath = 'agent-parent/subagents/agent-child/artifacts/child-task/result.txt';
+const nestedDeletionPath = 'agent-parent/subagents/agent-child/.subagent-deleted.json';
+const nestedRequest = Buffer.from(JSON.stringify({
+  protocol_version: 1,
+  id: 'child-task',
+  commands: [{ tool: 'get_config', arguments: {} }],
+}), 'utf8');
+const nestedResponse = Buffer.from(JSON.stringify({
+  protocol_version: 1,
+  id: 'child-task',
+  request_hash: 'test-hash',
+  status: 'completed',
+  results: [],
+}), 'utf8');
+const nestedArtifact = Buffer.from('nested subagent artifact');
+const nestedDeletionMarker = Buffer.from(JSON.stringify({
+  id: 'agent-child',
+  deleted_at: new Date(0).toISOString(),
+}) + '\n');
+for (const [filePath, bytes] of [
+  [nestedRequestPath, nestedRequest],
+  [nestedResponsePath, nestedResponse],
+  [nestedArtifactPath, nestedArtifact],
+  [nestedDeletionPath, nestedDeletionMarker],
+]) {
+  api.files.set(filePath, { bytes, sha: gitBlobSha(bytes) });
+}
+const nestedQueue = await client.listQueueFiles();
+assert.ok(nestedQueue.requests.some(entry => entry.path === nestedRequestPath),
+  'GitHub queue discovery must recognize requests below parent/subagents/agent-child');
+assert.ok(nestedQueue.responses.some(entry => entry.path === nestedResponsePath),
+  'GitHub queue discovery must recognize nested child responses');
+assert.ok(nestedQueue.agentDirectories.includes('agent-parent/subagents/agent-child'),
+  'GitHub queue discovery must record the complete hierarchical child identity');
+assert.ok(nestedQueue.workspaceFiles.some(entry => entry.path === nestedArtifactPath),
+  'GitHub queue discovery must index all nested workspace files for recursive deletion');
+assert.ok(nestedQueue.deletedAgents.includes('agent-parent/subagents/agent-child'),
+  'GitHub queue discovery must identify deletion markers at nested workspace roots');
+for (const filePath of [nestedRequestPath, nestedResponsePath, nestedArtifactPath, nestedDeletionPath]) {
+  api.files.delete(filePath);
+}
 api.files.delete('agent-client.one_test/requests/dotted-id.json');
 await assert.rejects(
   () => GitHubRepositoryClient.connect('archived/repo', token, api.fetcher),

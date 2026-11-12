@@ -22,7 +22,7 @@ const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_STORAGE_BYTES = 3_000_000_000;
 const STABILITY_CHECK_MS = 200;
 const REQUEST_PARSE_SETTLE_MS = 2_000;
-const BRIDGE_GUIDE_MARKER = '<!-- desktop-commander:bridge-guide:v6 -->';
+const BRIDGE_GUIDE_MARKER = '<!-- desktop-commander:bridge-guide:v7 -->';
 const RECENT_FILE_CLEANUP_GRACE_MS = 60_000;
 const MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
 
@@ -297,6 +297,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_usage_stats: 'Read tool usage statistics.',
   get_recent_tool_calls: 'Read recent Desktop Commander tool call history.',
   give_feedback_to_desktop_commander: 'Open the Desktop Commander feedback form.',
+  mailbox: 'Register a mailbox username and exchange parent-child agent reports.',
+  subagent: 'Spawn, continue, inspect, or delete persistent ChatGPT web subagents in nested workspaces. Direct MCP calls provide parent_agent_id and parent_workspace_path; Bridge calls inherit parent context.',
 };
 
 export async function createGuideIfMissing(directory: string): Promise<void> {
@@ -329,6 +331,7 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '## Folder layout',
     '',
     '- agent-<uniqueid>/requests/ — submit <id>.json or <id>.md request files.',
+    '- agent-<parent>/subagents/agent-<child>/{requests,responses,artifacts}/ — nested child workspaces; child agents may create subagents recursively.',
     '- agent-<uniqueid>/responses/ — read matching <id>.json results.',
     '- agent-<uniqueid>/artifacts/ — binary outputs returned to that agent instance.',
     '- agent-<uniqueid>/ — one isolated workspace per conversation or subagent instance.',
@@ -337,21 +340,22 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '## AI Quick Start',
     '',
     '1. Confirm the local Desktop Commander Bridge is running and first-run consent has been accepted. Make sure the shared cloud folder or GitHub repository is accessible.',
-    '2. Create a NEW unique folder for this conversation directly in the bridge root. Use the exact root-folder form agent-<uniqueid>, for example agent-7f3a91c2d4e6. The unique ID belongs to this conversation, not to the platform. Never share a folder between conversations, and never reuse another conversation\'s folder—even when both conversations use ChatGPT. Each subagent also gets its own unique folder. The folder identifies this agent instance; no separate registration or mailbox ID is needed.',
-    '3. Use only this conversation\'s agent-<uniqueid>/ folder. It contains requests/, responses/, and artifacts/. Do not read or write another conversation\'s folder.',
+    '2. Root conversations use agent-<id> directly under the Bridge root; subagents use <parent-agent>/subagents/agent-<id>. IDs are normally two base-36 characters after agent- (for example agent-4l), expanding only on collision. Never reuse another active workspace.',
+    '3. Use only your assigned workspace. It contains requests/, responses/, artifacts/, and subagents/. Create children only inside your own subagents/ folder. Never read or write a parent or sibling workspace.',
     '4. Read this README once at the start of a fresh chat. It is the only operating guide. Keep the unique folder name for the entire conversation and reuse it only when continuing that same conversation.',
-    '5. Choose a short request ID such as task-a1 or 7c2e91a4. Submit agent-<uniqueid>/requests/<id>.json with the same value in the JSON id field. Request IDs need only be unique within this conversation\'s folder.',
-    '6. The result appears at agent-<uniqueid>/responses/<id>.json. Retrieve artifacts from the matching agent-<uniqueid>/artifacts/ folder.',
+    '5. Choose a short request ID such as task-a1. Submit <your-workspace>/requests/<id>.json with the same value in the JSON id field. Request IDs need only be unique within your own workspace.',
+    '6. The result appears at <your-workspace>/responses/<id>.json. Retrieve artifacts from your own <your-workspace>/artifacts/ folder.',
+    '7. Register your mailbox username as your own agent ID. To report to your parent, use mailbox action=send with username=<your-agent-id> and to=<parent-agent-id>. Never send using your parent\'s username. Use the subagent tool to spawn, continue, inspect, and delete only your direct children.',
     '',
-    'The bridge must be running on the computer that should execute the tools. The storage connector only submits requests and retrieves results; it does not execute commands. The unique folder identifies one agent instance (one conversation or subagent) and is its queue boundary.',
+    'The bridge must be running on the computer that should execute the tools. The storage connector only submits requests and retrieves results; it does not execute commands. Each full hierarchical workspace path identifies one agent instance and its isolated queue boundary.',
     '',
     '## Fast asynchronous workflow',
     '',
-    'Use one request file per independent tool call inside this conversation\'s unique agent-instance folder. A successful write confirms only that the request reached bridge storage; it does not mean the command has finished. Request IDs are scoped to the agent-instance folder; folders are not shared by separate conversations that happen to use the same model or platform. Different request files execute concurrently by default, while commands within one request file execute sequentially.',
+    'Use one request file per independent tool call inside your own agent workspace. A successful write confirms only that the request reached bridge storage; it does not mean the command has finished. Request IDs and processing ledgers are scoped by the complete hierarchical workspace path plus request ID. Different request files execute concurrently by default, while commands within one request file execute sequentially.',
     '',
     'Keep the pipeline full: submit A and B, then check agent-<uniqueid>/responses/A.json. While B is running, submit C if it is independent. Retrieve known response paths directly instead of repeatedly listing response history.',
     '',
-    'Example: upload agent-7f3a91c2d4e6/requests/task-a1.json and agent-7f3a91c2d4e6/requests/task-b2.json; read agent-7f3a91c2d4e6/responses/task-a1.json; then submit task-c3 if independent. Each request uses protocol_version 1, an id matching its filename, and a commands array containing the tool call.',
+    'Example root workspace: agent-4l/requests/task-a1.json. Example child workspace: agent-4l/subagents/agent-7b/requests/task-a1.json. Read the matching response under the same workspace. Each request uses protocol_version 1, an id matching its filename, and a commands array containing the tool call.',
     '',
     'Use a single request file with multiple commands only when those commands must run in a known sequence and all later arguments are already known. If a later command needs data returned by an earlier command (for example, a PID or discovered path), wait for that result before submitting the dependent request. Never pretend independent requests are ordered relative to each other.',
     '',
@@ -423,15 +427,15 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '',
     '### Cloud-folder synchronization',
     '',
-    'The Bridge root is the shared folder selected in the local Desktop Commander settings. Every conversation uses its own direct child agent-<uniqueid>/ folder; the three queue directories and processing ledger are scoped to that folder. The local worker watches the root and each discovered request folder for filesystem changes and also performs a one-second fallback scan. Cloud provider synchronization can delay when another device sees a newly written request or response, so check the exact path in your own folder before deciding that a request was lost.',
+    'The Bridge root is the shared folder selected in the local Desktop Commander settings. Root agents use direct child agent-<id>/ folders; children are nested below their parent at subagents/agent-<id>/. Discovery, queues, artifacts, and ledgers support recursive nesting. The local worker watches discovered request folders and also performs a one-second fallback scan. Cloud provider synchronization can delay file visibility.',
     '',
-    'Use one running Cloud-folder worker for a shared root. A second conversation does not need a second root or a registration step: it creates and uses a different root-level agent folder. The agent folder name is the only conversation identity; do not add mailbox identifiers to request arguments.',
+    'Use one running Cloud-folder worker for a shared root. Subagents share the root but get unique nested workspaces. Mailbox usernames are used only for parent-child reports and are not request arguments.',
     '',
     '### GitHub Repository Bridge',
     '',
-    'GitHub mode uses the repository root and the same agent-<uniqueid>/{requests,responses,artifacts}/ layout. Requests are staged from the remote agent folder into a local per-repository cache. The worker publishes artifacts first and the matching response file last; the response is the durable completion marker. Files are committed directly to the repository default branch. The Bridge does not create branches or pull requests.',
+    'GitHub mode uses the repository root and recursively nested agent workspaces: agent-<id>/{requests,responses,artifacts}/ and <parent>/subagents/agent-<id>/{requests,responses,artifacts}/. Requests are staged from every nested workspace into a local per-repository cache. The worker publishes artifacts first and the matching response file last; the response is the durable completion marker. Files are committed to the repository default branch.',
     '',
-    'The local GitHub cache is keyed by the immutable GitHub repository ID. Durable processing ledgers are stored locally under that repository worker state and remain separated by agent folder and request ID. These ledgers are not shared between agents and are not a mailbox or registration database. On restart, the worker reconciles remote requests, prior responses, local cached work, and its durable per-agent processing records before executing more commands.',
+    'The local GitHub cache is keyed by the immutable GitHub repository ID. Durable processing ledgers are scoped by the full nested workspace path and request ID. Subagent deletion publishes a deletion marker; GitHub reconciliation removes that remote workspace subtree. On restart, the worker reconciles nested remote requests, responses, cache, and per-agent processing records.',
     '',
     'GitHub mode normally receives signed push webhooks through an optional Cloudflare Quick Tunnel and also reconciles by polling. If webhook or tunnel setup is unavailable, polling continues. A successful upload confirms that GitHub accepted the file; it does not confirm that this conversation has retrieved the response. Each GitHub queue file is limited to 50 MiB. Large response fields are externalized to artifacts and large JSON artifacts may be split into ordered chunks; follow the response artifact references and validate their byte counts and hashes.',
     '',
@@ -1195,7 +1199,11 @@ async function processRequestFile(
             let executed: Awaited<ReturnType<typeof executeToolForBridge>>;
             try {
               if (command.tool === 'write_pdf') await ensureChromeAvailable();
-              executed = await executeToolForBridge(command.tool, command.arguments);
+              executed = await executeToolForBridge(command.tool, command.arguments, {
+                agentId: paths.agentId,
+                workspacePath: paths.root,
+                transport: process.env.DC_BRIDGE_PROVIDER === 'github' ? 'github' : 'cloud',
+              });
             } catch (error) {
               executed = {
                 content: [{ type: 'text', text: 'Error: ' + errorMessage(error) }],

@@ -58,6 +58,7 @@ import {
     ListSearchesArgsSchema,
     GetRecentToolCallsArgsSchema,
     MailboxArgsSchema,
+    SubagentArgsSchema,
     WritePdfArgsSchema,
     toolArgSchemas,
 } from './tools/schemas.js';
@@ -87,6 +88,7 @@ import {
 import { listUiResources, readUiResource } from './ui/resources.js';
 import { shouldShowMcpUiPreviews } from './utils/mcp-ui-ab-test.js';
 import { mailboxStore } from './mailbox.js';
+import { handleSubagentTool, runWithSubagentParentContext, type SubagentParentContext } from './subagents.js';
 
 // Store startup messages to send after initialization
 const deferredMessages: Array<{ level: string, message: string }> = [];
@@ -1149,11 +1151,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 },
             },
             {
+                name: "subagent",
+                description: `
+                        Manage persistent ChatGPT web subagents using the system-default Chromium browser application and a separate persistent sign-in profile.
+                        Actions: spawn (requires prompt), continue (sends exactly "continue."), status (reports browser-observable generation/error/context state), and delete (closes the subagent and removes its managed workspace).
+                        Every child gets a nested subagents/agent-<id>/ workspace and a separate persistent ChatGPT conversation. IDs are collision-checked and normally two characters after agent-. Bridge calls inherit parent identity and workspace; direct MCP calls must provide parent_agent_id and parent_workspace_path for every action.
+                        A dedicated Chromium profile opens visibly for first-time manual ChatGPT sign-in and is reused across transports. A Thinking/Medium/High reasoning mode is selected and verified before each prompt; sending fails if verification is unavailable. No passwords, cookies, or response text are extracted. The default browser must be Chromium-based (Chrome, Edge, Brave, or Chromium); DC_SUBAGENT_BROWSER_PATH can select an executable explicitly.
+                        ${CMD_PREFIX_DESCRIPTION}`,
+                inputSchema: zodToJsonSchema(SubagentArgsSchema),
+                annotations: {
+                    title: "Manage ChatGPT Subagents",
+                    readOnlyHint: false,
+                    openWorldHint: true,
+                    destructiveHint: true,
+                },
+            },
+            {
                 name: "mailbox",
                 description: `
-                        Optional local-only messaging, independent of Bridge agent folders. Mail is stored only on this device and addressed by registered usernames.
-                        Actions: register (username), inbox_unread (username), send (username, to username, message), list_users, and read (optional user/from/to/unreadOnly/limit filters).
-                        These usernames are only mailbox addresses. Bridge conversations are identified exclusively by their own root-level agent folders.
+                        Local messaging for parent/child agent coordination. Mail is stored on this device and addressed by registered agent usernames.
+                        Actions: register, inbox_unread, send, list_users, and read. A subagent sends from its own agent ID to its parent agent ID.
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(MailboxArgsSchema),
                 annotations: {
@@ -1165,8 +1182,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
         ];
 
-        // Agent identity is determined by the bridge folder namespace. Do not
-        // inject a mailbox identity into unrelated tool schemas.
+        // Agent folders identify conversations; mailbox usernames are used only for parent-child reporting.
         const filteredTools = allTools.filter(tool => shouldIncludeTool(tool.name));
 
         // logToStderr('debug', `Returning ${filteredTools.length} tools (filtered from ${allTools.length} total) for client: ${currentClient?.name || 'unknown'}`);
@@ -1225,7 +1241,7 @@ function pathArguments(args: unknown): unknown[] {
         .map(([, value]) => value);
 }
 
-export async function executeToolForBridge(name: string, args: unknown): Promise<ServerResult> {
+export async function executeToolForBridge(name: string, args: unknown, agentContext?: SubagentParentContext): Promise<ServerResult> {
     const schema = toolArgSchemas[name];
     if (!schema || name === 'track_ui_event') {
         return { content: [{ type: 'text', text: `Error: Unknown or unavailable tool: ${name}` }], isError: true };
@@ -1262,14 +1278,16 @@ export async function executeToolForBridge(name: string, args: unknown): Promise
 
     const normalizedArgs = { ...(parsed.data as Record<string, unknown>) };
 
-    const result = await bridgeExecutionContext.run(true, () => runWithToolCallPaths(() => {
+    const operation = () => bridgeExecutionContext.run(true, () => runWithToolCallPaths(() => {
         addToolCallPaths(...pathArguments(normalizedArgs));
         return handleCallToolRequest({
             method: 'tools/call',
             params: { name, arguments: normalizedArgs },
         } as CallToolRequest);
     }));
-    return result;
+    return agentContext
+        ? await runWithSubagentParentContext(agentContext, operation)
+        : await operation();
 }
 
 export async function validateBridgeArtifactPath(filePath: string): Promise<string> {
@@ -1380,6 +1398,25 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
                 }
                 break;
 
+            case "subagent": {
+                try {
+                    const parsed = SubagentArgsSchema.parse(args);
+                    if (parsed.parent_workspace_path) {
+                        // Direct MCP callers must address an allowed parent workspace.
+                        // Bridge calls inherit their queue path and omit this argument.
+                        await validatePath(parsed.parent_workspace_path);
+                    }
+                    const response = await handleSubagentTool(parsed);
+                    result = { content: [{ type: "text", text: response }] };
+                } catch (error) {
+                    result = {
+                        content: [{ type: "text", text: `Subagent error: ${error instanceof Error ? error.message : String(error)}` }],
+                        isError: true,
+                    };
+                }
+                break;
+            }
+
             case "mailbox": {
                 try {
                     const parsed = MailboxArgsSchema.parse(args);
@@ -1389,7 +1426,7 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
                             result = { content: [{ type: 'text', text: JSON.stringify({
                                 status: registered.existing ? 'already_registered' : 'registered',
                                 username: registered.user.username,
-                                message: 'Use this username only for the separate local mailbox. Bridge conversations use their own root-level agent folders.',
+                                message: 'Use this mailbox username for parent-child agent reporting; your Bridge workspace remains your separate agent folder.',
                             }, null, 2) }] };
                             break;
                         }

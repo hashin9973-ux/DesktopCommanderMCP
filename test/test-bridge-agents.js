@@ -6,6 +6,7 @@ import {
   discoverAgentQueuePaths,
   initializeAgentLayout,
   isValidAgentDirectoryName,
+  isValidAgentWorkspacePath,
   LEGACY_DEFAULT_AGENT,
 } from '../dist/bridge/agents.js';
 
@@ -374,6 +375,43 @@ try {
     assert.equal((await fs.lstat(path.join(symlinkQueue, 'external.json'))).isSymbolicLink(), true,
       'the unrecognized symlink itself remains in place for manual handling');
   }
+
+  // Nested parent/subagent queues are recursively discovered, isolated,
+  // and assigned hierarchical durable-ledger paths.
+  const nestedRoot = path.join(temporaryRoot, 'nested-bridge');
+  const nestedState = path.join(temporaryRoot, 'nested-state');
+  const nestedParent = path.join(nestedRoot, 'agent-4l');
+  const nestedChild = path.join(nestedParent, 'subagents', 'agent-7b');
+  const nestedGrandchild = path.join(nestedChild, 'subagents', 'agent-9x');
+  for (const workspace of [nestedParent, nestedChild, nestedGrandchild]) {
+    await fs.mkdir(path.join(workspace, 'requests'), { recursive: true });
+    await fs.mkdir(path.join(workspace, 'responses'), { recursive: true });
+    await fs.mkdir(path.join(workspace, 'artifacts'), { recursive: true });
+  }
+  const nestedAgents = await discoverAgentQueuePaths(nestedRoot, nestedState);
+  assert.deepEqual(nestedAgents.map(agent => agent.agentId), [
+    'agent-4l',
+    'agent-4l/subagents/agent-7b',
+    'agent-4l/subagents/agent-7b/subagents/agent-9x',
+  ]);
+  const nestedChildPaths = nestedAgents.find(agent => agent.agentId === 'agent-4l/subagents/agent-7b');
+  const nestedGrandchildPaths = nestedAgents.find(agent =>
+    agent.agentId === 'agent-4l/subagents/agent-7b/subagents/agent-9x');
+  assert.ok(nestedChildPaths && nestedGrandchildPaths);
+  assert.equal(nestedChildPaths.requests, path.join(nestedChild, 'requests'));
+  assert.equal(nestedChildPaths.ledgers,
+    path.join(nestedState, 'requests', 'agent-4l', 'subagents', 'agent-7b'));
+  assert.equal(nestedGrandchildPaths.ledgers,
+    path.join(nestedState, 'requests', 'agent-4l', 'subagents', 'agent-7b', 'subagents', 'agent-9x'));
+  assert.equal(isValidAgentDirectoryName('agent-4l'), true,
+    'compact two-character agent IDs are valid');
+  assert.equal(isValidAgentDirectoryName('agent-7b'), true);
+  assert.equal(isValidAgentWorkspacePath('agent-4l'), true);
+  assert.equal(isValidAgentWorkspacePath('agent-4l/subagents/agent-7b'), true);
+  assert.equal(isValidAgentWorkspacePath('agent-4l/subagents/agent-7b/subagents/agent-9x'), true);
+  assert.equal(isValidAgentWorkspacePath('agent-4l/requests'), false);
+  assert.equal(isValidAgentWorkspacePath('agent-4l/subagents/requests'), false);
+  assert.equal(isValidAgentWorkspacePath('agent-4l/subagents/../agent-7b'), false);
 
   console.log('Agent queue layout and migration tests passed.');
 } finally {

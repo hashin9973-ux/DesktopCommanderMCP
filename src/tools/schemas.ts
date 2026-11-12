@@ -252,6 +252,21 @@ export const MailboxArgsSchema = z.object({
   if (value.action === 'inbox_unread' && !value.username?.trim()) context.addIssue({ code: z.ZodIssueCode.custom, message: 'username is required for inbox_unread', path: ['username'] });
 });
 
+export const SubagentArgsSchema = z.object({
+  action: z.enum(['spawn', 'continue', 'status', 'delete']),
+  prompt: z.string().optional(),
+  subagent_id: z.string().optional(),
+  parent_agent_id: z.string().optional(),
+  parent_workspace_path: z.string().optional(),
+}).superRefine((value, context) => {
+  if (value.action === 'spawn' && !value.prompt?.trim()) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'prompt is required for spawn', path: ['prompt'] });
+  }
+  if (value.action !== 'spawn' && !value.subagent_id?.trim()) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'subagent_id is required for continue, status, and delete', path: ['subagent_id'] });
+  }
+});
+
 export const TrackUiEventArgsSchema = z.object({
   event: z.string().min(1).max(80),
   component: z.string().optional().default('file_preview'),
@@ -290,5 +305,6 @@ export const toolArgSchemas: Record<string, z.ZodTypeAny> = {
   get_recent_tool_calls: GetRecentToolCallsArgsSchema,
   give_feedback_to_desktop_commander: GiveFeedbackArgsSchema,
   mailbox: MailboxArgsSchema,
+  subagent: SubagentArgsSchema,
   track_ui_event: TrackUiEventArgsSchema,
 };

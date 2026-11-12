@@ -382,6 +382,7 @@ async function startWorker(
   const entryPoint = path.resolve(moduleDirectory, '../index.js');
   const environment: NodeJS.ProcessEnv = {
     ...process.env,
+    DC_BRIDGE_PROVIDER: 'github',
     ...(process.platform === 'win32'
       ? { LOCALAPPDATA: workerLocalAppData }
       : { XDG_STATE_HOME: workerXdgStateHome }),
