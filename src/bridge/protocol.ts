@@ -15,11 +15,19 @@ export interface BridgeRequest {
 
 const REQUEST_FILE_PATTERN = /^(?:request-)?([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/i;
 // Root-level agent-<uniqueid>/ folders identify conversations and subagents.
-// The file-queue protocol does not use a separate mailbox identity.
-const HIDDEN_TOOLS = new Set(['track_ui_event', 'mailbox']);
-export const BRIDGE_TOOL_NAMES = Object.keys(toolArgSchemas)
-  .filter((name) => !HIDDEN_TOOLS.has(name))
-  .sort();
+// The mailbox is exposed through GitHub Bridge requests only. Cloud-folder
+// queues intentionally keep mailbox contents out of synchronized storage.
+export type BridgeTransport = 'cloud' | 'github';
+const HIDDEN_TOOLS = new Set(['track_ui_event']);
+
+export function getBridgeToolNames(transport: BridgeTransport = 'cloud'): string[] {
+  return Object.keys(toolArgSchemas)
+    .filter((name) => !HIDDEN_TOOLS.has(name) && (name !== 'mailbox' || transport === 'github'))
+    .sort();
+}
+
+// Backwards-compatible default for cloud-folder mode.
+export const BRIDGE_TOOL_NAMES = getBridgeToolNames('cloud');
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -32,14 +40,16 @@ function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string
   }
 }
 
-function parseCommand(value: unknown, index: number): BridgeCommand {
+function parseCommand(value: unknown, index: number, transport: BridgeTransport): BridgeCommand {
   if (!isRecord(value)) throw new Error('Command ' + (index + 1) + ' must be a JSON object.');
   assertOnlyKeys(value, ['tool', 'arguments'], 'Command ' + (index + 1));
 
   if (typeof value.tool !== 'string' || !value.tool.trim()) {
     throw new Error('Command ' + (index + 1) + ' must include a non-empty tool name.');
   }
-  if (!Object.prototype.hasOwnProperty.call(toolArgSchemas, value.tool) || HIDDEN_TOOLS.has(value.tool)) {
+  if (!Object.prototype.hasOwnProperty.call(toolArgSchemas, value.tool)
+    || HIDDEN_TOOLS.has(value.tool)
+    || (value.tool === 'mailbox' && transport !== 'github')) {
     throw new Error('Command ' + (index + 1) + ' uses unknown or unavailable tool "' + value.tool + '".');
   }
   if (!isRecord(value.arguments)) {
@@ -73,7 +83,7 @@ function parseCommand(value: unknown, index: number): BridgeCommand {
   return { tool: value.tool, arguments: { ...parsed.data } };
 }
 
-function parseJsonRequest(idFromFilename: string, content: string): BridgeRequest {
+function parseJsonRequest(idFromFilename: string, content: string, transport: BridgeTransport): BridgeRequest {
   let value: unknown;
   try {
     value = JSON.parse(content);
@@ -100,12 +110,12 @@ function parseJsonRequest(idFromFilename: string, content: string): BridgeReques
   return {
     protocol_version: 1,
     id: idFromFilename,
-    commands: value.commands.map(parseCommand),
+    commands: value.commands.map((command, index) => parseCommand(command, index, transport)),
     ...(value.command_delay_ms === undefined ? {} : { command_delay_ms: Number(value.command_delay_ms) }),
   };
 }
 
-function parseMarkdownRequest(idFromFilename: string, content: string): BridgeRequest {
+function parseMarkdownRequest(idFromFilename: string, content: string, transport: BridgeTransport): BridgeRequest {
   const commands: BridgeCommand[] = [];
   const lines = content.split(/\r?\n/);
   let fenceCharacter: string | undefined;
@@ -133,7 +143,7 @@ function parseMarkdownRequest(idFromFilename: string, content: string): BridgeRe
         } catch (error) {
           throw new Error('Invalid JSON in desktop-commander-v1 block ' + (commands.length + 1) + ': ' + (error instanceof Error ? error.message : String(error)));
         }
-        commands.push(parseCommand(command, commands.length));
+        commands.push(parseCommand(command, commands.length, transport));
       }
       fenceCharacter = undefined;
       fenceLength = 0;
@@ -152,13 +162,17 @@ function parseMarkdownRequest(idFromFilename: string, content: string): BridgeRe
   }
   return { protocol_version: 1, id: idFromFilename, commands };
 }
-export function parseBridgeRequest(filename: string, content: string): BridgeRequest {
+export function parseBridgeRequest(
+  filename: string,
+  content: string,
+  transport: BridgeTransport = 'cloud',
+): BridgeRequest {
   const match = REQUEST_FILE_PATTERN.exec(filename);
   if (!match) {
     throw new Error('Request filename must be request-<id>.json or request-<id>.md; id may contain letters, digits, underscores and hyphens.');
   }
   const id = match[1];
   return match[2].toLowerCase() === 'json'
-    ? parseJsonRequest(id, content)
-    : parseMarkdownRequest(id, content);
+    ? parseJsonRequest(id, content, transport)
+    : parseMarkdownRequest(id, content, transport);
 }
