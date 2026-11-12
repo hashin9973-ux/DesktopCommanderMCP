@@ -539,19 +539,22 @@ class ChatGptBrowser {
       'const buttons = [...document.querySelectorAll("button")].filter(visible);',
       'const generating = buttons.some(button => /stop generating|stop streaming/i.test(button.getAttribute("aria-label") || "") || button.getAttribute("data-testid") === "stop-button");',
       'const composer = [...document.querySelectorAll(\'textarea#prompt-textarea, [contenteditable="true"]\')].some(visible);',
-      'const alerts = [...document.querySelectorAll(\'[role="alert"], [data-testid*="error"]\')].filter(visible).map(element => element.innerText || "").join("\\n");',
-      'const contextLimit = /(?:maximum context length|conversation is too long|reached the maximum length|too many messages in this conversation)/i.test(alerts);',
+      'const alerts = [...document.querySelectorAll(\'[role="alert"], [data-testid*="error"], [role="dialog"]\')].filter(visible).map(element => element.innerText || "").join("\\n");',
+      'const messages = [...document.querySelectorAll("[data-message-author-role]")];',
+      'const lastMessage = messages.length ? (messages[messages.length - 1].innerText || "") : "";',
       'const lastRole = messages.length ? (messages[messages.length - 1].getAttribute("data-message-author-role") || "") : "";',
-      'const error = /(?:something went wrong|error generating response|network error|unable to load conversation|response generation failed)/i.test(alerts) ? alerts.slice(0, 500) : "";',
+      'const statusText = alerts + "\\n" + lastMessage;',
+      'const contextLimit = /(?:maximum context length|conversation is too long|reached the maximum length|too many messages in this conversation|start a new chat to continue)/i.test(statusText);',
+      'const error = /(?:something went wrong|error generating response|network error|unable to load conversation|response generation failed)/i.test(statusText);',
       'return { composer, generating, contextLimit, error, lastRole };',
       '})()',
     ].join('\n');
     const value = await this.evaluate<{
-      composer: boolean; generating: boolean; contextLimit: boolean; error: string; lastRole: string;
+      composer: boolean; generating: boolean; contextLimit: boolean; error: boolean; lastRole: string;
     }>(target, expression);
     if (!value?.composer) return { status: 'unknown', detail: 'ChatGPT composer state is not observable.' };
     if (value.contextLimit) return { status: 'context_limit', detail: 'A ChatGPT conversation-length warning is visible.' };
-    if (value.error) return { status: 'error', detail: value.error };
+    if (value.error) return { status: 'error', detail: 'ChatGPT displays a visible generation, network, or conversation error.' };
     const lastTurnStillPending = value.lastRole === 'user';
     if (value.generating || lastTurnStillPending) {
       if (Date.now() - Date.parse(submittedAt) > GENERATION_TIMEOUT_MS) {
