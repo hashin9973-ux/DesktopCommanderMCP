@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { BRIDGE_TOOL_NAMES, getBridgeToolNames, parseBridgeRequest } from '../dist/bridge/protocol.js';
 import { createBridgePollingTimer } from '../dist/bridge/runtime.js';
+import { executeToolForBridge } from '../dist/server.js';
 
 const json = JSON.stringify({
   protocol_version: 1,
@@ -55,6 +56,47 @@ assert.deepEqual(
   ['mailbox', 'mailbox', 'mailbox'],
   'GitHub Bridge must accept register, send, and inbox actions through its normal queue',
 );
+
+const cloudMailboxExecution = await executeToolForBridge(
+  'mailbox',
+  { action: 'register', username: 'agent-cloud-blocked' },
+  { agentId: 'agent-root', workspacePath: 'agent-root', transport: 'cloud' },
+);
+assert.equal(cloudMailboxExecution.isError, true,
+  'the dispatcher must reject mailbox execution outside GitHub Bridge mode');
+
+const githubMailboxContext = {
+  agentId: 'agent-parent',
+  workspacePath: 'agent-parent',
+  transport: 'github',
+};
+const registerParent = await executeToolForBridge(
+  'mailbox',
+  { action: 'register', username: 'agent-parent' },
+  githubMailboxContext,
+);
+assert.notEqual(registerParent.isError, true, 'GitHub Bridge worker can register the parent mailbox');
+const registerChild = await executeToolForBridge(
+  'mailbox',
+  { action: 'register', username: 'agent-child' },
+  githubMailboxContext,
+);
+assert.notEqual(registerChild.isError, true, 'GitHub Bridge worker can register a child mailbox');
+const sendReport = await executeToolForBridge(
+  'mailbox',
+  { action: 'send', username: 'agent-child', to: 'agent-parent', message: 'Child progress report' },
+  { ...githubMailboxContext, agentId: 'agent-child', workspacePath: 'agent-parent/subagents/agent-child' },
+);
+assert.notEqual(sendReport.isError, true, 'GitHub Bridge worker can send a child-to-parent report');
+const receiveReport = await executeToolForBridge(
+  'mailbox',
+  { action: 'inbox_unread', username: 'agent-parent' },
+  githubMailboxContext,
+);
+assert.notEqual(receiveReport.isError, true, 'GitHub Bridge worker can read the parent inbox');
+assert.match(receiveReport.content[0].text, /Child progress report/,
+  'mailbox message content is delivered through the Bridge tool result');
+
 const subagentRequest = parseBridgeRequest('subagent-01.json', JSON.stringify({
   protocol_version: 1,
   id: 'subagent-01',
