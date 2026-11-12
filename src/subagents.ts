@@ -597,7 +597,6 @@ function composePrompt(input: {
       : input.transport === 'mcp'
         ? 'Your parent mailbox username is ' + input.parentId + '. Send reports through direct MCP mailbox action=send with username=' + input.id + ', to=' + input.parentId + ', message=<report>.'
         : 'Use your response files to make progress, blockers, and completion visible to the parent.',
-    'Use your own agent ID as the sender, not the parent mailbox username.',
     'You may create child subagents of your own. Put them only in your workspace/subagents/ directory.',
     input.transport === 'mcp'
       ? 'When using the direct MCP subagent tool, include parent_agent_id=' + input.id + ' and parent_workspace_path=' + input.workspace + ' on every action so parent ownership is explicit.'
