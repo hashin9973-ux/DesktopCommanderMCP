@@ -1246,6 +1246,12 @@ export async function executeToolForBridge(name: string, args: unknown, agentCon
     if (!schema || name === 'track_ui_event') {
         return { content: [{ type: 'text', text: `Error: Unknown or unavailable tool: ${name}` }], isError: true };
     }
+    if (name === 'mailbox' && agentContext?.transport !== 'github') {
+        return {
+            content: [{ type: 'text', text: 'Error: mailbox is available through GitHub Bridge requests only.' }],
+            isError: true,
+        };
+    }
 
     const rawArgs = args === undefined || args === null ? {} : args;
     const rawRecord = rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)

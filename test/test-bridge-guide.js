@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { BRIDGE_TOOL_NAMES } from '../dist/bridge/protocol.js';
+import { BRIDGE_TOOL_NAMES, getBridgeToolNames } from '../dist/bridge/protocol.js';
 import { createGuideIfMissing } from '../dist/bridge/runtime.js';
 
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-bridge-guide-'));
@@ -16,7 +16,7 @@ try {
 
   const generatedGuidePath = path.join(generatedRoot, 'README.md');
   const generatedGuide = await fs.readFile(generatedGuidePath, 'utf8');
-  assert.match(generatedGuide, /desktop-commander:bridge-guide:v7/);
+  assert.match(generatedGuide, /desktop-commander:bridge-guide:v8/);
   assert.match(generatedGuide, /agent-<uniqueid>\/\{requests,responses,artifacts\}/);
   assert.match(generatedGuide, /agent-<parent>\/subagents\/agent-<child>/);
   assert.match(generatedGuide, /agent-4l\/requests\/task-a1\.json/);
@@ -26,8 +26,9 @@ try {
   assert.match(generatedGuide, /child agents may create subagents recursively/);
   assert.match(generatedGuide, /## Subagents and parent coordination/);
   assert.match(generatedGuide, /continue action sends only/);
-  assert.match(generatedGuide, /direct MCP `mailbox` tool/);
-  assert.match(generatedGuide, /normal direct MCP `mailbox` tool/);
+  assert.match(generatedGuide, /cloud-folder Bridge protocol intentionally does not expose `mailbox`/);
+  assert.doesNotMatch(generatedGuide, /normal direct MCP `mailbox` tool/);
+  assert.doesNotMatch(generatedGuide, /^### mailbox$/m);
   assert.match(generatedGuide, /Never share a workspace between conversations/);
   assert.match(generatedGuide, /Keep your assigned workspace path/);
   assert.match(generatedGuide, /## Transport behavior/);
@@ -44,7 +45,11 @@ try {
   assert.doesNotMatch(generatedGuide, /(?:^|\n)- artifacts\//);
   assert.doesNotMatch(generatedGuide, /mailbox_user_id|mailbox identity|## Optional local mailbox/);
   assert.ok(!BRIDGE_TOOL_NAMES.includes('mailbox'),
-    'the generated bridge catalog must not advertise mailbox identity registration');
+    'the default generated cloud-folder catalog must not advertise mailbox');
+  assert.ok(!getBridgeToolNames('cloud').includes('mailbox'),
+    'cloud-folder guide generation must keep mailbox excluded');
+  assert.ok(getBridgeToolNames('github').includes('mailbox'),
+    'GitHub guide generation must expose mailbox');
   assert.ok(BRIDGE_TOOL_NAMES.includes('subagent'),
     'the generated bridge catalog must include subagent lifecycle actions');
 
@@ -67,10 +72,24 @@ try {
   const upgradedGuide = await fs.readFile(path.join(oldGeneratedRoot, 'README.md'), 'utf8');
   assert.notEqual(upgradedGuide, staleGeneratedGuide,
     'an existing generated README with the previous marker must be refreshed');
-  assert.match(upgradedGuide, /desktop-commander:bridge-guide:v7/);
+  assert.match(upgradedGuide, /desktop-commander:bridge-guide:v8/);
   assert.match(upgradedGuide, /agent-<uniqueid>/);
   assert.match(upgradedGuide, /subagents\/agent-<id>/);
   assert.doesNotMatch(upgradedGuide, /Old structure: requests\//);
+
+  // GitHub mode generates an explicit mailbox queue tool and directs
+  // parent/child messaging through GitHub request/response files.
+  const githubRoot = path.join(tempDir, 'github');
+  await fs.mkdir(githubRoot, { recursive: true });
+  await createGuideIfMissing(githubRoot, 'github');
+  const githubGuide = await fs.readFile(path.join(githubRoot, 'README.md'), 'utf8');
+  assert.match(githubGuide, /desktop-commander:bridge-guide:v8/);
+  assert.match(githubGuide, /^### mailbox$/m);
+  assert.match(githubGuide, /Parent-child messages in GitHub mode use the `mailbox` tool through ordinary GitHub Bridge request\/response files/);
+  assert.match(githubGuide, /private repository/);
+  assert.doesNotMatch(githubGuide, /Use the normal direct MCP `mailbox` tool/);
+  assert.ok(getBridgeToolNames('github').includes('mailbox'),
+    'GitHub guide generation must expose the mailbox schema');
 
   // Custom user-authored README files are deliberately preserved.
   const customRoot = path.join(tempDir, 'custom');

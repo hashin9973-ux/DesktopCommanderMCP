@@ -604,14 +604,16 @@ The server provides a comprehensive set of tools organized into several categori
 
 ### Local Mailbox and AI Handoffs
 
-The mailbox is an **optional, app-side messaging system** for passing work between AI sessions or between an AI and the local user. It does not use cloud storage or a remote mailbox service. Sessions must reach the same Desktop Commander app/server instance to share its mailbox. The cloud-folder bridge intentionally does not expose mailbox actions or message contents because its request/response files are synchronized.
+The mailbox is an **optional, app-side messaging system** for passing work between AI sessions or between an AI and the local user. Its database is local to the Desktop Commander host; it is not a remote mailbox service. Sessions must reach the same Desktop Commander host to share the mailbox. GitHub Repository Bridge mode exposes mailbox actions through ordinary Bridge request/response queue files, which the local worker executes against this shared database. Cloud-folder Bridge mode intentionally does not expose mailbox actions because its request/response files are synchronized.
+
+**GitHub privacy note:** mailbox message bodies appear in the GitHub request files, and inbox results appear in GitHub response files. Treat those messages as repository content: use a private repository and grant access only to collaborators authorized to read them. The mailbox database itself remains local, but the GitHub Bridge queue files are not.
 
 1. Register an identity with the `mailbox` tool using `action: "register"` and a `username`. The result includes a stable, unique `mailbox_user_id`.
-2. To opt in to notifications, include `mailbox_user_id` in every subsequent local MCP tool call (not cloud-folder bridge requests). If unread mail exists, the result begins with a notice such as `10 new messages. Use mailbox action=inbox_unread to read.` Calls without the ID work exactly as before and do not receive mailbox notices.
+2. To opt in to notifications in direct local MCP sessions, include `mailbox_user_id` in every subsequent local MCP tool call. GitHub Bridge queue requests do not use this notification parameter; use `action: "inbox_unread"` as a normal GitHub Bridge request to read queued mail. Cloud-folder Bridge requests do not expose mailbox actions.
 3. Use `mailbox` with `action: "send"`, `to` (a registered username), and `message` to hand work to another identity. The sender is the identity in `mailbox_user_id`.
 4. Use `action: "inbox_unread"` to read and mark all unread messages as read. Use `action: "list_users"` to see registered identities and relative last activity, or `action: "read"` to inspect message history with optional `user`, `from`, `to`, `unreadOnly`, and `limit` filters.
 
-Mailbox data is stored locally at `~/.claude-server-commander/mailbox.json` (Windows: `%USERPROFILE%\.claude-server-commander\mailbox.json`). It is not uploaded or synchronized. Mailbox tool calls and message contents are not copied into the general tool-call argument log or recent-call history. Mailbox IDs are identifiers, **not authentication credentials**; anyone who can call the local app/server or modify its data directory is within the same trust boundary.
+Mailbox data is stored locally at `~/.claude-server-commander/mailbox.json` (Windows: `%USERPROFILE%\.claude-server-commander\mailbox.json`). The database itself is not uploaded or synchronized. However, when mailbox actions are submitted through GitHub Bridge, their request arguments and response contents—including message bodies—are stored in the GitHub repository's queue files. Mailbox tool calls and message contents are not copied into the general tool-call argument log or recent-call history. Mailbox IDs are identifiers, **not authentication credentials**; anyone who can call the local app/server or modify its data directory is within the same trust boundary.
 
 #### Mailbox shell administration
 

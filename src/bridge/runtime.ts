@@ -15,14 +15,15 @@ import { toolArgSchemas } from '../tools/schemas.js';
 import { writeFileAtomic } from '../utils/atomic-write.js';
 import { preloadFileSupport } from '../utils/files/index.js';
 import { featureFlagManager } from '../utils/feature-flags.js';
-import { BRIDGE_TOOL_NAMES, parseBridgeRequest, type BridgeCommand, type BridgeRequest } from './protocol.js';
+import { getBridgeToolNames, parseBridgeRequest, type BridgeCommand, type BridgeRequest, type BridgeTransport } from './protocol.js';
 import { discoverAgentQueuePaths, initializeAgentLayout, type AgentQueuePaths } from './agents.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_STORAGE_BYTES = 3_000_000_000;
 const STABILITY_CHECK_MS = 200;
 const REQUEST_PARSE_SETTLE_MS = 2_000;
-const BRIDGE_GUIDE_MARKER = '<!-- desktop-commander:bridge-guide:v7 -->';
+const BRIDGE_GUIDE_MARKER = '<!-- desktop-commander:bridge-guide:v8 -->';
+const BRIDGE_TRANSPORT: BridgeTransport = process.env.DC_BRIDGE_PROVIDER === 'github' ? 'github' : 'cloud';
 const RECENT_FILE_CLEANUP_GRACE_MS = 60_000;
 const MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
 
@@ -297,17 +298,20 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_usage_stats: 'Read tool usage statistics.',
   get_recent_tool_calls: 'Read recent Desktop Commander tool call history.',
   give_feedback_to_desktop_commander: 'Open the Desktop Commander feedback form.',
-  mailbox: 'Register a mailbox username and exchange parent-child agent reports.',
+  mailbox: 'Exchange parent-child reports through GitHub Bridge request/response files. The worker uses the shared local mailbox store; message text is included in GitHub queue files.',
   subagent: 'Spawn, continue, inspect, or delete persistent ChatGPT web subagents in nested workspaces. Direct MCP calls provide parent_agent_id and parent_workspace_path; Bridge calls inherit parent context.',
 };
 
-export async function createGuideIfMissing(directory: string): Promise<void> {
+export async function createGuideIfMissing(
+  directory: string,
+  transport: BridgeTransport = BRIDGE_TRANSPORT,
+): Promise<void> {
   const guidePath = path.join(directory, 'README.md');
   const tick = String.fromCharCode(96);
   const fence3 = tick.repeat(3);
   const fence4 = tick.repeat(4);
   const blocks: string[] = [];
-  for (const name of BRIDGE_TOOL_NAMES) {
+  for (const name of getBridgeToolNames(transport)) {
     blocks.push([
       '### ' + name,
       '',
@@ -342,7 +346,9 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '4. Read this README once at the start of a fresh chat. It is the only operating guide. Keep your assigned workspace path for the entire conversation and reuse it only when continuing that same conversation.',
     '5. Choose a short request ID such as task-a1. Submit <your-workspace>/requests/<id>.json with the same value in the JSON id field. Request IDs need only be unique within your own workspace.',
     '6. The result appears at <your-workspace>/responses/<id>.json. Retrieve artifacts from your own <your-workspace>/artifacts/ folder.',
-    '7. Register your mailbox username as your own agent ID. To report to your parent, use mailbox action=send with username=<your-agent-id> and to=<parent-agent-id>. Never send using your parent\'s username. Use the subagent tool to spawn, continue, inspect, and delete only your direct children.',
+    transport === 'github'
+      ? '7. Register your mailbox username as your own agent ID by submitting a mailbox action=register command through your GitHub Bridge request queue. Send parent reports with mailbox action=send, username=<your-agent-id>, to=<parent-agent-id>; check incoming reports with mailbox action=inbox_unread. Use the subagent tool for your direct children.'
+      : '7. Cloud-folder Bridge requests do not expose mailbox actions because their request and response contents are synchronized. Report task results through your own response files. Use the subagent tool for your direct children.',
     '',
     'The bridge must be running on the computer that should execute the tools. The storage connector only submits requests and retrieves results; it does not execute commands. Each full hierarchical workspace path identifies one agent instance and its isolated queue boundary.',
     '',
@@ -352,7 +358,9 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '',
     'The subagent tool continue action sends only "continue." to that child conversation. Its status action reports browser-observable generation, timeout, visible error, context-limit, or unknown state. The tool does not collect assistant response text.',
     '',
-    'Parent-child messages use the normal direct MCP `mailbox` tool, not a Bridge request file. Register your own mailbox username as your agent ID. A child sends from its own username to its parent username; mailbox usernames are message addresses only and are never added to Bridge request arguments. Bridge calls inherit the current parent workspace automatically. Direct MCP subagent actions must also provide the parent agent ID and assigned workspace path.',
+    transport === 'github'
+      ? 'Parent-child messages in GitHub mode use the `mailbox` tool through ordinary GitHub Bridge request/response files; do not call it through a separate direct MCP connection. The GitHub worker executes these actions on the host against the shared local mailbox database. Message bodies and inbox results are present in the GitHub request/response files, so use a private repository and grant access only to people authorized to read those messages. Register each agent under its own ID; children send from their own ID to the parent ID.'
+      : 'The cloud-folder Bridge protocol intentionally does not expose `mailbox`, because mailbox request arguments and results would be synchronized with the shared folder. Use your own response files for parent-visible task results. Direct local MCP mailbox calls are separate from the cloud-folder Bridge protocol.',
     '',
     'The browser integration uses a dedicated persistent Chromium profile. On first use, the browser opens visibly so the user can sign in to ChatGPT. The tool selects and verifies a Thinking/reasoning option before sending a prompt; it fails closed when the current ChatGPT interface does not expose a verifiable reasoning mode. It does not extract conversation output or store browser passwords/cookies in the Bridge repository.',
     '',
@@ -436,7 +444,9 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '',
     'The Bridge root is the shared folder selected in the local Desktop Commander settings. Root agents use direct child agent-<id>/ folders; children are nested below their parent at subagents/agent-<id>/. Discovery, queues, artifacts, and ledgers support recursive nesting. The local worker watches discovered request folders and also performs a one-second fallback scan. Cloud provider synchronization can delay file visibility.',
     '',
-    'Use one running Cloud-folder worker for a shared root. Subagents share the root but get unique nested workspaces. Mailbox usernames are used only for parent-child reports and are not request arguments.',
+    transport === 'github'
+      ? 'GitHub mode exposes the mailbox tool through ordinary queue requests. The local worker executes it against the same persistent mailbox database used by the Desktop Commander server. Mailbox request bodies and inbox response contents are committed as request/response files in the repository; use a private repository and restrict access accordingly.'
+      : 'Use one running Cloud-folder worker for a shared root. Subagents share the root but get unique nested workspaces. Mailbox is not exposed by the cloud-folder request protocol; use response files for parent-visible results.',
     '',
     '### GitHub Repository Bridge',
     '',
@@ -1078,7 +1088,7 @@ async function processRequestFile(
 
   let request: BridgeRequest;
   try {
-    request = parseBridgeRequest(filename, bytes.toString('utf8'));
+    request = parseBridgeRequest(filename, bytes.toString('utf8'), BRIDGE_TRANSPORT);
   } catch (error) {
     const observation = invalidRequestObservations.get(requestKey);
     if (!observation || observation.requestHash !== requestHash) {
@@ -1679,7 +1689,7 @@ export async function runBridge(args: string[] = []): Promise<void> {
       root: realRoot,
       stateDirectory: stateDir,
     };
-    await createGuideIfMissing(realRoot);
+    await createGuideIfMissing(realRoot, BRIDGE_TRANSPORT);
 
     await configManager.loadConfig();
     await featureFlagManager.initialize();
