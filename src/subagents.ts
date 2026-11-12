@@ -317,27 +317,47 @@ class ChatGptBrowser {
     return this.connectActive();
   }
 
-  async attach(targetId: string, conversationUrl?: string): Promise<BrowserTarget> {
-    const connection = await this.connectExisting();
+  async attach(
+    targetId: string,
+    conversationUrl?: string,
+    restoreIfMissing = false,
+  ): Promise<BrowserTarget> {
+    const connection = restoreIfMissing
+      ? await this.connect()
+      : await this.connectExisting();
     if (!connection) throw new Error('The shared ChatGPT browser session is not running.');
     let resolvedTargetId = targetId;
     try {
       await connection.send('Target.getTargetInfo', { targetId });
     } catch {
-      if (!conversationUrl) throw new Error('The saved ChatGPT browser tab no longer exists.');
+      const conversationId = conversationUrl
+        ? /\/c\/([0-9a-f-]{16,})/i.exec(conversationUrl)?.[1]
+        : undefined;
+      if (!conversationId) {
+        throw new Error('The saved ChatGPT conversation URL is missing a valid conversation ID.');
+      }
       const targets = await connection.send<{ targetInfos?: Array<{ targetId?: string; url?: string; type?: string }> }>(
         'Target.getTargets',
       );
-      const conversationId = /\/c\/([0-9a-f-]{16,})/i.exec(conversationUrl)?.[1];
       const match = (targets.targetInfos || []).find(target =>
         target.type === 'page'
         && typeof target.targetId === 'string'
         && typeof target.url === 'string'
-        && (target.url === conversationUrl
-          || (conversationId && target.url.includes('/c/' + conversationId))),
+        && (target.url === conversationUrl || target.url.includes('/c/' + conversationId)),
       );
-      if (!match?.targetId) throw new Error('The saved ChatGPT conversation tab could not be found in the shared browser profile.');
-      resolvedTargetId = match.targetId;
+      if (match?.targetId) {
+        resolvedTargetId = match.targetId;
+      } else if (restoreIfMissing) {
+        // ChatGPT conversations are server-side. Reopen the persisted URL in a
+        // new tab when the user closed the original tab or restarted Chromium.
+        const created = await connection.send<{ targetId: string }>(
+          'Target.createTarget',
+          { url: conversationUrl },
+        );
+        resolvedTargetId = created.targetId;
+      } else {
+        throw new Error('The saved ChatGPT conversation tab is closed; use continue to reopen it.');
+      }
     }
     const attached = await connection.send<{ sessionId: string }>('Target.attachToTarget', {
       targetId: resolvedTargetId, flatten: true,
@@ -688,12 +708,16 @@ class SubagentManager {
         task: args.prompt.trim(),
         transport: parent.transport,
       }));
+      const conversationUrl = await this.browser.getConversationUrl(target);
+      if (!/\/c\/[0-9a-f-]{16,}/i.test(conversationUrl)) {
+        throw new Error('ChatGPT accepted the initial prompt but did not expose a persistent conversation URL; the subagent was not registered.');
+      }
       const now = new Date().toISOString();
       const record: SubagentRecord = {
         id, parentAgentId: parent.id, parentAgentPath: parent.agentPath,
         agentPath: parent.agentPath + '/subagents/' + id,
         parentWorkspacePath: parent.workspace, workspacePath: realWorkspace, transport: parent.transport,
-        targetId: target.targetId, conversationUrl: await this.browser.getConversationUrl(target),
+        targetId: target.targetId, conversationUrl,
         createdAt: now, updatedAt: now, lastSubmittedAt: now,
       };
       state.records.push(record);
@@ -756,9 +780,10 @@ class SubagentManager {
 
   private async continue(args: SubagentToolArguments): Promise<string> {
     const { state, record } = await this.find(args);
-    const target = await this.browser.attach(record.targetId, record.conversationUrl);
+    const target = await this.browser.attach(record.targetId, record.conversationUrl, true);
     if (!await this.browser.waitForComposer(target)) throw new Error('The subagent conversation is not ready for input.');
     await this.browser.send(target, 'continue.');
+    record.targetId = target.targetId;
     record.updatedAt = new Date().toISOString();
     record.lastSubmittedAt = record.updatedAt;
     await saveState(this.registryPath, state);
