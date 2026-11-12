@@ -1,7 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { isValidAgentDirectoryName } from './agents.js';
+import { isValidAgentDirectoryName, isValidAgentWorkspacePath } from './agents.js';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -482,6 +482,8 @@ export class GitHubRepositoryClient {
     responses: GitHubContentEntry[];
     legacyArtifacts: GitHubContentEntry[];
     agentDirectories: string[];
+    workspaceFiles: GitHubContentEntry[];
+    deletedAgents: string[];
   }> {
     const commit = await this.requestJson(
       '/repos/' + this.repository + '/commits/' + encodeURIComponent(this.defaultBranch),
@@ -493,7 +495,11 @@ export class GitHubRepositoryClient {
 
     type TreeEntry = { path?: unknown; sha?: unknown; size?: unknown; type?: unknown; mode?: unknown };
     const treeUrl = '/repos/' + this.repository + '/git/trees/';
-    const agentQueuePath = /^(agent-[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?)\/(requests|responses)\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/;
+    const agentSegmentPattern = 'agent-[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?';
+    const workspacePathPattern = agentSegmentPattern + '(?:/subagents/' + agentSegmentPattern + ')*';
+    const agentQueuePath = new RegExp(
+      '^(' + workspacePathPattern + ')/(requests|responses)/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\\.(json|md)$',
+    );
     const legacyRequestPath = /^requests\/(?:request-)?([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.(json|md)$/i;
     const legacyResponsePath = /^responses\/(?:response-)?([A-Za-z0-9][A-Za-z0-9_-]{0,79})\.json$/i;
     const legacyArtifactPath = /^(?:artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*)|agents\/([a-z0-9][a-z0-9._-]{0,63})\/artifacts\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._-]*))$/i;
@@ -501,19 +507,30 @@ export class GitHubRepositoryClient {
     const requests: GitHubContentEntry[] = [];
     const responses: GitHubContentEntry[] = [];
     const legacyArtifacts: GitHubContentEntry[] = [];
+    const workspaceFiles: GitHubContentEntry[] = [];
+    const deletedAgents = new Set<string>();
     const discoveredAgentIds = new Set<string>();
     const previousAgentNamePattern = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 
     const recordAgentDirectory = (filePath: string, isDirectory = false): void => {
       const segments = filePath.split('/');
-      if (segments.length === 1 && isValidAgentDirectoryName(segments[0])) {
-        discoveredAgentIds.add(segments[0]);
-      } else if (segments.length > 1 && isValidAgentDirectoryName(segments[0])) {
-        discoveredAgentIds.add(segments[0]);
-      } else if (segments.length > 1 && segments[0] === 'agents'
-        && (segments.length > 2 || isDirectory)
-        && previousAgentNamePattern.test(segments[1])) {
-        discoveredAgentIds.add('agent-' + segments[1]);
+      if (!segments.length || !isValidAgentDirectoryName(segments[0])) {
+        if (segments.length > 2 && segments[0] === 'agents'
+          && (segments.length > 2 || isDirectory)
+          && previousAgentNamePattern.test(segments[1])) {
+          discoveredAgentIds.add('agent-' + segments[1]);
+        }
+        return;
+      }
+      let agentPath = segments[0];
+      discoveredAgentIds.add(agentPath);
+      let index = 0;
+      while (segments[index + 1] === 'subagents'
+        && segments[index + 2]
+        && isValidAgentDirectoryName(segments[index + 2])) {
+        agentPath += '/subagents/' + segments[index + 2];
+        discoveredAgentIds.add(agentPath);
+        index += 2;
       }
     };
 
@@ -532,10 +549,28 @@ export class GitHubRepositoryClient {
       recordAgentDirectory(filePath, entry.type === 'tree');
       const result = toEntry(filePath, entry);
       if (!result) return;
-      if (agentQueuePath.test(filePath)) {
-        const agentId = filePath.split('/')[0];
-        if (!isValidAgentDirectoryName(agentId)) return;
-        if (filePath.split('/')[1] === 'requests') requests.push(result);
+
+      const segments = filePath.split('/');
+      if (segments.length > 1 && isValidAgentDirectoryName(segments[0])) {
+        let agentPath = segments[0];
+        let depthIndex = 0;
+        while (segments[depthIndex + 1] === 'subagents'
+          && segments[depthIndex + 2]
+          && isValidAgentDirectoryName(segments[depthIndex + 2])) {
+          agentPath += '/subagents/' + segments[depthIndex + 2];
+          depthIndex += 2;
+        }
+        if (segments.length > depthIndex + 1 && isValidAgentWorkspacePath(agentPath)) {
+          workspaceFiles.push(result);
+          if (filePath === agentPath + '/.subagent-deleted.json') {
+            deletedAgents.add(agentPath);
+          }
+        }
+      }
+
+      const queueMatch = agentQueuePath.exec(filePath);
+      if (queueMatch && isValidAgentWorkspacePath(queueMatch[1])) {
+        if (queueMatch[2] === 'requests') requests.push(result);
         else responses.push(result);
       } else if (previousAgentQueuePath.test(filePath)) {
         const queue = filePath.split('/')[2];
@@ -664,64 +699,17 @@ export class GitHubRepositoryClient {
 
       for (const agentDirectory of agentDirectories) {
         const agentTree = await this.requestJson(
-          treeUrl + encodeURIComponent(agentDirectory.sha),
-        ) as { tree?: unknown };
-        if (!Array.isArray(agentTree.tree)) {
-          throw new Error('GitHub returned an invalid tree for agent ' + agentDirectory.name + '.');
-        }
-        for (const queueName of ['requests', 'responses'] as const) {
-          const queueDirectory = (agentTree.tree as TreeEntry[]).find((entry) =>
-            entry.type === 'tree' && entry.path === queueName && typeof entry.sha === 'string',
+          treeUrl + encodeURIComponent(agentDirectory.sha) + '?recursive=1',
+        ) as { tree?: unknown; truncated?: unknown };
+        if (agentTree.truncated === true || !Array.isArray(agentTree.tree)) {
+          throw new Error(
+            'GitHub agent workspace ' + agentDirectory.prefix +
+            ' exceeds the Git Trees API listing limit. Archive completed queue entries before continuing.',
           );
-          if (!queueDirectory) continue;
-          const queueTree = await this.requestJson(
-            treeUrl + encodeURIComponent(String(queueDirectory.sha)) + '?recursive=1',
-          ) as { tree?: unknown; truncated?: unknown };
-          if (queueTree.truncated === true || !Array.isArray(queueTree.tree)) {
-            throw new Error(
-              'GitHub agent queue ' + agentDirectory.prefix + '/' + queueName +
-              ' exceeds the Git Trees API listing limit. Archive completed queue entries before continuing.',
-            );
-          }
-          for (const entry of queueTree.tree as TreeEntry[]) {
-            if (typeof entry.path === 'string' && !entry.path.includes('/')) {
-              addFile(agentDirectory.prefix + '/' + queueName + '/' + entry.path, entry);
-            }
-          }
         }
-        if (agentDirectory.prefix.startsWith('agents/')) {
-          const artifactDirectory = (agentTree.tree as TreeEntry[]).find((entry) =>
-            entry.type === 'tree' && entry.path === 'artifacts' && typeof entry.sha === 'string',
-          );
-          if (artifactDirectory) {
-            const artifactRootTree = await this.requestJson(
-              treeUrl + encodeURIComponent(String(artifactDirectory.sha)),
-            ) as { tree?: unknown };
-            if (!Array.isArray(artifactRootTree.tree)) {
-              throw new Error('GitHub returned an invalid artifact tree for previous agent ' + agentDirectory.name + '.');
-            }
-            for (const requestDirectory of artifactRootTree.tree as TreeEntry[]) {
-              if (requestDirectory.type !== 'tree' || typeof requestDirectory.path !== 'string'
-                || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(requestDirectory.path)
-                || typeof requestDirectory.sha !== 'string') continue;
-              const requestArtifactTree = await this.requestJson(
-                treeUrl + encodeURIComponent(requestDirectory.sha) + '?recursive=1',
-              ) as { tree?: unknown; truncated?: unknown };
-              if (requestArtifactTree.truncated === true || !Array.isArray(requestArtifactTree.tree)) {
-                throw new Error(
-                  'Previous GitHub agent artifact folder ' + agentDirectory.prefix + '/artifacts/' + requestDirectory.path +
-                  ' exceeds the Git Trees API listing limit. Archive it before continuing.',
-                );
-              }
-              for (const entry of requestArtifactTree.tree as TreeEntry[]) {
-                if (typeof entry.path === 'string' && !entry.path.includes('/')) {
-                  addFile(
-                    agentDirectory.prefix + '/artifacts/' + requestDirectory.path + '/' + entry.path,
-                    entry,
-                  );
-                }
-              }
-            }
+        for (const entry of agentTree.tree as TreeEntry[]) {
+          if (typeof entry.path === 'string') {
+            addFile(agentDirectory.prefix + '/' + entry.path, entry);
           }
         }
       }
@@ -734,6 +722,8 @@ export class GitHubRepositoryClient {
       responses: responses.sort(byPath),
       legacyArtifacts: legacyArtifacts.sort(byPath),
       agentDirectories: [...discoveredAgentIds].sort(),
+      workspaceFiles: workspaceFiles.sort(byPath),
+      deletedAgents: [...deletedAgents].sort(),
     };
   }
 

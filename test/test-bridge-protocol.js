@@ -27,17 +27,24 @@ const compactRequest = parseBridgeRequest('task-a1.json', compactJson);
 assert.equal(compactRequest.id, 'task-a1', 'short names without request- prefixes must be accepted');
 assert.equal(compactRequest.commands[0].tool, 'get_config');
 assert.ok(!BRIDGE_TOOL_NAMES.includes('mailbox'),
-  'agents are identified by their folder; the legacy mailbox tool is not part of the bridge protocol');
-
+  'mailbox remains a direct MCP tool and is not executed in an isolated Bridge worker process');
+assert.ok(BRIDGE_TOOL_NAMES.includes('subagent'),
+  'subagent lifecycle actions are exposed through the Bridge protocol');
 assert.throws(
   () => parseBridgeRequest('mailbox-01.json', JSON.stringify({
     protocol_version: 1,
     id: 'mailbox-01',
-    commands: [{ tool: 'mailbox', arguments: { action: 'register', username: 'Agent' } }],
+    commands: [{ tool: 'mailbox', arguments: { action: 'register', username: 'agent-4l' } }],
   })),
   /unknown or unavailable tool/,
-  'file-queue agents must not need mailbox registration or mailbox IDs',
+  'mailbox operations must run through the direct MCP tool so all processes share the same local mailbox database',
 );
+const subagentRequest = parseBridgeRequest('subagent-01.json', JSON.stringify({
+  protocol_version: 1,
+  id: 'subagent-01',
+  commands: [{ tool: 'subagent', arguments: { action: 'spawn', prompt: 'Inspect this repository.' } }],
+}));
+assert.equal(subagentRequest.commands[0].tool, 'subagent');
 
 const tick = String.fromCharCode(96);
 const markdown = [

@@ -287,20 +287,20 @@ jobs:
               throw "Bridge did not generate README.md in the configured cloud folder."
             }
             $guideContent = Get-Content $guidePath -Raw
-            if (!$guideContent.Contains("agent-<uniqueid>/requests/") -or !$guideContent.Contains("agent-<uniqueid>/responses/") -or !$guideContent.Contains("agent-<uniqueid>/artifacts/")) {
-              throw "Generated bridge README is missing the agent-scoped queue folder layout."
+            if (!$guideContent.Contains("agent-<uniqueid>/{requests,responses,artifacts}/") -or !$guideContent.Contains("agent-<parent>/subagents/agent-<child>")) {
+              throw "Generated bridge README is missing the root and nested subagent workspace layouts."
             }
-            if (!$guideContent.Contains("folder identifies this agent instance")) {
-              throw "Generated bridge README does not describe folder-based agent identity."
+            if (!$guideContent.Contains("Each full hierarchical workspace path identifies one agent instance")) {
+              throw "Generated bridge README does not describe hierarchical folder-based agent identity."
             }
             if ($guideContent.Contains("mailbox_user_id") -or $guideContent.Contains("## Optional local mailbox")) {
               throw "Generated bridge README still couples bridge agents to mailbox identities."
             }
-            if (!$guideContent.Contains("NEW unique folder for this conversation") -or !$guideContent.Contains("Never share a folder between conversations")) {
-              throw "Generated bridge README does not require separate folders for concurrent conversations from the same platform."
+            if (!$guideContent.Contains("Never share a workspace between conversations") -or !$guideContent.Contains("Keep your assigned workspace path")) {
+              throw "Generated bridge README does not require a separate persistent workspace for each conversation."
             }
-            if (!$guideContent.Contains("agent-7f3a91c2d4e6/requests/task-a1.json") -or !$guideContent.Contains("agent-7f3a91c2d4e6/responses/task-a1.json")) {
-              throw "Generated bridge README is missing the compact agent-scoped request/response filename convention."
+            if (!$guideContent.Contains("agent-4l/requests/task-a1.json") -or !$guideContent.Contains("agent-4l/subagents/agent-7b/requests/task-a1.json") -or !$guideContent.Contains("<your-workspace>/responses/<id>.json")) {
+              throw "Generated bridge README is missing root and nested subagent request/response path examples."
             }
             if (Test-Path (Join-Path $cloudDir "requests")) {
               throw "The bridge created a legacy flat requests folder instead of a root-level agent-<uniqueid> folder."

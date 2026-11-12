@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { initializeAgentLayout, isValidAgentDirectoryName, LEGACY_AGENT_DIRECTORY_PATTERN, LEGACY_DEFAULT_AGENT, LEGACY_FLAT_MIGRATION_MARKER } from './agents.js';
+import { initializeAgentLayout, isValidAgentDirectoryName, isValidAgentWorkspacePath, discoverAgentQueuePaths, LEGACY_AGENT_DIRECTORY_PATTERN, LEGACY_DEFAULT_AGENT, LEGACY_FLAT_MIGRATION_MARKER } from './agents.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { writeFileAtomic } from '../utils/atomic-write.js';
 import { createGuideIfMissing } from './runtime.js';
@@ -412,10 +412,10 @@ export class GitHubBridgeSync {
   ) {}
 
   private agentPaths(agentId: string): AgentGitHubBridgeCachePaths {
-    if (!isValidAgentDirectoryName(agentId)) {
-      throw new Error('Invalid agent folder name in GitHub bridge queue: ' + agentId);
+    if (!isValidAgentWorkspacePath(agentId)) {
+      throw new Error('Invalid agent workspace path in GitHub bridge queue: ' + agentId);
     }
-    const root = path.join(this.paths.root, agentId);
+    const root = path.join(this.paths.root, ...agentId.split('/'));
     return {
       root,
       requests: path.join(root, 'requests'),
@@ -446,7 +446,7 @@ export class GitHubBridgeSync {
       throw new Error('The local cache directory for agent ' + agentId + ' must be a real directory.');
     }
     const realAgent = await fs.realpath(paths.root);
-    if (!samePath(realAgent, path.join(realRoot, agentId))) {
+    if (!samePath(realAgent, path.join(realRoot, ...agentId.split('/')))) {
       throw new Error('The local cache directory for agent ' + agentId + ' resolves outside the agent cache root.');
     }
 
@@ -467,10 +467,11 @@ export class GitHubBridgeSync {
   private parseQueueEntry(entry: GitHubContentEntry, queueName: 'requests' | 'responses'):
     { agentId: string; requestId: string } | undefined {
     const segments = entry.path.split('/');
-    if (segments.length !== 3 || segments[1] !== queueName) return undefined;
-    if (!isValidAgentDirectoryName(segments[0])) return undefined;
-    const match = (queueName === 'requests' ? REQUEST_PATTERN : RESPONSE_PATTERN).exec(segments[2]);
-    return match ? { agentId: segments[0], requestId: match[1] } : undefined;
+    if (segments.length < 3 || segments[segments.length - 2] !== queueName) return undefined;
+    const agentId = segments.slice(0, -2).join('/');
+    if (!isValidAgentWorkspacePath(agentId)) return undefined;
+    const match = (queueName === 'requests' ? REQUEST_PATTERN : RESPONSE_PATTERN).exec(segments[segments.length - 1]);
+    return match ? { agentId, requestId: match[1] } : undefined;
   }
 
   private async readRemoteFlatMigrationAgent(): Promise<string | undefined> {
@@ -649,10 +650,9 @@ export class GitHubBridgeSync {
     // compatibility destination for any unscoped flat cache/remote queues.
     const localAgentIds = new Set<string>();
     let hasLocalFlatLegacyData = false;
+    const existingAgents = await discoverAgentQueuePaths(this.paths.root, this.workerStateDirectory);
+    for (const agent of existingAgents) localAgentIds.add(agent.agentId);
     for (const entry of await fs.readdir(this.paths.root, { withFileTypes: true })) {
-      if (entry.isDirectory() && !entry.isSymbolicLink() && isValidAgentDirectoryName(entry.name)) {
-        localAgentIds.add(entry.name);
-      }
       if (['requests', 'responses', 'artifacts'].includes(entry.name)) {
         hasLocalFlatLegacyData = true;
       }
@@ -770,17 +770,15 @@ export class GitHubBridgeSync {
       responsePath: string;
       requestId: string;
     }> = [];
-    let agentEntries;
+    let agents;
     try {
-      agentEntries = await fs.readdir(this.paths.root, { withFileTypes: true });
+      agents = await discoverAgentQueuePaths(this.paths.root, this.workerStateDirectory);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return results;
       throw error;
     }
-    for (const agentEntry of agentEntries) {
-      if (!agentEntry.isDirectory() || agentEntry.isSymbolicLink()
-        || !isValidAgentDirectoryName(agentEntry.name)) continue;
-      const paths = await this.ensureAgentPaths(agentEntry.name);
+    for (const discovered of agents) {
+      const paths = await this.ensureAgentPaths(discovered.agentId);
       let responseEntries;
       try {
         responseEntries = await fs.readdir(paths.responses, { withFileTypes: true });
@@ -792,7 +790,7 @@ export class GitHubBridgeSync {
         const match = entry.isFile() ? RESPONSE_PATTERN.exec(entry.name) : null;
         if (!match) continue;
         results.push({
-          agentId: agentEntry.name,
+          agentId: discovered.agentId,
           paths,
           name: entry.name,
           responsePath: path.join(paths.responses, entry.name),
@@ -808,13 +806,47 @@ export class GitHubBridgeSync {
   private async syncInternal(): Promise<void> {
     let remoteRequests: GitHubContentEntry[] = [];
     let remoteResponses: GitHubContentEntry[] = [];
+    let remoteWorkspaceFiles: GitHubContentEntry[] = [];
+    let deletedAgentPaths: string[] = [];
     let queueDiscoveryError: unknown;
     try {
       const queue = await this.client.listQueueFiles();
       remoteRequests = queue.requests;
       remoteResponses = queue.responses;
+      remoteWorkspaceFiles = queue.workspaceFiles;
+      deletedAgentPaths = queue.deletedAgents;
     } catch (error) {
       queueDiscoveryError = error;
+    }
+
+    if (!queueDiscoveryError && deletedAgentPaths.length > 0) {
+      // A deletion marker is written locally only after the parent requests
+      // deletion. Remove the complete corresponding remote subtree, including
+      // outstanding requests/responses/artifacts, before staging more work.
+      const deletionRoots = [...deletedAgentPaths].sort((a, b) =>
+        a.split('/').length - b.split('/').length || a.localeCompare(b),
+      );
+      const removed = new Set<string>();
+      for (const agentPath of deletionRoots) {
+        if ([...removed].some(parent => agentPath === parent || agentPath.startsWith(parent + '/'))) continue;
+        const prefix = agentPath + '/';
+        const files = remoteWorkspaceFiles.filter(file => file.path.startsWith(prefix));
+        for (const file of files) {
+          await this.client.deleteFileIfPresent(
+            file.path,
+            'Delete subagent workspace ' + agentPath + ' after its local deletion marker was synchronized',
+          );
+        }
+        removed.add(agentPath);
+        const localWorkspace = path.join(this.paths.root, ...agentPath.split('/'));
+        await fs.rm(localWorkspace, { recursive: true, force: true });
+      }
+      const isRemoved = (entry: GitHubContentEntry): boolean => [...removed].some(agentPath =>
+        entry.path.startsWith(agentPath + '/'),
+      );
+      remoteRequests = remoteRequests.filter(entry => !isRemoved(entry));
+      remoteResponses = remoteResponses.filter(entry => !isRemoved(entry));
+      console.log('GitHub bridge: removed ' + removed.size + ' deleted subagent workspace(s).');
     }
 
     const remoteResponseByRequestKey = new Map<string, GitHubContentEntry>();
@@ -951,6 +983,22 @@ export class GitHubBridgeSync {
       throw new Error(
         'Could not discover the remote GitHub agent queues; local response publication was still attempted: ' +
         errorMessage(queueDiscoveryError),
+      );
+    }
+
+    // Publish local deletion markers last. The next repository reconciliation
+    // observes each marker and removes that agent's remote subtree. Keeping the
+    // marker until then makes deletion restart-safe if GitHub is temporarily unavailable.
+    const localAgents = await discoverAgentQueuePaths(this.paths.root, this.workerStateDirectory);
+    for (const agent of localAgents) {
+      const markerPath = path.join(agent.root, '.subagent-deleted.json');
+      const markerBytes = await readOptional(markerPath);
+      if (!markerBytes) continue;
+      const remoteMarkerPath = agent.agentId + '/.subagent-deleted.json';
+      await this.client.createFileIfAbsent(
+        remoteMarkerPath,
+        markerBytes,
+        'Publish deletion marker for subagent workspace ' + agent.agentId,
       );
     }
 
