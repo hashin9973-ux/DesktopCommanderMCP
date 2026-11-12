@@ -23,9 +23,9 @@ try {
   assert.match(generatedGuide, /<your-workspace>\/responses\/<id>\.json/);
   assert.match(generatedGuide, /<your-workspace>\/artifacts/);
   assert.match(generatedGuide, /Request IDs need only be unique within your own workspace/);
-  assert.match(generatedGuide, /subagents\/ recursively/);
+  assert.match(generatedGuide, /child agents may create subagents recursively/);
   assert.match(generatedGuide, /## Subagents and parent coordination/);
-  assert.match(generatedGuide, /continue\. action sends only/);
+  assert.match(generatedGuide, /continue action sends only/);
   assert.match(generatedGuide, /direct MCP `mailbox` tool/);
   assert.match(generatedGuide, /normal direct MCP `mailbox` tool/);
   assert.match(generatedGuide, /Never share a workspace between conversations/);
