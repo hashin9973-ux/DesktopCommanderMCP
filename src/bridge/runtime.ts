@@ -331,7 +331,7 @@ export async function createGuideIfMissing(directory: string): Promise<void> {
     '## Folder layout',
     '',
     '- agent-<uniqueid>/{requests,responses,artifacts}/ — one isolated queue and artifact namespace per root conversation.',
-    '- agent-<parent>/subagents/agent-<child>/{requests,responses,artifacts}/ — nested child workspace; children may create their own subagents recursively.',
+    '- agent-<parent>/subagents/agent-<child>/{requests,responses,artifacts}/ — nested child workspace; child agents may create subagents recursively.',
     '- README.md — the only agent-facing guide.',
     '',
     '## AI Quick Start',

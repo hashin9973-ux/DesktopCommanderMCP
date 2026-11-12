@@ -759,8 +759,9 @@ try {
   const generatedReadme = api.files.get('README.md').bytes.toString('utf8');
   assert.ok(generatedReadme.startsWith('# Desktop Commander Bridge\n'));
   assert.ok(generatedReadme.includes('## AI Quick Start'));
-  assert.ok(generatedReadme.includes('agent-<uniqueid>/requests/'));
-  assert.ok(generatedReadme.includes('agent-<uniqueid>/responses/'));
+  assert.ok(generatedReadme.includes('<your-workspace>/requests/'));
+  assert.ok(generatedReadme.includes('<your-workspace>/responses/'));
+  assert.ok(generatedReadme.includes('agent-<parent>/subagents/agent-<child>'));
   assert.ok(generatedReadme.includes('## Tool catalog'));
   assert.ok(!generatedReadme.includes('mailbox_user_id'));
   assert.ok(!generatedReadme.includes('## Optional local mailbox'));
