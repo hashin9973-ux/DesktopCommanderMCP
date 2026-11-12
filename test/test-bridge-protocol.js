@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { BRIDGE_TOOL_NAMES, parseBridgeRequest } from '../dist/bridge/protocol.js';
+import { BRIDGE_TOOL_NAMES, getBridgeToolNames, parseBridgeRequest } from '../dist/bridge/protocol.js';
 import { createBridgePollingTimer } from '../dist/bridge/runtime.js';
 
 const json = JSON.stringify({
@@ -27,17 +27,33 @@ const compactRequest = parseBridgeRequest('task-a1.json', compactJson);
 assert.equal(compactRequest.id, 'task-a1', 'short names without request- prefixes must be accepted');
 assert.equal(compactRequest.commands[0].tool, 'get_config');
 assert.ok(!BRIDGE_TOOL_NAMES.includes('mailbox'),
-  'mailbox remains a direct MCP tool and is not executed in an isolated Bridge worker process');
+  'the default Bridge tool catalog remains the cloud-folder catalog');
+assert.ok(!getBridgeToolNames('cloud').includes('mailbox'),
+  'cloud-folder mode keeps mailbox disabled because its message contents would be synchronized');
+assert.ok(getBridgeToolNames('github').includes('mailbox'),
+  'GitHub Bridge exposes mailbox through its request/response queue');
 assert.ok(BRIDGE_TOOL_NAMES.includes('subagent'),
   'subagent lifecycle actions are exposed through the Bridge protocol');
+
+const mailboxRequestBody = JSON.stringify({
+  protocol_version: 1,
+  id: 'mailbox-01',
+  commands: [
+    { tool: 'mailbox', arguments: { action: 'register', username: 'agent-4l' } },
+    { tool: 'mailbox', arguments: { action: 'send', username: 'agent-4l', to: 'agent-7b', message: 'Progress update' } },
+    { tool: 'mailbox', arguments: { action: 'inbox_unread', username: 'agent-4l' } },
+  ],
+});
 assert.throws(
-  () => parseBridgeRequest('mailbox-01.json', JSON.stringify({
-    protocol_version: 1,
-    id: 'mailbox-01',
-    commands: [{ tool: 'mailbox', arguments: { action: 'register', username: 'agent-4l' } }],
-  })),
+  () => parseBridgeRequest('mailbox-01.json', mailboxRequestBody),
   /unknown or unavailable tool/,
-  'mailbox operations must run through the direct MCP tool so all processes share the same local mailbox database',
+  'cloud-folder requests must continue to reject mailbox commands',
+);
+const githubMailboxRequest = parseBridgeRequest('mailbox-01.json', mailboxRequestBody, 'github');
+assert.deepEqual(
+  githubMailboxRequest.commands.map(command => command.tool),
+  ['mailbox', 'mailbox', 'mailbox'],
+  'GitHub Bridge must accept register, send, and inbox actions through its normal queue',
 );
 const subagentRequest = parseBridgeRequest('subagent-01.json', JSON.stringify({
   protocol_version: 1,
