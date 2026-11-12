@@ -132,7 +132,7 @@ async function resolveBrowserExecutable(): Promise<BrowserInfo> {
     const line = command.stdout.split(/\r?\n/).find(value => /\.exe/i.test(value));
     const executable = line ? firstCommand(line.replace(/^.*REG_[A-Z_]+\s+/i, '')) : undefined;
     if (!executable) throw new Error('Could not resolve the Windows default browser executable.');
-    if (!/(chrome|msedge|brave|chromium)/i.test(path.basename(executable))) {
+    if (!/(chrome|msedge|edge|brave|chromium)/i.test(path.basename(executable))) {
       throw new Error('The system-default browser is not Chromium-based. Use Chrome, Edge, Brave, or Chromium, or set DC_SUBAGENT_BROWSER_PATH.');
     }
     return { executable };
@@ -146,7 +146,7 @@ async function resolveBrowserExecutable(): Promise<BrowserInfo> {
     if (!appPath.endsWith('.app')) throw new Error('Could not resolve the macOS default browser application.');
     const info = await fs.readFile(path.join(appPath, 'Contents', 'Info.plist'), 'utf8');
     const name = /<key>CFBundleExecutable<\/key>\s*<string>([^<]+)<\/string>/.exec(info)?.[1];
-    if (!name || !/(chrome|msedge|brave|chromium)/i.test(name + appPath)) {
+    if (!name || !/(chrome|msedge|edge|brave|chromium)/i.test(name + appPath)) {
       throw new Error('The system-default browser is not Chromium-based. Use Chrome, Edge, Brave, or Chromium, or set DC_SUBAGENT_BROWSER_PATH.');
     }
     return { executable: path.join(appPath, 'Contents', 'MacOS', name), appPath };
@@ -182,7 +182,7 @@ async function resolveBrowserExecutable(): Promise<BrowserInfo> {
       const resolved = await execFileAsync('which', [executable], { timeout: 5000, maxBuffer: 65536 });
       executable = resolved.stdout.trim().split(/\r?\n/)[0];
     }
-    if (!/(chrome|msedge|brave|chromium)/i.test(path.basename(executable))) {
+    if (!/(chrome|msedge|edge|brave|chromium)/i.test(path.basename(executable))) {
       throw new Error('The system-default browser is not Chromium-based. Use Chrome, Edge, Brave, or Chromium, or set DC_SUBAGENT_BROWSER_PATH.');
     }
     return { executable };
