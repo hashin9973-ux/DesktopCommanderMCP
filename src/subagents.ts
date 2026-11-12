@@ -555,7 +555,7 @@ class ChatGptBrowser {
 }
 
 function composePrompt(input: {
-  id: string; parentId: string; workspace: string; task: string;
+  id: string; parentId: string; workspace: string; task: string; transport: 'github' | 'cloud' | 'mcp';
 }): string {
   return [
     'You are an independently operating ChatGPT subagent managed by Desktop Commander.',
@@ -567,7 +567,9 @@ function composePrompt(input: {
     'Your parent mailbox username is ' + input.parentId + '. Report progress, blockers, and completion through the direct MCP mailbox tool: action=send, username=' + input.id + ', to=' + input.parentId + ', message=<report>.',
     'Use your own agent ID as the sender, not the parent mailbox username.',
     'You may create child subagents of your own. Put them only in your workspace/subagents/ directory.',
-    'For direct MCP mode, include parent_agent_id=' + input.id + ' and parent_workspace_path=' + input.workspace + ' in subagent tool calls so parent ownership is explicit. Bridge mode supplies this context automatically; do not invent another workspace path.',
+    input.transport === 'mcp'
+      ? 'When using the direct MCP subagent tool, include parent_agent_id=' + input.id + ' and parent_workspace_path=' + input.workspace + ' on every action so parent ownership is explicit.'
+      : 'Create and manage child subagents by submitting the subagent tool through your Bridge workspace. Bridge execution supplies parent identity and workspace automatically; the repository-relative workspace path is not a local filesystem path for direct MCP calls.',
     'Task from parent:',
     input.task,
   ].join('\n\n');
@@ -684,6 +686,7 @@ class SubagentManager {
         id, parentId: parent.id,
         workspace: parent.transport === 'mcp' ? realWorkspace : parent.agentPath + '/subagents/' + id,
         task: args.prompt.trim(),
+        transport: parent.transport,
       }));
       const now = new Date().toISOString();
       const record: SubagentRecord = {
