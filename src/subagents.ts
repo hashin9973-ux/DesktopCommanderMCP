@@ -585,6 +585,7 @@ function composePrompt(input: {
     'Your agent ID is ' + input.id + '. Your parent agent ID is ' + input.parentId + '.',
     'Your assigned Bridge workspace is exactly: ' + input.workspace,
     'Use only this workspace: requests/, responses/, artifacts/, and subagents/. Never read or write your parent or sibling workspaces.',
+    'The exact assigned workspace path above overrides any README example that assumes a root-level agent folder. Always put requests/, responses/, artifacts/, and subagents/ under this assigned workspace.',
     'Read the complete operating guide at https://github.com/hashin9973-ux/Bridge/blob/main/README.md before using Bridge, and follow its current protocol.',
     'Use the normal direct MCP mailbox tool, not a Bridge file-queue request. Register your own mailbox identity with action=register, username=' + input.id + '.',
     'Your parent mailbox username is ' + input.parentId + '. Report progress, blockers, and completion through the direct MCP mailbox tool: action=send, username=' + input.id + ', to=' + input.parentId + ', message=<report>.',
