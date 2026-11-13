@@ -661,7 +661,8 @@ class ChatGptBrowser {
 }
 
 function composePrompt(input: {
-  id: string; parentId: string; workspace: string; task: string; transport: 'github' | 'cloud' | 'mcp';
+  id: string; parentId: string; workspace: string; parentWorkspace: string;
+  task: string; transport: 'github' | 'cloud' | 'mcp';
 }): string {
   return [
     'You are an independently operating ChatGPT subagent managed by Desktop Commander.',
