@@ -299,6 +299,10 @@ deferLog('info', 'Setting up request handlers...');
  * Check if a tool should be included based on current client
  */
 function shouldIncludeTool(toolName: string): boolean {
+    // Mailbox is a GitHub Bridge queue command, not a direct MCP tool.
+    // GitHub Bridge advertises it from bridge/protocol.ts independently.
+    if (toolName === 'mailbox') return false;
+
     // Exclude these tools for desktop-commander client (DC-specific meta-tools not useful when DC itself is the client)
     if (currentClient?.name === 'desktop-commander-app') {
         if (toolName === 'give_feedback_to_desktop_commander') {
