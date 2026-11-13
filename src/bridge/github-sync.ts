@@ -4,6 +4,7 @@ import { initializeAgentLayout, isValidAgentDirectoryName, isValidAgentWorkspace
 import { createHash, randomUUID } from 'node:crypto';
 import { writeFileAtomic } from '../utils/atomic-write.js';
 import { createGuideIfMissing } from './runtime.js';
+import { mailboxStore } from '../mailbox.js';
 
 import {
   GitHubApiError,
@@ -807,6 +808,7 @@ export class GitHubBridgeSync {
     let remoteRequests: GitHubContentEntry[] = [];
     let remoteResponses: GitHubContentEntry[] = [];
     let remoteWorkspaceFiles: GitHubContentEntry[] = [];
+    let remoteAgentPaths: string[] = [];
     let deletedAgentPaths: string[] = [];
     let queueDiscoveryError: unknown;
     try {
@@ -814,6 +816,7 @@ export class GitHubBridgeSync {
       remoteRequests = queue.requests;
       remoteResponses = queue.responses;
       remoteWorkspaceFiles = queue.workspaceFiles;
+      remoteAgentPaths = queue.agentDirectories;
       deletedAgentPaths = queue.deletedAgents;
     } catch (error) {
       queueDiscoveryError = error;
@@ -986,10 +989,63 @@ export class GitHubBridgeSync {
       );
     }
 
+    // Refresh local unread markers for all live workspaces, including recipients
+    // that have not submitted a request since receiving a message.
+    const localAgents = await discoverAgentQueuePaths(this.paths.root, this.workerStateDirectory);
+    const liveLocalAgents = [];
+    for (const agent of localAgents) {
+      if (!await readOptional(path.join(agent.root, '.subagent-deleted.json'))) liveLocalAgents.push(agent);
+    }
+    const knownMailboxPaths = await mailboxStore.listAgentPaths();
+    const markerAgentIds = new Set([
+      ...liveLocalAgents.map(agent => agent.agentId),
+      ...remoteAgentPaths,
+      ...knownMailboxPaths,
+    ]);
+    const expectedNotificationPaths = new Set<string>();
+    for (const agentId of [...markerAgentIds].sort()) {
+      if (deletedAgentPaths.some(deleted => agentId === deleted || agentId.startsWith(deleted + '/'))) continue;
+      const agentPaths = await this.ensureAgentPaths(agentId);
+      const unreadCount = await mailboxStore.syncUnreadMarkers(
+        agentId,
+        agentPaths.requests,
+        agentPaths.responses,
+      );
+      const markerName = 'unread-messages-' + unreadCount + '.txt';
+      for (const queueName of ['requests', 'responses'] as const) {
+        const remotePath = agentId + '/' + queueName + '/' + markerName;
+        const localPath = path.join(agentPaths[queueName], markerName);
+        const markerBytes = await fs.readFile(localPath);
+        await this.client.writeFile(
+          remotePath,
+          markerBytes,
+          'Synchronize unread mailbox count for ' + agentId,
+        );
+        expectedNotificationPaths.add(remotePath);
+      }
+    }
+
+    // Superseded count markers are metadata, not executable queue entries.
+    // Publish the replacement into both queues before deleting old counts.
+    for (const entry of remoteWorkspaceFiles) {
+      const segments = entry.path.split('/');
+      const name = segments.pop() || '';
+      const queueName = segments.pop();
+      const agentId = segments.join('/');
+      if (!/^unread-messages-\d+\.txt$/.test(name)
+        || (queueName !== 'requests' && queueName !== 'responses')
+        || !isValidAgentWorkspacePath(agentId)
+        || expectedNotificationPaths.has(entry.path)
+        || deletedAgentPaths.some(deleted => agentId === deleted || agentId.startsWith(deleted + '/'))) continue;
+      await this.client.deleteFileIfPresent(
+        entry.path,
+        'Remove stale unread mailbox notification marker ' + entry.path,
+      );
+    }
+
     // Publish local deletion markers last. The next repository reconciliation
     // observes each marker and removes that agent's remote subtree. Keeping the
     // marker until then makes deletion restart-safe if GitHub is temporarily unavailable.
-    const localAgents = await discoverAgentQueuePaths(this.paths.root, this.workerStateDirectory);
     for (const agent of localAgents) {
       const markerPath = path.join(agent.root, '.subagent-deleted.json');
       const markerBytes = await readOptional(markerPath);
