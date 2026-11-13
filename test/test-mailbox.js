@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { withEnv } from './helpers/test-env.js';
 
 const home = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-mailbox-test-'));
@@ -116,9 +117,33 @@ try {
       assert.equal(new Set(concurrent.map(message => message.id)).size, concurrent.length,
         'concurrent sends receive unique message IDs');
       assert.equal(await mailboxStore.unreadCount(parent), 26,
-        'concurrent writes are serialized by the mailbox store');
+        'concurrent sends from this process are serialized by the mailbox store');
+
+      // Separate Node processes share the stable lock file and database. This
+      // verifies the lock rather than only the in-process promise queue.
+      const mailboxModuleUrl = new URL('../dist/mailbox.js', import.meta.url).href;
+      const crossProcessWorkers = Array.from({ length: 4 }, (_, index) => {
+        const source = [
+          'import { mailboxStore } from ' + JSON.stringify(mailboxModuleUrl) + ';',
+          'await mailboxStore.send(' + JSON.stringify(child) + ', ' + JSON.stringify(parent) +
+            ', ' + JSON.stringify('Cross-process message ' + index) + ');',
+        ].join('\\n');
+        return spawn(process.execPath, ['--input-type=module', '-e', source], {
+          env: process.env,
+          stdio: 'ignore',
+        });
+      });
+      await Promise.all(crossProcessWorkers.map(worker => new Promise((resolve, reject) => {
+        worker.once('error', reject);
+        worker.once('exit', code => code === 0
+          ? resolve(undefined)
+          : reject(new Error('Concurrent mailbox worker exited with code ' + code)));
+      })));
+      assert.equal(await mailboxStore.unreadCount(parent), 30,
+        'cross-process sends are serialized without dropping messages');
+
       await mailboxStore.syncUnreadMarkers(parent, requestDirectory, responseDirectory);
-      const concurrentMarker = 'unread-messages-26.txt';
+      const concurrentMarker = 'unread-messages-30.txt';
       for (const directory of [requestDirectory, responseDirectory]) {
         assert.deepEqual(
           (await fs.readdir(directory)).filter(name => /^unread-messages-\d+\.txt$/.test(name)),
@@ -128,7 +153,7 @@ try {
       }
 
       const remaining = await mailboxStore.inboxUnread(parent, 1000);
-      assert.equal(remaining.messages.length, 26);
+      assert.equal(remaining.messages.length, 30);
       assert.equal(remaining.unreadCount, 0);
       assert.equal(await mailboxStore.unreadCount(parent), 0);
       await mailboxStore.syncUnreadMarkers(parent, requestDirectory, responseDirectory);
