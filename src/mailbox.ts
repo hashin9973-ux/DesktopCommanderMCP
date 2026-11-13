@@ -241,8 +241,9 @@ export const mailboxStore = {
     const identity = validateWorkspacePath(workspace);
     const limit = safeLimit(filters.limit, 100);
     return withDatabase(db => db.messages
-      .filter(message => message.from === identity || message.to === identity)
-      .filter(message => !filters.unreadOnly || !message.readAt)
+      .filter(message => filters.unreadOnly
+        ? message.to === identity && !message.readAt
+        : message.from === identity || message.to === identity)
       .slice(-limit));
   },
 
