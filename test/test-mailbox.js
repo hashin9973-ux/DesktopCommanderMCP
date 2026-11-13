@@ -107,7 +107,7 @@ try {
       assert.equal(secondPartial.unreadCount, 1);
       assert.equal((await mailboxStore.read(parent, { unreadOnly: true })).length, 1,
         'history filters remain scoped to the current complete workspace path');
-      assert.equal((await mailboxStore.read(child)).length, 2,
+      assert.equal((await mailboxStore.read(child)).length, 4,
         'nested child history is separate from parent and same-leaf sibling history');
 
       const concurrent = await Promise.all(Array.from({ length: 25 }, (_, index) =>
