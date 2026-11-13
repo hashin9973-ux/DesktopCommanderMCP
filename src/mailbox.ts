@@ -1,15 +1,11 @@
-import fs from 'fs/promises';
-import path from 'path';
-import { randomUUID } from 'crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
 import { CONFIG_FILE } from './config.js';
 import { writeFileAtomic } from './utils/atomic-write.js';
+import { isValidAgentWorkspacePath } from './bridge/agents.js';
 
-export interface MailboxUser {
-  username: string;
-  createdAt: string;
-  lastActivityAt: string;
-}
 export interface MailboxMessage {
   id: string;
   from: string;
@@ -18,82 +14,66 @@ export interface MailboxMessage {
   createdAt: string;
   readAt?: string;
 }
+
+interface LegacyMailboxArchive {
+  sourceVersion: 1 | 2;
+  users: unknown[];
+  messages: unknown[];
+  archivedAt: string;
+}
+
 interface MailboxDatabase {
-  version: 2;
-  users: MailboxUser[];
+  version: 3;
   messages: MailboxMessage[];
+  legacyArchive?: LegacyMailboxArchive;
 }
-interface LegacyMailboxUser {
-  id: string;
-  username: string;
-  createdAt: string;
-  lastActivityAt: string;
-}
-interface LegacyMailboxMessage {
-  id: string;
-  fromUserId: string;
-  toUserId: string;
-  body: string;
-  createdAt: string;
-  readAt?: string;
-}
-interface LegacyMailboxDatabase {
-  version: 1;
-  users: LegacyMailboxUser[];
-  messages: LegacyMailboxMessage[];
-}
+
 export interface MailboxFilters {
-  user?: string;
-  from?: string;
-  to?: string;
   unreadOnly?: boolean;
   limit?: number;
 }
 
 const DATABASE_PATH = path.join(path.dirname(CONFIG_FILE), 'mailbox.json');
 const LOCK_PATH = DATABASE_PATH + '.lockfile';
-const EMPTY_DATABASE: MailboxDatabase = { version: 2, users: [], messages: [] };
+const EMPTY_DATABASE: MailboxDatabase = { version: 3, messages: [] };
+const MARKER_PATTERN = /^unread-messages-\d+\.txt$/;
 let inProcessQueue: Promise<unknown> = Promise.resolve();
 
-function normalizeUsername(value: string): string {
-  return value.trim().normalize('NFKC').toLocaleLowerCase('en-US');
-}
-function resolveUser(db: MailboxDatabase, value: string | undefined): MailboxUser | undefined {
-  if (!value) return undefined;
-  return db.users.find(user => normalizeUsername(user.username) === normalizeUsername(value));
-}
-function validateUsername(username: string): string {
-  const clean = username.trim().normalize('NFKC');
-  if (!clean || clean.length > 64 || /[\u0000-\u001f\u007f]/u.test(clean)) {
-    throw new Error('Username must be 1–64 printable characters.');
+function validateWorkspacePath(value: string): string {
+  const clean = value.trim();
+  if (!isValidAgentWorkspacePath(clean)) {
+    throw new Error('Mailbox identity must be the complete Bridge workspace path, such as agent-parent/subagents/agent-child.');
   }
   return clean;
 }
+
 function validateMessage(body: string): string {
   const value = body.trim();
   if (!value) throw new Error('Message body cannot be empty.');
   if (value.length > 20000) throw new Error('Message body cannot exceed 20,000 characters.');
   return value;
 }
-function migrateLegacyDatabase(value: LegacyMailboxDatabase): MailboxDatabase {
-  const usernamesById = new Map(value.users.map(user => [user.id, user.username]));
+
+function migrateLegacyDatabase(value: {
+  version: 1 | 2;
+  users: unknown[];
+  messages: unknown[];
+}): MailboxDatabase {
+  // A legacy username cannot be mapped safely to a hierarchical workspace
+  // path: the same leaf agent ID can exist under different parents. Preserve
+  // the old records verbatim instead of assigning them to the wrong agent.
   return {
-    version: 2,
-    users: value.users.map(({ username, createdAt, lastActivityAt }) => ({
-      username,
-      createdAt,
-      lastActivityAt,
-    })),
-    messages: value.messages.map(message => ({
-      id: message.id,
-      from: usernamesById.get(message.fromUserId) ?? 'deleted user',
-      to: usernamesById.get(message.toUserId) ?? 'deleted user',
-      body: message.body,
-      createdAt: message.createdAt,
-      ...(message.readAt ? { readAt: message.readAt } : {}),
-    })),
+    version: 3,
+    messages: [],
+    legacyArchive: {
+      sourceVersion: value.version,
+      users: value.users,
+      messages: value.messages,
+      archivedAt: new Date().toISOString(),
+    },
   };
 }
+
 async function ensureLockFile(): Promise<void> {
   await fs.mkdir(path.dirname(DATABASE_PATH), { recursive: true });
   // Lock a stable sidecar file, not the database inode: the database itself is
@@ -101,31 +81,47 @@ async function ensureLockFile(): Promise<void> {
   const handle = await fs.open(LOCK_PATH, 'a', 0o600);
   await handle.close();
 }
-async function withDatabase<T>(mutate: (db: MailboxDatabase) => Promise<T> | T, write = false): Promise<T> {
+
+async function withDatabase<T>(
+  operation: (db: MailboxDatabase) => Promise<T> | T,
+  write = false,
+): Promise<T> {
   const run = async () => {
     await ensureLockFile();
-    const release = await lockfile.lock(LOCK_PATH, { retries: { retries: 20, minTimeout: 25, maxTimeout: 250 } });
+    const release = await lockfile.lock(LOCK_PATH, {
+      retries: { retries: 20, minTimeout: 25, maxTimeout: 250 },
+    });
     try {
       let db: MailboxDatabase;
       let migrated = false;
       try {
-        const parsed = JSON.parse(await fs.readFile(DATABASE_PATH, 'utf8')) as MailboxDatabase | LegacyMailboxDatabase;
-        if (parsed.version === 1 && Array.isArray(parsed.users) && Array.isArray(parsed.messages)) {
-          db = migrateLegacyDatabase(parsed as LegacyMailboxDatabase);
-          migrated = true;
-        } else if (parsed.version === 2 && Array.isArray(parsed.users) && Array.isArray(parsed.messages)) {
+        const parsed = JSON.parse(await fs.readFile(DATABASE_PATH, 'utf8')) as {
+          version?: number;
+          users?: unknown;
+          messages?: unknown;
+        };
+        if (parsed.version === 3 && Array.isArray(parsed.messages)) {
           db = parsed as MailboxDatabase;
+        } else if ((parsed.version === 1 || parsed.version === 2)
+          && Array.isArray(parsed.users) && Array.isArray(parsed.messages)) {
+          db = migrateLegacyDatabase({
+            version: parsed.version,
+            users: parsed.users,
+            messages: parsed.messages,
+          });
+          migrated = true;
         } else {
           throw new Error('Mailbox database has an unsupported or invalid format; no changes were made.');
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-          db = { ...EMPTY_DATABASE, users: [], messages: [] };
+          db = { ...EMPTY_DATABASE, messages: [] };
         } else {
-          throw new Error(`Mailbox database could not be read safely: ${error instanceof Error ? error.message : String(error)}`);
+          throw new Error('Mailbox database could not be read safely: ' +
+            (error instanceof Error ? error.message : String(error)));
         }
       }
-      const result = await mutate(db);
+      const result = await operation(db);
       if (migrated || write) {
         await writeFileAtomic(DATABASE_PATH, JSON.stringify(db, null, 2) + '\n', { mode: 0o600 });
       }
@@ -134,136 +130,132 @@ async function withDatabase<T>(mutate: (db: MailboxDatabase) => Promise<T> | T, 
       await release();
     }
   };
-  const next = inProcessQueue.catch(() => {}).then(run);
+  const next = inProcessQueue.catch(() => undefined).then(run);
   inProcessQueue = next;
   return next as Promise<T>;
 }
 
-export function formatRelativeActivity(timestamp: string | undefined): string {
-  if (!timestamp) return 'never';
-  const elapsed = Math.max(0, Date.now() - Date.parse(timestamp));
-  if (!Number.isFinite(elapsed)) return 'unknown';
-  const minute = 60_000, hour = 60 * minute, day = 24 * hour;
-  if (elapsed < minute) return 'just now';
-  if (elapsed < hour) return `${Math.floor(elapsed / minute)} minute${Math.floor(elapsed / minute) === 1 ? '' : 's'} ago`;
-  if (elapsed < day) return `${Math.floor(elapsed / hour)} hour${Math.floor(elapsed / hour) === 1 ? '' : 's'} ago`;
-  const days = Math.floor(elapsed / day);
-  return `${days} day${days === 1 ? '' : 's'} ago`;
+function safeLimit(value: number | undefined, fallback = 100): number {
+  const limit = value ?? fallback;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+    throw new Error('Mailbox limit must be an integer from 1 to 1000.');
+  }
+  return limit;
+}
+
+function unreadFor(db: MailboxDatabase, workspacePath: string): MailboxMessage[] {
+  return db.messages
+    .filter(message => message.to === workspacePath && !message.readAt)
+    .sort((left, right) =>
+      Date.parse(left.createdAt) - Date.parse(right.createdAt) || left.id.localeCompare(right.id));
+}
+
+async function ensureRealDirectory(directory: string): Promise<void> {
+  await fs.mkdir(directory, { recursive: true });
+  const stat = await fs.lstat(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error('Mailbox notification queue must be a real directory: ' + directory);
+  }
+}
+
+async function reconcileMarkers(
+  workspacePath: string,
+  requestsDirectory: string,
+  responsesDirectory: string,
+  count: number,
+): Promise<void> {
+  const name = 'unread-messages-' + count + '.txt';
+  const contents = [
+    'Unread mailbox messages: ' + count,
+    'Bridge workspace: ' + workspacePath,
+    'Use mailbox action=inbox_unread; an optional limit reads only that many messages.',
+    'Only messages returned by inbox_unread are marked as read.',
+    'Informational notification marker only; this is not an executable Bridge request.',
+    '',
+  ].join('\n');
+
+  for (const directory of [requestsDirectory, responsesDirectory]) {
+    await ensureRealDirectory(directory);
+    await writeFileAtomic(path.join(directory, name), contents, { mode: 0o600 });
+  }
+
+  for (const directory of [requestsDirectory, responsesDirectory]) {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      if (!MARKER_PATTERN.test(entry.name) || entry.name === name) continue;
+      const stalePath = path.join(directory, entry.name);
+      if (entry.isDirectory() && !entry.isSymbolicLink()) {
+        throw new Error('Refusing to replace a directory with a mailbox notification marker: ' + stalePath);
+      }
+      await fs.unlink(stalePath);
+    }
+  }
 }
 
 export const mailboxStore = {
-  async register(username: string): Promise<{ user: MailboxUser; existing: boolean }> {
-    const clean = validateUsername(username);
-    return withDatabase(db => {
-      const existing = db.users.find(user => normalizeUsername(user.username) === normalizeUsername(clean));
-      if (existing) return { user: existing, existing: true };
-      const now = new Date().toISOString();
-      const user = { username: clean, createdAt: now, lastActivityAt: now };
-      db.users.push(user);
-      return { user, existing: false };
-    }, true);
-  },
-
   async send(from: string, to: string, body: string): Promise<MailboxMessage> {
+    const sender = validateWorkspacePath(from);
+    const recipient = validateWorkspacePath(to);
     const messageBody = validateMessage(body);
     return withDatabase(db => {
-      const sender = resolveUser(db, from);
-      const recipient = resolveUser(db, to);
-      if (!sender) throw new Error(`Sender not found: ${from}`);
-      if (!recipient) throw new Error(`Recipient not found: ${to}`);
-      const now = new Date().toISOString();
-      sender.lastActivityAt = now;
-      recipient.lastActivityAt = now;
       const message: MailboxMessage = {
-        id: randomUUID(), from: sender.username, to: recipient.username, body: messageBody, createdAt: now,
+        id: randomUUID(),
+        from: sender,
+        to: recipient,
+        body: messageBody,
+        createdAt: new Date().toISOString(),
       };
       db.messages.push(message);
       return message;
     }, true);
   },
 
-  async inboxUnread(username: string): Promise<{ user: MailboxUser; messages: MailboxMessage[] }> {
+  async inboxUnread(workspace: string, requestedLimit?: number): Promise<{
+    messages: MailboxMessage[];
+    unreadCount: number;
+  }> {
+    const identity = validateWorkspacePath(workspace);
+    const limit = safeLimit(requestedLimit, 50);
     return withDatabase(db => {
-      const user = resolveUser(db, username);
-      if (!user) throw new Error('Mailbox username not found. Register the username first.');
-      const unread = db.messages.filter(message => normalizeUsername(message.to) === normalizeUsername(user.username) && !message.readAt);
+      const unread = unreadFor(db, identity);
+      const messages = unread.slice(0, limit);
       const now = new Date().toISOString();
-      for (const message of unread) message.readAt = now;
-      user.lastActivityAt = now;
-      return { user, messages: unread };
-    }, true);
-  },
-
-  async listUsers(): Promise<Array<MailboxUser & { lastActivity: string; unreadCount: number }>> {
-    return withDatabase(db => db.users
-      .slice()
-      .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt))
-      .map(user => ({
-        ...user,
-        lastActivity: formatRelativeActivity(user.lastActivityAt),
-        unreadCount: db.messages.filter(message => normalizeUsername(message.to) === normalizeUsername(user.username) && !message.readAt).length,
-      })));
-  },
-
-  async read(filters: MailboxFilters = {}): Promise<MailboxMessage[]> {
-    return withDatabase(db => {
-      const selectedUser = resolveUser(db, filters.user);
-      if (filters.user && !selectedUser) throw new Error(`User not found: ${filters.user}`);
-      const fromUser = resolveUser(db, filters.from);
-      const toUser = resolveUser(db, filters.to);
-      if (filters.from && !fromUser) throw new Error(`Sender not found: ${filters.from}`);
-      if (filters.to && !toUser) throw new Error(`Recipient not found: ${filters.to}`);
-      const limit = Math.min(Math.max(Math.trunc(filters.limit ?? 100), 1), 1000);
-      return db.messages
-        .filter(message => !selectedUser
-          || normalizeUsername(message.from) === normalizeUsername(selectedUser.username)
-          || normalizeUsername(message.to) === normalizeUsername(selectedUser.username))
-        .filter(message => !fromUser || normalizeUsername(message.from) === normalizeUsername(fromUser.username))
-        .filter(message => !toUser || normalizeUsername(message.to) === normalizeUsername(toUser.username))
-        .filter(message => !filters.unreadOnly || !message.readAt)
-        .slice(-limit);
-    });
-  },
-
-  async unreadCount(username: string): Promise<number> {
-    return withDatabase(db => {
-      const user = resolveUser(db, username);
-      if (!user) return 0;
-      return db.messages.filter(message => normalizeUsername(message.to) === normalizeUsername(user.username) && !message.readAt).length;
-    });
-  },
-
-  async renameUser(user: string, username: string): Promise<MailboxUser> {
-    const clean = validateUsername(username);
-    return withDatabase(db => {
-      const target = resolveUser(db, user);
-      if (!target) throw new Error(`User not found: ${user}`);
-      if (db.users.some(item => normalizeUsername(item.username) === normalizeUsername(clean)
-        && normalizeUsername(item.username) !== normalizeUsername(target.username))) {
-        throw new Error('That username is already registered.');
-      }
-      const oldUsername = target.username;
-      target.username = clean;
-      target.lastActivityAt = new Date().toISOString();
+      const selectedIds = new Set(messages.map(message => message.id));
       for (const message of db.messages) {
-        if (normalizeUsername(message.from) === normalizeUsername(oldUsername)) message.from = clean;
-        if (normalizeUsername(message.to) === normalizeUsername(oldUsername)) message.to = clean;
+        if (selectedIds.has(message.id)) message.readAt = now;
       }
-      return target;
+      return { messages, unreadCount: unread.length - messages.length };
     }, true);
   },
 
-  async deleteUser(user: string): Promise<{ user: MailboxUser; deletedMessages: number }> {
-    return withDatabase(db => {
-      const target = resolveUser(db, user);
-      if (!target) throw new Error(`User not found: ${user}`);
-      db.users = db.users.filter(item => normalizeUsername(item.username) !== normalizeUsername(target.username));
-      const before = db.messages.length;
-      db.messages = db.messages.filter(message =>
-        normalizeUsername(message.from) !== normalizeUsername(target.username)
-        && normalizeUsername(message.to) !== normalizeUsername(target.username));
-      return { user: target, deletedMessages: before - db.messages.length };
-    }, true);
+  async read(workspace: string, filters: MailboxFilters = {}): Promise<MailboxMessage[]> {
+    const identity = validateWorkspacePath(workspace);
+    const limit = safeLimit(filters.limit, 100);
+    return withDatabase(db => db.messages
+      .filter(message => message.from === identity || message.to === identity)
+      .filter(message => !filters.unreadOnly || !message.readAt)
+      .slice(-limit));
+  },
+
+  async unreadCount(workspace: string): Promise<number> {
+    const identity = validateWorkspacePath(workspace);
+    return withDatabase(db => unreadFor(db, identity).length);
+  },
+
+  async listAgentPaths(): Promise<string[]> {
+    return withDatabase(db => [...new Set(db.messages.flatMap(message => [message.from, message.to]))].sort());
+  },
+
+  async syncUnreadMarkers(
+    workspace: string,
+    requestsDirectory: string,
+    responsesDirectory: string,
+  ): Promise<number> {
+    const identity = validateWorkspacePath(workspace);
+    return withDatabase(async db => {
+      const count = unreadFor(db, identity).length;
+      await reconcileMarkers(identity, requestsDirectory, responsesDirectory, count);
+      return count;
+    });
   },
 
   async deleteMessage(messageId: string): Promise<boolean> {
@@ -278,14 +270,9 @@ export const mailboxStore = {
     const clean = validateMessage(body);
     return withDatabase(db => {
       const message = db.messages.find(item => item.id === messageId);
-      if (!message) throw new Error(`Message not found: ${messageId}`);
+      if (!message) throw new Error('Message not found: ' + messageId);
       message.body = clean;
       return message;
     }, true);
-  },
-
-  async sendAsUser(to: string, body: string): Promise<MailboxMessage> {
-    await this.register('User');
-    return this.send('User', to, body);
   },
 };
