@@ -238,18 +238,15 @@ export const GetRecentToolCallsArgsSchema = z.object({
 });
 
 export const MailboxArgsSchema = z.object({
-  action: z.enum(['register', 'inbox_unread', 'send', 'list_users', 'read']),
-  username: z.string().optional(),
+  action: z.enum(['inbox_unread', 'send', 'read']),
   to: z.string().optional(),
   message: z.string().optional(),
-  user: z.string().optional(),
-  from: z.string().optional(),
   unreadOnly: z.boolean().optional(),
   limit: z.number().int().min(1).max(1000).optional(),
-}).superRefine((value, context) => {
-  if (value.action === 'register' && !value.username?.trim()) context.addIssue({ code: z.ZodIssueCode.custom, message: 'username is required for register', path: ['username'] });
-  if (value.action === 'send' && (!value.username?.trim() || !value.to?.trim() || !value.message?.trim())) context.addIssue({ code: z.ZodIssueCode.custom, message: 'username, to, and message are required for send', path: ['username'] });
-  if (value.action === 'inbox_unread' && !value.username?.trim()) context.addIssue({ code: z.ZodIssueCode.custom, message: 'username is required for inbox_unread', path: ['username'] });
+}).strict().superRefine((value, context) => {
+  if (value.action === 'send' && (!value.to?.trim() || !value.message?.trim())) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'to (the complete recipient workspace path) and message are required for send', path: ['to'] });
+  }
 });
 
 export const SubagentArgsSchema = z.object({
