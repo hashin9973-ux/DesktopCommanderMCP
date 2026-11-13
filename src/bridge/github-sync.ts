@@ -993,16 +993,22 @@ export class GitHubBridgeSync {
     // that have not submitted a request since receiving a message.
     const localAgents = await discoverAgentQueuePaths(this.paths.root, this.workerStateDirectory);
     const liveLocalAgents = [];
+    const localDeletedAgentPaths: string[] = [];
     for (const agent of localAgents) {
-      if (!await readOptional(path.join(agent.root, '.subagent-deleted.json'))) liveLocalAgents.push(agent);
+      if (await readOptional(path.join(agent.root, '.subagent-deleted.json'))) {
+        localDeletedAgentPaths.push(agent.agentId);
+      } else {
+        liveLocalAgents.push(agent);
+      }
     }
+    const allDeletedAgentPaths = [...deletedAgentPaths, ...localDeletedAgentPaths];
     const markerAgentIds = new Set([
       ...liveLocalAgents.map(agent => agent.agentId),
       ...remoteAgentPaths,
     ]);
     const expectedNotificationPaths = new Set<string>();
     for (const agentId of [...markerAgentIds].sort()) {
-      if (deletedAgentPaths.some(deleted => agentId === deleted || agentId.startsWith(deleted + '/'))) continue;
+      if (allDeletedAgentPaths.some(deleted => agentId === deleted || agentId.startsWith(deleted + '/'))) continue;
       const agentPaths = await this.ensureAgentPaths(agentId);
       const unreadCount = await mailboxStore.syncUnreadMarkers(
         agentId,
@@ -1034,7 +1040,7 @@ export class GitHubBridgeSync {
         || (queueName !== 'requests' && queueName !== 'responses')
         || !isValidAgentWorkspacePath(agentId)
         || expectedNotificationPaths.has(entry.path)
-        || deletedAgentPaths.some(deleted => agentId === deleted || agentId.startsWith(deleted + '/'))) continue;
+        || allDeletedAgentPaths.some(deleted => agentId === deleted || agentId.startsWith(deleted + '/'))) continue;
       await this.client.deleteFileIfPresent(
         entry.path,
         'Remove stale unread mailbox notification marker ' + entry.path,
