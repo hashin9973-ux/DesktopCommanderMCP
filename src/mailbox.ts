@@ -174,9 +174,19 @@ async function reconcileMarkers(
     '',
   ].join('\n');
 
+  const markerBytes = Buffer.from(contents, 'utf8');
   for (const directory of [requestsDirectory, responsesDirectory]) {
     await ensureRealDirectory(directory);
-    await writeFileAtomic(path.join(directory, name), contents, { mode: 0o600 });
+    const markerPath = path.join(directory, name);
+    let existing: Buffer | undefined;
+    try {
+      existing = await fs.readFile(markerPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (!existing?.equals(markerBytes)) {
+      await writeFileAtomic(markerPath, contents, { mode: 0o600 });
+    }
   }
 
   for (const directory of [requestsDirectory, responsesDirectory]) {
