@@ -8,7 +8,6 @@ function usage(): string {
     '  mailbox paths',
     '  mailbox read <workspace-path> [--unread] [--limit <n>]',
     '  mailbox unread <workspace-path> [--limit <n>]',
-    '  mailbox send <sender-workspace-path> <recipient-workspace-path> <message>',
     '  mailbox edit-mail <message-id> <new-message>',
     '  mailbox delete-mail <message-id>',
     '',
@@ -59,11 +58,6 @@ export async function runMailboxCli(args: string[]): Promise<void> {
         if (!rest[0]) throw new Error('Usage: mailbox unread <workspace-path> [--limit <n>]');
         const limit = parseLimit(rest, 1);
         console.log(JSON.stringify(await mailboxStore.inboxUnread(rest[0], limit), null, 2));
-        break;
-      }
-      case 'send': {
-        if (rest.length < 3) throw new Error('Usage: mailbox send <sender-workspace-path> <recipient-workspace-path> <message>');
-        console.log(JSON.stringify(await mailboxStore.send(rest[0], rest[1], rest.slice(2).join(' ')), null, 2));
         break;
       }
       case 'edit-mail': {
