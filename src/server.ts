@@ -1182,7 +1182,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
         ];
 
-        // Agent folders identify conversations; mailbox usernames are used only for parent-child reporting.
+        // The complete hierarchical workspace path is the mailbox identity.
         const filteredTools = allTools.filter(tool => shouldIncludeTool(tool.name));
 
         // logToStderr('debug', `Returning ${filteredTools.length} tools (filtered from ${allTools.length} total) for client: ${currentClient?.name || 'unknown'}`);
