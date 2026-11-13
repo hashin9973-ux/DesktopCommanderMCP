@@ -40,9 +40,9 @@ const mailboxRequestBody = JSON.stringify({
   protocol_version: 1,
   id: 'mailbox-01',
   commands: [
-    { tool: 'mailbox', arguments: { action: 'register', username: 'agent-4l' } },
-    { tool: 'mailbox', arguments: { action: 'send', username: 'agent-4l', to: 'agent-7b', message: 'Progress update' } },
-    { tool: 'mailbox', arguments: { action: 'inbox_unread', username: 'agent-4l' } },
+    { tool: 'mailbox', arguments: { action: 'send', to: 'agent-parent', message: 'Progress update' } },
+    { tool: 'mailbox', arguments: { action: 'inbox_unread', limit: 1 } },
+    { tool: 'mailbox', arguments: { action: 'read', unreadOnly: true, limit: 10 } },
   ],
 });
 assert.throws(
@@ -54,46 +54,54 @@ const githubMailboxRequest = parseBridgeRequest('mailbox-01.json', mailboxReques
 assert.deepEqual(
   githubMailboxRequest.commands.map(command => command.tool),
   ['mailbox', 'mailbox', 'mailbox'],
-  'GitHub Bridge must accept register, send, and inbox actions through its normal queue',
+  'GitHub Bridge must accept send, partial inbox, and scoped history through its normal queue',
 );
 
+const blockedMailboxCommand = { action: 'inbox_unread' };
 const cloudMailboxExecution = await executeToolForBridge(
   'mailbox',
-  { action: 'register', username: 'agent-cloud-blocked' },
+  blockedMailboxCommand,
   { agentId: 'agent-root', workspacePath: 'agent-root', transport: 'cloud' },
 );
 assert.equal(cloudMailboxExecution.isError, true,
   'the dispatcher must reject mailbox execution outside GitHub Bridge mode');
+const directMcpMailboxExecution = await executeToolForBridge(
+  'mailbox',
+  blockedMailboxCommand,
+  { agentId: 'agent-parent', workspacePath: 'agent-parent', transport: 'mcp' },
+);
+assert.equal(directMcpMailboxExecution.isError, true,
+  'direct MCP calls cannot use the mailbox');
 
-const githubMailboxContext = {
+const githubParentContext = {
   agentId: 'agent-parent',
   workspacePath: 'agent-parent',
   transport: 'github',
 };
-const registerParent = await executeToolForBridge(
-  'mailbox',
-  { action: 'register', username: 'agent-parent' },
-  githubMailboxContext,
-);
-assert.notEqual(registerParent.isError, true, 'GitHub Bridge worker can register the parent mailbox');
-const registerChild = await executeToolForBridge(
-  'mailbox',
-  { action: 'register', username: 'agent-child' },
-  githubMailboxContext,
-);
-assert.notEqual(registerChild.isError, true, 'GitHub Bridge worker can register a child mailbox');
+const githubChildContext = {
+  agentId: 'agent-parent/subagents/agent-child',
+  workspacePath: 'agent-parent/subagents/agent-child',
+  transport: 'github',
+};
 const sendReport = await executeToolForBridge(
   'mailbox',
-  { action: 'send', username: 'agent-child', to: 'agent-parent', message: 'Child progress report' },
-  { ...githubMailboxContext, agentId: 'agent-child', workspacePath: 'agent-parent/subagents/agent-child' },
+  { action: 'send', to: 'agent-parent', message: 'Child progress report' },
+  githubChildContext,
 );
-assert.notEqual(sendReport.isError, true, 'GitHub Bridge worker can send a child-to-parent report');
+assert.notEqual(sendReport.isError, true, 'GitHub Bridge worker can send using its assigned child workspace identity');
+const spoofedSenderReport = await executeToolForBridge(
+  'mailbox',
+  { action: 'send', username: 'agent-fake', to: 'agent-parent', message: 'Spoofed sender' },
+  githubChildContext,
+);
+assert.equal(spoofedSenderReport.isError, true,
+  'a request cannot override the sender identity with a mailbox username');
 const receiveReport = await executeToolForBridge(
   'mailbox',
-  { action: 'inbox_unread', username: 'agent-parent' },
-  githubMailboxContext,
+  { action: 'inbox_unread', limit: 1 },
+  githubParentContext,
 );
-assert.notEqual(receiveReport.isError, true, 'GitHub Bridge worker can read the parent inbox');
+assert.notEqual(receiveReport.isError, true, 'GitHub Bridge worker can read the parent inbox without registration');
 assert.match(receiveReport.content[0].text, /Child progress report/,
   'mailbox message content is delivered through the Bridge tool result');
 

@@ -13,6 +13,7 @@ import { executeToolForBridge, validateBridgeArtifactPath } from '../server.js';
 import { ensureChromeAvailable } from '../tools/pdf/markdown.js';
 import { toolArgSchemas } from '../tools/schemas.js';
 import { writeFileAtomic } from '../utils/atomic-write.js';
+import { mailboxStore } from '../mailbox.js';
 import { preloadFileSupport } from '../utils/files/index.js';
 import { featureFlagManager } from '../utils/feature-flags.js';
 import { getBridgeToolNames, parseBridgeRequest, type BridgeCommand, type BridgeRequest, type BridgeTransport } from './protocol.js';
@@ -22,7 +23,7 @@ const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_STORAGE_BYTES = 3_000_000_000;
 const STABILITY_CHECK_MS = 200;
 const REQUEST_PARSE_SETTLE_MS = 2_000;
-const BRIDGE_GUIDE_MARKER = '<!-- desktop-commander:bridge-guide:v9 -->';
+const BRIDGE_GUIDE_MARKER = '<!-- desktop-commander:bridge-guide:v10 -->';
 const BRIDGE_TRANSPORT: BridgeTransport = process.env.DC_BRIDGE_PROVIDER === 'github' ? 'github' : 'cloud';
 const RECENT_FILE_CLEANUP_GRACE_MS = 60_000;
 const MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
@@ -87,6 +88,7 @@ interface BridgeResponse {
   completed_at: string;
   results: CommandResultRecord[];
   artifacts: ArtifactRecord[];
+  notifications?: Array<{ type: 'unread_mail'; count: number; message: string }>;
   error?: string;
 }
 
@@ -347,7 +349,7 @@ export async function createGuideIfMissing(
     '5. Choose a short request ID such as task-a1. Submit <your-workspace>/requests/<id>.json with the same value in the JSON id field. Request IDs need only be unique within your own workspace.',
     '6. The result appears at <your-workspace>/responses/<id>.json. Retrieve artifacts from your own <your-workspace>/artifacts/ folder.',
     transport === 'github'
-      ? '7. Register your mailbox username as your own agent ID by submitting a mailbox action=register command through your GitHub Bridge request queue. Send parent reports with mailbox action=send, username=<your-agent-id>, to=<parent-agent-id>; check incoming reports with mailbox action=inbox_unread. Use the subagent tool for your direct children.'
+      ? '7. GitHub Bridge mailbox identity is your complete assigned workspace path. No username registration is required. Send parent reports with mailbox action=send and to=<complete-parent-workspace-path>; sender identity is supplied automatically. Check the unread count in each Bridge response and use action=inbox_unread with an optional limit for partial reads. Use the subagent tool for your direct children.'
       : '7. Cloud-folder Bridge requests do not expose mailbox actions because their request and response contents are synchronized. Report task results through your own response files. Use the subagent tool for your direct children.',
     '',
     'The bridge must be running on the computer that should execute the tools. The storage connector only submits requests and retrieves results; it does not execute commands. Each full hierarchical workspace path identifies one agent instance and its isolated queue boundary.',
@@ -359,7 +361,7 @@ export async function createGuideIfMissing(
     'The subagent tool continue action sends only "continue." to that child conversation. Its status action reports browser-observable generation, timeout, visible error, context-limit, or unknown state. The tool does not collect assistant response text.',
     '',
     transport === 'github'
-      ? 'Parent-child messages in GitHub mode use the `mailbox` tool through ordinary GitHub Bridge request/response files; do not call it through a separate direct MCP connection. The GitHub worker executes these actions on the host against the shared local mailbox database. Message bodies and inbox results are present in the GitHub request/response files, so use a private repository and grant access only to people authorized to read those messages. Register each agent under its own ID; children send from their own ID to the parent ID.'
+      ? 'Parent-child messages in GitHub mode use the `mailbox` tool through ordinary GitHub Bridge request/response files; do not call it through a separate direct MCP connection. The complete hierarchical workspace path is each agent identity. Senders are derived from the active Bridge request context and recipients are addressed by their complete workspace paths; no username registration is used. The GitHub worker executes mailbox actions on the host against its shared, locked local database. Message bodies and inbox results are present in GitHub request/response files, so use a private repository and grant access only to people authorized to read those messages. Inbox reads accept an optional limit and mark only returned messages as read.'
       : 'The cloud-folder Bridge protocol intentionally does not expose `mailbox`, because mailbox request arguments and results would be synchronized with the shared folder. Use your own response files for parent-visible task results. Direct local MCP mailbox calls are separate from the cloud-folder Bridge protocol.',
     '',
     'The browser integration uses a dedicated persistent Chromium profile and runs headlessly by default, controlled through the local DevTools Protocol without opening a browser window. It reuses a signed-in session saved in that profile. For first-time sign-in only, set DC_SUBAGENT_HEADLESS=0, sign in to ChatGPT in the dedicated profile, then unset the variable and restart Desktop Commander. The tool verifies the actual Chromium launch mode through Browser.getBrowserCommandLine and restarts a mismatched browser process. It selects and verifies a Thinking/reasoning option before sending a prompt, fails closed when no reasoning mode can be verified, and does not extract conversation output or store browser passwords/cookies in the Bridge repository.',
@@ -445,14 +447,14 @@ export async function createGuideIfMissing(
     'The Bridge root is the shared folder selected in the local Desktop Commander settings. Root agents use direct child agent-<id>/ folders; children are nested below their parent at subagents/agent-<id>/. Discovery, queues, artifacts, and ledgers support recursive nesting. The local worker watches discovered request folders and also performs a one-second fallback scan. Cloud provider synchronization can delay file visibility.',
     '',
     transport === 'github'
-      ? 'GitHub mode exposes the mailbox tool through ordinary queue requests. The local worker executes it against the same persistent mailbox database used by the Desktop Commander server. Mailbox request bodies and inbox response contents are committed as request/response files in the repository; use a private repository and restrict access accordingly.'
+      ? 'GitHub mode exposes the mailbox tool only through ordinary queue requests. Identity is the complete hierarchical workspace path, senders are derived from Bridge context, and no registration step or separate MCP mailbox connection is used. The local worker executes mailbox actions against the persistent, cross-process-locked database. Mailbox request bodies and inbox response contents are committed as request/response files in the repository; use a private repository and restrict access accordingly.'
       : 'Use one running Cloud-folder worker for a shared root. Subagents share the root but get unique nested workspaces. Mailbox is not exposed by the cloud-folder request protocol; use response files for parent-visible results.',
     '',
     '### GitHub Repository Bridge',
     '',
     'GitHub mode uses the repository root and recursively nested agent workspaces: agent-<id>/{requests,responses,artifacts}/ and <parent>/subagents/agent-<id>/{requests,responses,artifacts}/. Requests are staged from every nested workspace into a local per-repository cache. The worker publishes artifacts first and the matching response file last; the response is the durable completion marker. Files are committed directly to the repository default branch.',
     '',
-    'The local GitHub cache is keyed by the immutable GitHub repository ID. Durable processing ledgers are stored locally under that repository worker state and scoped by the complete nested workspace path and request ID. Subagent deletion publishes a deletion marker; GitHub reconciliation removes that remote workspace subtree. On restart, the worker reconciles nested remote requests, responses, cache, and per-agent processing records.',
+    'The local GitHub cache is keyed by the immutable GitHub repository ID. Durable processing ledgers are stored locally under that repository worker state and scoped by the complete nested workspace path and request ID. Exactly one unread-messages-<count>.txt marker is maintained in each agent requests/ and responses/ directory; both marker files have identical content, are informational rather than executable requests, and are reconciled from the persistent mailbox database during sync and after restart. Subagent deletion publishes a deletion marker; GitHub reconciliation removes that child workspace subtree. On restart, the worker reconciles nested remote requests, responses, notification markers, cache, and per-agent processing records.',
     '',
     'GitHub mode normally receives signed push webhooks through an optional Cloudflare Quick Tunnel and also reconciles by polling. If webhook or tunnel setup is unavailable, polling continues. A successful upload confirms that GitHub accepted the file; it does not confirm that this conversation has retrieved the response. Each GitHub queue file is limited to 50 MiB. Large response fields are externalized to artifacts and large JSON artifacts may be split into ordered chunks; follow the response artifact references and validate their byte counts and hashes.',
     '',
@@ -968,7 +970,15 @@ async function commitResponse(
   status: BridgeResponse['status'],
   error?: string,
   responseFilename = 'response-' + id + '.json',
+  notificationContext?: { agentId: string; requestsDirectory: string },
 ): Promise<BridgeResponse> {
+  const unreadCount = BRIDGE_TRANSPORT === 'github' && notificationContext
+    ? await mailboxStore.syncUnreadMarkers(
+      notificationContext.agentId,
+      notificationContext.requestsDirectory,
+      responsesDirectory,
+    )
+    : undefined;
   const response: BridgeResponse = {
     protocol_version: 1,
     id,
@@ -978,6 +988,14 @@ async function commitResponse(
     completed_at: new Date().toISOString(),
     results,
     artifacts: combineArtifacts(results),
+    ...(unreadCount === undefined ? {} : {
+      notifications: [{
+        type: 'unread_mail',
+        count: unreadCount,
+        message: 'Unread mailbox messages for ' + notificationContext!.agentId + ': ' + unreadCount +
+          '. Use mailbox action=inbox_unread with an optional limit; only returned messages are marked read.',
+      }],
+    }),
     ...(error ? { error } : {}),
   };
   const responsePath = path.join(responsesDirectory, responseFilename);
@@ -993,14 +1011,14 @@ async function commitResponse(
 }
 
 async function writeRejectedResponse(
-  root: string,
+  paths: BridgePaths,
   id: string,
   requestHash: string,
   error: string,
   responseFilename = 'response-' + id + '.json',
 ): Promise<void> {
   await commitResponse(
-    path.join(root, 'responses'),
+    paths.responses,
     id,
     requestHash,
     new Date().toISOString(),
@@ -1008,6 +1026,7 @@ async function writeRejectedResponse(
     'rejected',
     error,
     responseFilename,
+    { agentId: paths.agentId, requestsDirectory: paths.requests },
   );
 }
 
@@ -1098,7 +1117,7 @@ async function processRequestFile(
     }
     if (Date.now() - observation.firstSeenAt < REQUEST_PARSE_SETTLE_MS) return;
     invalidRequestObservations.delete(requestKey);
-    await writeRejectedResponse(paths.root, id, requestHash, errorMessage(error), responseFilename);
+    await writeRejectedResponse(paths, id, requestHash, errorMessage(error), responseFilename);
     doneRequests.set(requestKey, requestHash);
     console.error('Agent ' + paths.agentId + ' rejected ' + filename + ': ' + errorMessage(error));
     return;
@@ -1108,7 +1127,7 @@ async function processRequestFile(
   const ledgerPath = path.join(paths.ledgers, id + '.json');
   let ledger = await readJsonIfExists<RequestLedger>(ledgerPath);
   if (ledger && ledger.request_hash !== requestHash) {
-    await writeRejectedResponse(paths.root, id, requestHash, 'This request id was previously used with different content. Use a new id.', responseFilename);
+    await writeRejectedResponse(paths, id, requestHash, 'This request id was previously used with different content. Use a new id.', responseFilename);
     doneRequests.set(requestKey, requestHash);
     return;
   }
@@ -1126,7 +1145,7 @@ async function processRequestFile(
     };
     await writeJsonAtomic(ledgerPath, ledger);
   } else if (ledger.commands.length !== request.commands.length) {
-    await writeRejectedResponse(paths.root, id, requestHash, 'The saved processing record does not match the command count in this request.', responseFilename);
+    await writeRejectedResponse(paths, id, requestHash, 'The saved processing record does not match the command count in this request.', responseFilename);
     doneRequests.set(requestKey, requestHash);
     return;
   }
@@ -1159,7 +1178,9 @@ async function processRequestFile(
     for (let i = 0; i < ledger.commands.length; i++) {
       if (ledger.commands[i].result) results.push(ledger.commands[i].result!);
     }
-    await commitResponse(paths.responses, id, requestHash, ledger.started_at, results, responseStatus(results, false), undefined, responseFilename);
+    await commitResponse(paths.responses, id, requestHash, ledger.started_at, results, responseStatus(results, false), undefined, responseFilename, {
+      agentId: paths.agentId, requestsDirectory: paths.requests,
+    });
     doneRequests.set(requestKey, requestHash);
     await cleanup();
     return;
@@ -1289,7 +1310,9 @@ async function processRequestFile(
   const status = responseStatus(results, interrupted);
   activeResponseFiles.add(responsePath);
   try {
-    await commitResponse(paths.responses, id, requestHash, ledger.started_at, results, status, undefined, responseFilename);
+    await commitResponse(paths.responses, id, requestHash, ledger.started_at, results, status, undefined, responseFilename, {
+      agentId: paths.agentId, requestsDirectory: paths.requests,
+    });
     doneRequests.set(requestKey, requestHash);
   } finally {
     activeResponseFiles.delete(responsePath);
@@ -1398,6 +1421,7 @@ async function cleanStorage(
             'discarded_by_quota',
             'The unprocessed request file was deleted because the bridge storage quota was exceeded.',
             responseFilename,
+            { agentId: paths.agentId, requestsDirectory: paths.requests },
           ).catch((error) => console.warn('Could not write quota-discard response for ' + id + ': ' + errorMessage(error)));
         }
       }

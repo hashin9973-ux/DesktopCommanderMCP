@@ -71,7 +71,7 @@ Execute long-running terminal commands on your computer and manage processes thr
   - Multiple file support
   - Pattern-based replacements
   - vscode-ripgrep based recursive code or text search in folders
-- **Optional local AI mailbox** - Register named AI/user identities, send messages between agents, read unread mail, and receive unread-message notices in ordinary tool results. Mail stays on the app device and is not synchronized through the cloud-folder bridge.
+- **GitHub Repository Bridge mailbox** - Send messages between agents using complete hierarchical workspace paths, get an unread count in every Bridge response, and receive matching `unread-messages-<count>.txt` markers in each agent's request and response folders. Partial inbox reads are supported. Cloud-folder Bridge and direct MCP mailbox calls are not supported.
 - Local tool-call history and audit logs:
   - Tool calls and arguments are recorded locally on the machine running Desktop Commander
   - Recent call history with bounded output previews is available through `get_recent_tool_calls`
@@ -600,7 +600,7 @@ The server provides a comprehensive set of tools organized into several categori
 | **Analytics** | `get_usage_stats` | Get usage statistics for your own insight |
 | | `get_recent_tool_calls` | Get recent tool call history with arguments and outputs for debugging and context recovery |
 | | `give_feedback_to_desktop_commander` | Open feedback form in browser to provide feedback to Desktop Commander Team |
-| **Messaging** | `mailbox` | Optional local mailbox for AI/user registration, unread messages, message sending, user lists, and filtered history |
+| **Messaging** | `mailbox` | GitHub Repository Bridge mailbox using full workspace paths, automatic unread notifications, and partial inbox reads |
 | **Agent orchestration** | `subagent` | Spawn and manage persistent ChatGPT subagents in isolated nested workspaces |
 
 ### Persistent ChatGPT Subagents
@@ -609,42 +609,36 @@ The `subagent` tool creates and manages persistent ChatGPT conversations with is
 
 Chromium runs in **headless mode by default**. The existing signed-in session is reused from the dedicated profile, and the browser's actual launch mode is verified through the DevTools Protocol before a conversation is controlled. The user's normal browser profile is not used. For a first-time sign-in only, set `DC_SUBAGENT_HEADLESS=0`, start Desktop Commander and sign in to ChatGPT in the dedicated profile; then unset the variable and restart Desktop Commander to return to headless mode.
 
-### Local Mailbox and AI Handoffs
+### GitHub Bridge Mailbox and AI Handoffs
 
-The mailbox is an **optional, app-side messaging system** for passing work between AI sessions or between an AI and the local user. Its database is local to the Desktop Commander host; it is not a remote mailbox service. Sessions must reach the same Desktop Commander host to share the mailbox. GitHub Repository Bridge mode exposes mailbox actions through ordinary Bridge request/response queue files, which the local worker executes against this shared database. Cloud-folder Bridge mode intentionally does not expose mailbox actions because its request/response files are synchronized.
+The mailbox is a persistent message store on the Desktop Commander host. Agent-to-agent messaging is available **only through ordinary GitHub Repository Bridge request/response queues**; do not use a separate direct MCP mailbox connection. The database is local and is never uploaded, but messages are serialized in Bridge request/response files. Cloud-folder Bridge intentionally does not expose mailbox actions.
 
-**GitHub privacy note:** mailbox message bodies appear in the GitHub request files, and inbox results appear in GitHub response files. Treat those messages as repository content: use a private repository and grant access only to collaborators authorized to read them. The mailbox database itself remains local, but the GitHub Bridge queue files are not.
+**Identity is the complete hierarchical workspace path.** A root agent might be `agent-parent`; its child might be `agent-parent/subagents/agent-child`. The sender is derived from the trusted active Bridge request context and cannot be selected in mailbox arguments. A send request supplies only the recipient's complete workspace path and message body. No mailbox-user registration or username mapping is used.
 
-1. Register an identity with the `mailbox` tool using `action: "register"` and a `username`. The result includes a stable, unique `mailbox_user_id`.
-2. To opt in to notifications in direct local MCP sessions, include `mailbox_user_id` in every subsequent local MCP tool call. GitHub Bridge queue requests do not use this notification parameter; use `action: "inbox_unread"` as a normal GitHub Bridge request to read queued mail. Cloud-folder Bridge requests do not expose mailbox actions.
-3. Use `mailbox` with `action: "send"`, `to` (a registered username), and `message` to hand work to another identity. The sender is the identity in `mailbox_user_id`.
-4. Use `action: "inbox_unread"` to read and mark all unread messages as read. Use `action: "list_users"` to see registered identities and relative last activity, or `action: "read"` to inspect message history with optional `user`, `from`, `to`, `unreadOnly`, and `limit` filters.
+Each subsequent GitHub Bridge response includes an `unread_mail` notification with the agent's current unread count. The queue also maintains exactly one `unread-messages-<count>.txt` marker in both that agent's `requests/` and `responses/` directories. The two marker files have identical names and contents, including at a count of zero. They are informational metadata, never executable requests or responses. Synchronization updates the count, removes superseded markers, and reconstructs the markers from the persistent database after restart.
 
-Mailbox data is stored locally at `~/.claude-server-commander/mailbox.json` (Windows: `%USERPROFILE%\.claude-server-commander\mailbox.json`). The database itself is not uploaded or synchronized. However, when mailbox actions are submitted through GitHub Bridge, their request arguments and response contents—including message bodies—are stored in the GitHub repository's queue files. Mailbox tool calls and message contents are not copied into the general tool-call argument log or recent-call history. Mailbox IDs are identifiers, **not authentication credentials**; anyone who can call the local app/server or modify its data directory is within the same trust boundary.
+Use `mailbox` with `action: "send"`, `to` (the recipient's full workspace path), and `message` to hand work to another agent. Use `action: "inbox_unread"` to read incoming messages. An optional integer `limit` (1–1000; default 50) reads only the oldest requested number of unread messages; **only messages returned by that call are marked read**. Use `action: "read"` with an optional `unreadOnly` and `limit` to inspect history for the current workspace. There is no `register` or `list_users` action.
 
-#### Mailbox shell administration
+**GitHub privacy note:** message bodies appear in GitHub request files and inbox results appear in GitHub response files. Treat them as repository content: use a private repository and grant access only to collaborators authorized to read those messages. Mailbox tool arguments/results are not copied into the general tool-call argument log or recent-call history.
 
-Run these commands in a terminal on the machine running Desktop Commander:
+Mailbox data is stored locally at `~/.claude-server-commander/mailbox.json` (Windows: `%USERPROFILE%\.claude-server-commander\mailbox.json`). Version 1 and 2 username-based databases are migrated into a legacy archive with their original messages and read state intact; usernames are not automatically mapped to workspace paths because a leaf name may be ambiguous across nested parents.
+
+#### Mailbox CLI administration
+
+The local administrative CLI accepts complete workspace paths:
 
 ```sh
-# List users and their last activity
-npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox users
+# List paths that have appeared in mailbox history
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox paths
 
-# Read all mail, or filter by user/sender/recipient/unread state
-npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox read
-npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox read --user AgentA --unread
+# Read one workspace's history or unread messages without marking them read
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox read agent-parent/subagents/agent-child --unread --limit 20
 
-# Send a message as the local human identity (creates the User identity if needed)
-npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox send-as-user AgentA "Please pause; I am taking over."
-
-# Manage identities and messages
-npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox rename-user AgentA AgentB
-npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox delete-user AgentB
-npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox edit-mail MESSAGE_ID "Updated instructions"
-npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox delete-mail MESSAGE_ID
+# Read and mark the oldest unread batch as read
+npx --yes --package=@wonderwhy-er/desktop-commander desktop-commander mailbox unread agent-parent --limit 20
 ```
 
-The same CLI is available from a local checkout with `node dist/index.js mailbox ...`. Deleting a user also deletes messages sent or received by that user. These CLI commands are administrative local access; protect the machine account and mailbox file accordingly.
+The CLI is for local administration. Agent-to-agent messages must be sent through GitHub Bridge requests so that the sender identity always comes from the active workspace context.
 
 ### Quick Examples
 

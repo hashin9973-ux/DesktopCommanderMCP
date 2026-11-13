@@ -17,7 +17,7 @@ try {
 
   const generatedGuidePath = path.join(generatedRoot, 'README.md');
   const generatedGuide = await fs.readFile(generatedGuidePath, 'utf8');
-  assert.match(generatedGuide, /desktop-commander:bridge-guide:v9/);
+  assert.match(generatedGuide, /desktop-commander:bridge-guide:v10/);
   assert.match(generatedGuide, /agent-<uniqueid>\/\{requests,responses,artifacts\}/);
   assert.match(generatedGuide, /agent-<parent>\/subagents\/agent-<child>/);
   assert.match(generatedGuide, /agent-4l\/requests\/task-a1\.json/);
@@ -30,6 +30,7 @@ try {
   assert.match(generatedGuide, /runs headlessly by default/);
   assert.match(generatedGuide, /DC_SUBAGENT_HEADLESS=0/);
   assert.match(generatedGuide, /Browser.getBrowserCommandLine/);
+  assert.doesNotMatch(generatedGuide, /action=register|username=<your-agent-id>|mailbox username/);
 
   // The browser defaults to headless, but an explicit one-time sign-in
   // override may launch the same persistent profile with a visible UI.
@@ -63,7 +64,7 @@ try {
   assert.doesNotMatch(generatedGuide, /(?:^|\n)- requests\//);
   assert.doesNotMatch(generatedGuide, /(?:^|\n)- responses\//);
   assert.doesNotMatch(generatedGuide, /(?:^|\n)- artifacts\//);
-  assert.doesNotMatch(generatedGuide, /mailbox_user_id|mailbox identity|## Optional local mailbox/);
+  assert.doesNotMatch(generatedGuide, /mailbox_user_id|## Optional local mailbox/);
   assert.ok(!BRIDGE_TOOL_NAMES.includes('mailbox'),
     'the default generated cloud-folder catalog must not advertise mailbox');
   assert.ok(!getBridgeToolNames('cloud').includes('mailbox'),
@@ -92,7 +93,7 @@ try {
   const upgradedGuide = await fs.readFile(path.join(oldGeneratedRoot, 'README.md'), 'utf8');
   assert.notEqual(upgradedGuide, staleGeneratedGuide,
     'an existing generated README with the previous marker must be refreshed');
-  assert.match(upgradedGuide, /desktop-commander:bridge-guide:v9/);
+  assert.match(upgradedGuide, /desktop-commander:bridge-guide:v10/);
   assert.match(upgradedGuide, /agent-<uniqueid>/);
   assert.match(upgradedGuide, /subagents\/agent-<id>/);
   assert.doesNotMatch(upgradedGuide, /Old structure: requests\//);
@@ -103,10 +104,18 @@ try {
   await fs.mkdir(githubRoot, { recursive: true });
   await createGuideIfMissing(githubRoot, 'github');
   const githubGuide = await fs.readFile(path.join(githubRoot, 'README.md'), 'utf8');
-  assert.match(githubGuide, /desktop-commander:bridge-guide:v9/);
+  assert.match(githubGuide, /desktop-commander:bridge-guide:v10/);
   assert.match(githubGuide, /^### mailbox$/m);
   assert.match(githubGuide, /Parent-child messages in GitHub mode use the `mailbox` tool through ordinary GitHub Bridge request\/response files/);
   assert.match(githubGuide, /private repository/);
+  assert.match(githubGuide, /No username registration is required/);
+  assert.match(githubGuide, /complete assigned workspace path/);
+  assert.match(githubGuide, /unread-messages-<count>\.txt/);
+  assert.match(githubGuide, /identical content/);
+  assert.match(githubGuide, /after restart/);
+  assert.match(githubGuide, /complete hierarchical workspace path/);
+  assert.match(githubGuide, /mark only returned messages as read/);
+  assert.doesNotMatch(githubGuide, /action=register|mailbox username|username=/);
   assert.doesNotMatch(githubGuide, /Use the normal direct MCP `mailbox` tool/);
   assert.ok(getBridgeToolNames('github').includes('mailbox'),
     'GitHub guide generation must expose the mailbox schema');

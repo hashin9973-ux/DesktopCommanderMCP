@@ -88,7 +88,7 @@ import {
 import { listUiResources, readUiResource } from './ui/resources.js';
 import { shouldShowMcpUiPreviews } from './utils/mcp-ui-ab-test.js';
 import { mailboxStore } from './mailbox.js';
-import { handleSubagentTool, runWithSubagentParentContext, type SubagentParentContext } from './subagents.js';
+import { getSubagentParentContext, handleSubagentTool, runWithSubagentParentContext, type SubagentParentContext } from './subagents.js';
 
 // Store startup messages to send after initialization
 const deferredMessages: Array<{ level: string, message: string }> = [];
@@ -299,6 +299,10 @@ deferLog('info', 'Setting up request handlers...');
  * Check if a tool should be included based on current client
  */
 function shouldIncludeTool(toolName: string): boolean {
+    // Mailbox is a GitHub Bridge queue command, not a direct MCP tool.
+    // GitHub Bridge advertises it from bridge/protocol.ts independently.
+    if (toolName === 'mailbox') return false;
+
     // Exclude these tools for desktop-commander client (DC-specific meta-tools not useful when DC itself is the client)
     if (currentClient?.name === 'desktop-commander-app') {
         if (toolName === 'give_feedback_to_desktop_commander') {
@@ -1169,8 +1173,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             {
                 name: "mailbox",
                 description: `
-                        Local messaging for parent/child agent coordination. Mail is stored on this device and addressed by registered agent usernames.
-                        Actions: register, inbox_unread, send, list_users, and read. A subagent sends from its own agent ID to its parent agent ID.
+                        GitHub Repository Bridge mailbox. Identity is the complete hierarchical Bridge workspace path; sender identity is derived from the active request context, never supplied by the caller.
+                        Actions: inbox_unread (optional limit), send (to a complete recipient workspace path), and read. Do not register usernames or call this tool through a separate direct MCP connection.
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(MailboxArgsSchema),
                 annotations: {
@@ -1182,7 +1186,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
         ];
 
-        // Agent folders identify conversations; mailbox usernames are used only for parent-child reporting.
+        // The complete hierarchical workspace path is the mailbox identity.
         const filteredTools = allTools.filter(tool => shouldIncludeTool(tool.name));
 
         // logToStderr('debug', `Returning ${filteredTools.length} tools (filtered from ${allTools.length} total) for client: ${currentClient?.name || 'unknown'}`);
@@ -1426,36 +1430,29 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
             case "mailbox": {
                 try {
                     const parsed = MailboxArgsSchema.parse(args);
+                    const context = getSubagentParentContext();
+                    if (!context || context.transport !== 'github') {
+                        throw new Error('Mailbox is available only through the GitHub Repository Bridge request/response queue.');
+                    }
                     switch (parsed.action) {
-                        case 'register': {
-                            const registered = await mailboxStore.register(parsed.username!);
+                        case 'inbox_unread': {
+                            const inbox = await mailboxStore.inboxUnread(context.agentId, parsed.limit);
                             result = { content: [{ type: 'text', text: JSON.stringify({
-                                status: registered.existing ? 'already_registered' : 'registered',
-                                username: registered.user.username,
-                                message: 'Use this mailbox username for parent-child agent reporting; your Bridge workspace remains your separate agent folder.',
+                                workspace: context.agentId,
+                                unread_remaining: inbox.unreadCount,
+                                messages: inbox.messages,
                             }, null, 2) }] };
                             break;
                         }
-                        case 'inbox_unread': {
-                            const inbox = await mailboxStore.inboxUnread(parsed.username!);
-                            result = { content: [{ type: 'text', text: inbox.messages.length
-                                ? JSON.stringify(inbox.messages, null, 2)
-                                : 'No unread messages.' }] };
-                            break;
-                        }
                         case 'send': {
-                            const message = await mailboxStore.send(parsed.username!, parsed.to!, parsed.message!);
-                            result = { content: [{ type: 'text', text: `Message sent. Message ID: ${message.id}` }] };
-                            break;
-                        }
-                        case 'list_users': {
-                            result = { content: [{ type: 'text', text: JSON.stringify(await mailboxStore.listUsers(), null, 2) }] };
+                            const message = await mailboxStore.send(context.agentId, parsed.to!, parsed.message!);
+                            result = { content: [{ type: 'text', text: 'Message sent. Message ID: ' + message.id }] };
                             break;
                         }
                         case 'read': {
-                            const messages = await mailboxStore.read({
-                                user: parsed.user, from: parsed.from, to: parsed.to,
-                                unreadOnly: parsed.unreadOnly, limit: parsed.limit,
+                            const messages = await mailboxStore.read(context.agentId, {
+                                unreadOnly: parsed.unreadOnly,
+                                limit: parsed.limit,
                             });
                             result = { content: [{ type: 'text', text: JSON.stringify(messages, null, 2) }] };
                             break;

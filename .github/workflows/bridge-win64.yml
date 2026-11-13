@@ -53,6 +53,7 @@ jobs:
           test-bridge-github.js
           test-bridge-github-webhook.js
           test-bridge-github-auth.js
+          test-conditional-tools.js
           test-local-api.js
           test-atomic-write.js
           test-file-handlers.js

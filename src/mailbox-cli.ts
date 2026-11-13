@@ -5,63 +5,59 @@ function usage(): string {
     'Desktop Commander mailbox administration',
     '',
     'Commands:',
-    '  mailbox users',
-    '  mailbox register <username>',
-    '  mailbox read [--user <username>] [--from <username>] [--to <username>] [--unread] [--limit <n>]',
-    '  mailbox send-as-user <recipient> <message>',
-    '  mailbox send <sender-username> <recipient> <message>',
-    '  mailbox rename-user <username> <new-username>',
-    '  mailbox delete-user <username>',
+    '  mailbox paths',
+    '  mailbox read <workspace-path> [--unread] [--limit <n>]',
+    '  mailbox unread <workspace-path> [--limit <n>]',
     '  mailbox edit-mail <message-id> <new-message>',
     '  mailbox delete-mail <message-id>',
+    '',
+    'Workspace paths must be complete hierarchical Bridge paths, such as',
+    'agent-parent/subagents/agent-child. This CLI is for local administration;',
+    'agent-to-agent messaging is performed through GitHub Bridge queue requests.',
   ].join('\n');
+}
+
+function parseLimit(args: string[], start: number): number | undefined {
+  let limit: number | undefined;
+  for (let index = start; index < args.length; index++) {
+    if (args[index] === '--limit' && args[index + 1]) {
+      limit = Number(args[++index]);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+        throw new Error('--limit must be an integer from 1 to 1000.');
+      }
+    } else {
+      throw new Error('Unknown option: ' + args[index]);
+    }
+  }
+  return limit;
 }
 
 export async function runMailboxCli(args: string[]): Promise<void> {
   const [action, ...rest] = args;
   try {
     switch (action) {
-      case 'users': {
-        const users = await mailboxStore.listUsers();
-        console.log(JSON.stringify(users, null, 2));
-        break;
-      }
-      case 'register': {
-        if (!rest[0]) throw new Error('Usage: mailbox register <username>');
-        console.log(JSON.stringify(await mailboxStore.register(rest[0]), null, 2));
+      case 'paths': {
+        console.log(JSON.stringify(await mailboxStore.listAgentPaths(), null, 2));
         break;
       }
       case 'read': {
-        const filters: { user?: string; from?: string; to?: string; unreadOnly?: boolean; limit?: number } = {};
-        for (let i = 0; i < rest.length; i++) {
-          if (rest[i] === '--user') filters.user = rest[++i];
-          else if (rest[i] === '--from') filters.from = rest[++i];
-          else if (rest[i] === '--to') filters.to = rest[++i];
-          else if (rest[i] === '--unread') filters.unreadOnly = true;
-          else if (rest[i] === '--limit') filters.limit = Number(rest[++i]);
-          else throw new Error(`Unknown read option: ${rest[i]}`);
-        }
-        console.log(JSON.stringify(await mailboxStore.read(filters), null, 2));
+        if (!rest[0]) throw new Error('Usage: mailbox read <workspace-path> [--unread] [--limit <n>]');
+        let unreadOnly = false;
+        const options = rest.slice(1).filter(option => {
+          if (option === '--unread') {
+            unreadOnly = true;
+            return false;
+          }
+          return true;
+        });
+        const limit = parseLimit(options, 0);
+        console.log(JSON.stringify(await mailboxStore.read(rest[0], { unreadOnly, limit }), null, 2));
         break;
       }
-      case 'send-as-user': {
-        if (rest.length < 2) throw new Error('Usage: mailbox send-as-user <recipient> <message>');
-        console.log(JSON.stringify(await mailboxStore.sendAsUser(rest[0], rest.slice(1).join(' ')), null, 2));
-        break;
-      }
-      case 'send': {
-        if (rest.length < 3) throw new Error('Usage: mailbox send <sender-username> <recipient> <message>');
-        console.log(JSON.stringify(await mailboxStore.send(rest[0], rest[1], rest.slice(2).join(' ')), null, 2));
-        break;
-      }
-      case 'rename-user': {
-        if (rest.length !== 2) throw new Error('Usage: mailbox rename-user <username> <new-username>');
-        console.log(JSON.stringify(await mailboxStore.renameUser(rest[0], rest[1]), null, 2));
-        break;
-      }
-      case 'delete-user': {
-        if (rest.length !== 1) throw new Error('Usage: mailbox delete-user <username>');
-        console.log(JSON.stringify(await mailboxStore.deleteUser(rest[0]), null, 2));
+      case 'unread': {
+        if (!rest[0]) throw new Error('Usage: mailbox unread <workspace-path> [--limit <n>]');
+        const limit = parseLimit(rest, 1);
+        console.log(JSON.stringify(await mailboxStore.inboxUnread(rest[0], limit), null, 2));
         break;
       }
       case 'edit-mail': {
@@ -79,10 +75,10 @@ export async function runMailboxCli(args: string[]): Promise<void> {
         console.log(usage());
         break;
       default:
-        throw new Error(`Unknown mailbox command: ${action}\n\n${usage()}`);
+        throw new Error('Unknown mailbox command: ' + action + '\n\n' + usage());
     }
   } catch (error) {
-    console.error(`Mailbox error: ${error instanceof Error ? error.message : String(error)}`);
+    console.error('Mailbox error: ' + (error instanceof Error ? error.message : String(error)));
     process.exitCode = 1;
   }
 }

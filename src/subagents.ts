@@ -7,7 +7,6 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import WebSocket from 'ws';
 import lockfile from 'proper-lockfile';
-import { mailboxStore } from './mailbox.js';
 import { writeFileAtomic } from './utils/atomic-write.js';
 
 const execFileAsync = promisify(execFile);
@@ -28,6 +27,10 @@ export function runWithSubagentParentContext<T>(
   operation: () => Promise<T>,
 ): Promise<T> {
   return parentContext.run(context, operation);
+}
+
+export function getSubagentParentContext(): SubagentParentContext | undefined {
+  return parentContext.getStore();
 }
 
 export interface SubagentToolArguments {
@@ -658,7 +661,8 @@ class ChatGptBrowser {
 }
 
 function composePrompt(input: {
-  id: string; parentId: string; workspace: string; task: string; transport: 'github' | 'cloud' | 'mcp';
+  id: string; parentId: string; workspace: string; parentWorkspace: string;
+  task: string; transport: 'github' | 'cloud' | 'mcp';
 }): string {
   return [
     'You are an independently operating ChatGPT subagent managed by Desktop Commander.',
@@ -668,15 +672,11 @@ function composePrompt(input: {
     'The exact assigned workspace path above overrides any README example that assumes a root-level agent folder. Always put requests/, responses/, artifacts/, and subagents/ under this assigned workspace.',
     'Read the complete operating guide at https://github.com/hashin9973-ux/Bridge/blob/main/README.md before using Bridge, and follow its current protocol.',
     input.transport === 'github'
-      ? 'GitHub Bridge transport: use the GitHub request/response queue for every Desktop Commander tool call, including mailbox. Never rely on a direct MCP connection. Register your own mailbox identity by submitting tool=mailbox with arguments={action:register, username:' + input.id + '}.'
-      : input.transport === 'mcp'
-        ? 'Register your own mailbox identity with the direct MCP mailbox tool using action=register, username=' + input.id + '.'
-        : 'Cloud-folder Bridge requests do not expose mailbox; report progress, blockers, and completion in your own response files instead of attempting a mailbox or direct MCP call.',
+      ? 'GitHub Bridge transport: use the GitHub request/response queue for every Desktop Commander tool call, including mailbox. Your mailbox identity is your complete assigned workspace path: ' + input.workspace + '. No mailbox registration or username is used.'
+      : 'Mailbox messaging is available only through GitHub Repository Bridge. For cloud-folder or direct MCP work, report progress, blockers, and completion in your own response files.',
     input.transport === 'github'
-      ? 'Your parent mailbox username is ' + input.parentId + '. Report progress, blockers, and completion by submitting tool=mailbox with arguments={action:send, username:' + input.id + ', to:' + input.parentId + ', message:<report>} through your assigned GitHub Bridge workspace. Check incoming messages with mailbox action=inbox_unread through the same queue.'
-      : input.transport === 'mcp'
-        ? 'Your parent mailbox username is ' + input.parentId + '. Send reports through direct MCP mailbox action=send with username=' + input.id + ', to=' + input.parentId + ', message=<report>.'
-        : 'Use your response files to make progress, blockers, and completion visible to the parent.',
+      ? 'Send parent reports with tool=mailbox arguments={action:send, to:' + input.parentWorkspace + ', message:<report>} through this GitHub Bridge queue; sender identity is supplied automatically from your assigned workspace. Check notifications in every Bridge response and read messages with action=inbox_unread (optionally include limit to read only a subset).'
+      : 'Use your response files to make progress, blockers, and completion visible to the parent.',
     'You may create child subagents of your own. Put them only in your workspace/subagents/ directory.',
     input.transport === 'mcp'
       ? 'When using the direct MCP subagent tool, include parent_agent_id=' + input.id + ' and parent_workspace_path=' + input.workspace + ' on every action so parent ownership is explicit.'
@@ -791,11 +791,11 @@ class SubagentManager {
       }
       const realWorkspace = await realDirectory(workspace, 'Subagent workspace');
 
-      await mailboxStore.register(parent.id);
-      await mailboxStore.register(id);
+      const childWorkspacePath = parent.agentPath + '/subagents/' + id;
       await this.browser.send(target, composePrompt({
         id, parentId: parent.id,
-        workspace: parent.transport === 'mcp' ? realWorkspace : parent.agentPath + '/subagents/' + id,
+        workspace: parent.transport === 'mcp' ? realWorkspace : childWorkspacePath,
+        parentWorkspace: parent.transport === 'mcp' ? parent.workspace : parent.agentPath,
         task: args.prompt.trim(),
         transport: parent.transport,
       }));
@@ -816,7 +816,6 @@ class SubagentManager {
       return JSON.stringify({
         status: 'created', agent_id: id, parent_agent_id: parent.id,
         workspace_path: realWorkspace, conversation_url: record.conversationUrl,
-        mailbox_username: id, parent_mailbox_username: parent.id,
       }, null, 2);
     } catch (error) {
       await this.browser.close(target.targetId).catch(() => undefined);
