@@ -88,7 +88,7 @@ import {
 import { listUiResources, readUiResource } from './ui/resources.js';
 import { shouldShowMcpUiPreviews } from './utils/mcp-ui-ab-test.js';
 import { mailboxStore } from './mailbox.js';
-import { handleSubagentTool, runWithSubagentParentContext, type SubagentParentContext } from './subagents.js';
+import { getSubagentParentContext, handleSubagentTool, runWithSubagentParentContext, type SubagentParentContext } from './subagents.js';
 
 // Store startup messages to send after initialization
 const deferredMessages: Array<{ level: string, message: string }> = [];
