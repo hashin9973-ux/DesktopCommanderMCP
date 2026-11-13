@@ -793,6 +793,15 @@ try {
   const notifyParent = 'agent-notify-parent';
   const notifyChild = notifyParent + '/subagents/agent-notify-child';
   const notificationMessages = [];
+  const notificationRoots = [
+    path.join(paths.root, notifyParent),
+    path.join(paths.root, notifyParent, 'subagents', 'agent-notify-child'),
+  ];
+  for (const root of notificationRoots) {
+    for (const directory of ['requests', 'responses', 'artifacts']) {
+      await fs.mkdir(path.join(root, directory), { recursive: true });
+    }
+  }
   try {
     notificationMessages.push(await mailboxStore.send(notifyChild, notifyParent, 'First notification.'));
     notificationMessages.push(await mailboxStore.send(notifyChild, notifyParent, 'Second notification.'));
