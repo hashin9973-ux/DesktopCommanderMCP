@@ -30,11 +30,6 @@ try {
   assert.match(generatedGuide, /runs headlessly by default/);
   assert.match(generatedGuide, /DC_SUBAGENT_HEADLESS=0/);
   assert.match(generatedGuide, /Browser.getBrowserCommandLine/);
-  assert.match(generatedGuide, /No username registration is required/);
-  assert.match(generatedGuide, /complete assigned workspace path/);
-  assert.match(generatedGuide, /unread-messages-<count>\.txt/);
-  assert.match(generatedGuide, /identical content/);
-  assert.match(generatedGuide, /after restart/);
   assert.doesNotMatch(generatedGuide, /action=register|username=<your-agent-id>|mailbox username/);
 
   // The browser defaults to headless, but an explicit one-time sign-in
@@ -113,6 +108,11 @@ try {
   assert.match(githubGuide, /^### mailbox$/m);
   assert.match(githubGuide, /Parent-child messages in GitHub mode use the `mailbox` tool through ordinary GitHub Bridge request\/response files/);
   assert.match(githubGuide, /private repository/);
+  assert.match(githubGuide, /No username registration is required/);
+  assert.match(githubGuide, /complete assigned workspace path/);
+  assert.match(githubGuide, /unread-messages-<count>\.txt/);
+  assert.match(githubGuide, /identical content/);
+  assert.match(githubGuide, /after restart/);
   assert.match(githubGuide, /complete hierarchical workspace path/);
   assert.match(githubGuide, /mark only returned messages as read/);
   assert.doesNotMatch(githubGuide, /action=register|mailbox username|username=/);
