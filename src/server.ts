@@ -1169,8 +1169,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             {
                 name: "mailbox",
                 description: `
-                        Local messaging for parent/child agent coordination. Mail is stored on this device and addressed by registered agent usernames.
-                        Actions: register, inbox_unread, send, list_users, and read. A subagent sends from its own agent ID to its parent agent ID.
+                        GitHub Repository Bridge mailbox. Identity is the complete hierarchical Bridge workspace path; sender identity is derived from the active request context, never supplied by the caller.
+                        Actions: inbox_unread (optional limit), send (to a complete recipient workspace path), and read. Do not register usernames or call this tool through a separate direct MCP connection.
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(MailboxArgsSchema),
                 annotations: {
