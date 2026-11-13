@@ -17,6 +17,14 @@ async function testConditionalTools() {
 
     const hasFeedbackRegular = regularTools.tools.some(t => t.name === 'give_feedback_to_desktop_commander');
     const hasGetPromptsRegular = regularTools.tools.some(t => t.name === 'get_prompts');
+    const hasMailboxRegular = regularTools.tools.some(t => t.name === 'mailbox');
+    if (!hasMailboxRegular) {
+        console.log('   ✅ PASS: GitHub Bridge-only mailbox is hidden from direct MCP clients');
+    } else {
+        console.log('   ❌ FAIL: mailbox must not be exposed through direct MCP');
+        exitProcess(1);
+        return;
+    }
     console.log(`   Tools count: ${regularTools.tools.length}`);
     console.log(`   Has give_feedback_to_desktop_commander: ${hasFeedbackRegular}`);
     console.log(`   Has get_prompts: ${hasGetPromptsRegular}`);
@@ -49,6 +57,14 @@ async function testConditionalTools() {
 
     const hasFeedbackDC = dcTools.tools.some(t => t.name === 'give_feedback_to_desktop_commander');
     const hasGetPromptsDC = dcTools.tools.some(t => t.name === 'get_prompts');
+    const hasMailboxDC = dcTools.tools.some(t => t.name === 'mailbox');
+    if (!hasMailboxDC) {
+        console.log('   ✅ PASS: mailbox remains hidden from desktop-commander-app MCP clients');
+    } else {
+        console.log('   ❌ FAIL: mailbox must not be exposed through direct MCP');
+        exitProcess(1);
+        return;
+    }
     console.log(`   Tools count: ${dcTools.tools.length}`);
     console.log(`   Has give_feedback_to_desktop_commander: ${hasFeedbackDC}`);
     console.log(`   Has get_prompts: ${hasGetPromptsDC}`);
