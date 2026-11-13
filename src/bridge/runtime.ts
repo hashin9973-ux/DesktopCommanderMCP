@@ -1421,6 +1421,7 @@ async function cleanStorage(
             'discarded_by_quota',
             'The unprocessed request file was deleted because the bridge storage quota was exceeded.',
             responseFilename,
+            { agentId: paths.agentId, requestsDirectory: paths.requests },
           ).catch((error) => console.warn('Could not write quota-discard response for ' + id + ': ' + errorMessage(error)));
         }
       }
