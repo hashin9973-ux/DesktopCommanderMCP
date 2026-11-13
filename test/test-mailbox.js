@@ -127,7 +127,7 @@ try {
           'import { mailboxStore } from ' + JSON.stringify(mailboxModuleUrl) + ';',
           'await mailboxStore.send(' + JSON.stringify(child) + ', ' + JSON.stringify(parent) +
             ', ' + JSON.stringify('Cross-process message ' + index) + ');',
-        ].join('\\n');
+        ].join(String.fromCharCode(10));
         return spawn(process.execPath, ['--input-type=module', '-e', source], {
           env: process.env,
           stdio: 'ignore',
