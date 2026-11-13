@@ -29,6 +29,10 @@ export function runWithSubagentParentContext<T>(
   return parentContext.run(context, operation);
 }
 
+export function getSubagentParentContext(): SubagentParentContext | undefined {
+  return parentContext.getStore();
+}
+
 export interface SubagentToolArguments {
   action: 'spawn' | 'continue' | 'status' | 'delete';
   prompt?: string;
