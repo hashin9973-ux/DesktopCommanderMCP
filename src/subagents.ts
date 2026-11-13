@@ -7,7 +7,6 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import WebSocket from 'ws';
 import lockfile from 'proper-lockfile';
-import { mailboxStore } from './mailbox.js';
 import { writeFileAtomic } from './utils/atomic-write.js';
 
 const execFileAsync = promisify(execFile);
