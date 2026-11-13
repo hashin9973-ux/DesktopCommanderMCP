@@ -9,6 +9,7 @@ import { createGuideIfMissing } from '../dist/bridge/runtime.js';
 import { GitHubBridgeSync } from '../dist/bridge/github-sync.js';
 import { superviseBridgeWorker } from '../dist/bridge/github-runtime.js';
 import { resolveRepositoryCacheRoots } from '../dist/bridge/github-runtime.js';
+import { mailboxStore } from '../dist/mailbox.js';
 
 // Test double for GitHub's Contents and Repositories REST APIs. No network calls are made.
 function gitBlobSha(bytes) {
@@ -786,6 +787,62 @@ try {
     'routine initialization must not commit or rewrite already initialized queue directories or README');
   assert.equal(api.getRawReadCount('README.md'), 1,
     'routine initialization must use the local generated-guide digest instead of downloading README again');
+
+  // Unread-mail markers are paired workspace metadata. They are never
+  // interpreted as executable request/response queue files.
+  const notifyParent = 'agent-notify-parent';
+  const notifyChild = notifyParent + '/subagents/agent-notify-child';
+  const notificationMessages = [];
+  try {
+    notificationMessages.push(await mailboxStore.send(notifyChild, notifyParent, 'First notification.'));
+    notificationMessages.push(await mailboxStore.send(notifyChild, notifyParent, 'Second notification.'));
+    notificationMessages.push(await mailboxStore.send(notifyChild, notifyParent, 'Third notification.'));
+    await sync.syncOnce();
+
+    const markerPath = count => notifyParent + '/requests/unread-messages-' + count + '.txt';
+    const responseMarkerPath = count => notifyParent + '/responses/unread-messages-' + count + '.txt';
+    const requestMarkerThree = api.files.get(markerPath(3));
+    const responseMarkerThree = api.files.get(responseMarkerPath(3));
+    assert.ok(requestMarkerThree && responseMarkerThree, 'both queue folders receive the unread count marker');
+    assert.deepEqual(requestMarkerThree.bytes, responseMarkerThree.bytes,
+      'requests and responses markers contain identical bytes');
+    assert.match(requestMarkerThree.bytes.toString('utf8'), /Unread mailbox messages: 3/);
+
+    const discoveredWithMarkers = await client.listQueueFiles();
+    assert.ok(discoveredWithMarkers.workspaceFiles.some(entry => entry.path === markerPath(3)),
+      'notification markers are discovered as ordinary workspace metadata');
+    assert.ok(!discoveredWithMarkers.requests.some(entry => entry.path === markerPath(3)),
+      'a .txt marker is never staged as an executable request');
+    assert.ok(!discoveredWithMarkers.responses.some(entry => entry.path === responseMarkerPath(3)),
+      'a .txt marker is never treated as a response completion record');
+
+    const firstBatch = await mailboxStore.inboxUnread(notifyParent, 1);
+    assert.equal(firstBatch.messages.length, 1);
+    assert.equal(firstBatch.unreadCount, 2);
+    await sync.syncOnce();
+    assert.ok(api.files.has(markerPath(2)) && api.files.has(responseMarkerPath(2)),
+      'partial inbox reads publish the reduced unread count to both queues');
+    assert.ok(!api.files.has(markerPath(3)) && !api.files.has(responseMarkerPath(3)),
+      'superseded count markers are deleted from both remote queues');
+    assert.deepEqual(api.files.get(markerPath(2)).bytes, api.files.get(responseMarkerPath(2)).bytes);
+
+    const rest = await mailboxStore.inboxUnread(notifyParent, 2);
+    assert.equal(rest.messages.length, 2);
+    assert.equal(rest.unreadCount, 0);
+    await sync.syncOnce();
+    assert.ok(api.files.has(markerPath(0)) && api.files.has(responseMarkerPath(0)),
+      'the zero-unread state also has one matching marker in each queue');
+    assert.ok(!api.files.has(markerPath(2)) && !api.files.has(responseMarkerPath(2)));
+
+    const restartedSync = new GitHubBridgeSync(client, paths, workerStateDirectory);
+    await restartedSync.syncOnce();
+    assert.ok(api.files.has(markerPath(0)) && api.files.has(responseMarkerPath(0)),
+      'a new sync instance reconstructs the current markers from persistent mailbox state');
+    assert.deepEqual(api.files.get(markerPath(0)).bytes, api.files.get(responseMarkerPath(0)).bytes);
+  } finally {
+    await Promise.all(notificationMessages.map(message => mailboxStore.deleteMessage(message.id)));
+    await sync.syncOnce();
+  }
 
   // Two separate ChatGPT conversations share the same model/platform but
   // must never share queue, response, artifact, or durable-idempotency state.
