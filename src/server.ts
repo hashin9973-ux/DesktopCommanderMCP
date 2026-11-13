@@ -1426,36 +1426,29 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
             case "mailbox": {
                 try {
                     const parsed = MailboxArgsSchema.parse(args);
+                    const context = getSubagentParentContext();
+                    if (!context || context.transport !== 'github') {
+                        throw new Error('Mailbox is available only through the GitHub Repository Bridge request/response queue.');
+                    }
                     switch (parsed.action) {
-                        case 'register': {
-                            const registered = await mailboxStore.register(parsed.username!);
+                        case 'inbox_unread': {
+                            const inbox = await mailboxStore.inboxUnread(context.agentId, parsed.limit);
                             result = { content: [{ type: 'text', text: JSON.stringify({
-                                status: registered.existing ? 'already_registered' : 'registered',
-                                username: registered.user.username,
-                                message: 'Use this mailbox username for parent-child agent reporting; your Bridge workspace remains your separate agent folder.',
+                                workspace: context.agentId,
+                                unread_remaining: inbox.unreadCount,
+                                messages: inbox.messages,
                             }, null, 2) }] };
                             break;
                         }
-                        case 'inbox_unread': {
-                            const inbox = await mailboxStore.inboxUnread(parsed.username!);
-                            result = { content: [{ type: 'text', text: inbox.messages.length
-                                ? JSON.stringify(inbox.messages, null, 2)
-                                : 'No unread messages.' }] };
-                            break;
-                        }
                         case 'send': {
-                            const message = await mailboxStore.send(parsed.username!, parsed.to!, parsed.message!);
-                            result = { content: [{ type: 'text', text: `Message sent. Message ID: ${message.id}` }] };
-                            break;
-                        }
-                        case 'list_users': {
-                            result = { content: [{ type: 'text', text: JSON.stringify(await mailboxStore.listUsers(), null, 2) }] };
+                            const message = await mailboxStore.send(context.agentId, parsed.to!, parsed.message!);
+                            result = { content: [{ type: 'text', text: 'Message sent. Message ID: ' + message.id }] };
                             break;
                         }
                         case 'read': {
-                            const messages = await mailboxStore.read({
-                                user: parsed.user, from: parsed.from, to: parsed.to,
-                                unreadOnly: parsed.unreadOnly, limit: parsed.limit,
+                            const messages = await mailboxStore.read(context.agentId, {
+                                unreadOnly: parsed.unreadOnly,
+                                limit: parsed.limit,
                             });
                             result = { content: [{ type: 'text', text: JSON.stringify(messages, null, 2) }] };
                             break;
