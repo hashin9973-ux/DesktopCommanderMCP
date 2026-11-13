@@ -996,11 +996,9 @@ export class GitHubBridgeSync {
     for (const agent of localAgents) {
       if (!await readOptional(path.join(agent.root, '.subagent-deleted.json'))) liveLocalAgents.push(agent);
     }
-    const knownMailboxPaths = await mailboxStore.listAgentPaths();
     const markerAgentIds = new Set([
       ...liveLocalAgents.map(agent => agent.agentId),
       ...remoteAgentPaths,
-      ...knownMailboxPaths,
     ]);
     const expectedNotificationPaths = new Set<string>();
     for (const agentId of [...markerAgentIds].sort()) {
