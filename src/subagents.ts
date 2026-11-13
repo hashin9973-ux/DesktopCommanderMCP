@@ -791,11 +791,11 @@ class SubagentManager {
       }
       const realWorkspace = await realDirectory(workspace, 'Subagent workspace');
 
-      await mailboxStore.register(parent.id);
-      await mailboxStore.register(id);
+      const childWorkspacePath = parent.agentPath + '/subagents/' + id;
       await this.browser.send(target, composePrompt({
         id, parentId: parent.id,
-        workspace: parent.transport === 'mcp' ? realWorkspace : parent.agentPath + '/subagents/' + id,
+        workspace: parent.transport === 'mcp' ? realWorkspace : childWorkspacePath,
+        parentWorkspace: parent.transport === 'mcp' ? parent.workspace : parent.agentPath,
         task: args.prompt.trim(),
         transport: parent.transport,
       }));
