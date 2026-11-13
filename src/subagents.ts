@@ -816,7 +816,6 @@ class SubagentManager {
       return JSON.stringify({
         status: 'created', agent_id: id, parent_agent_id: parent.id,
         workspace_path: realWorkspace, conversation_url: record.conversationUrl,
-        mailbox_username: id, parent_mailbox_username: parent.id,
       }, null, 2);
     } catch (error) {
       await this.browser.close(target.targetId).catch(() => undefined);
