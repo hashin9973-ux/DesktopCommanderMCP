@@ -1,11 +1,14 @@
-'use strict';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
+const require = createRequire(import.meta.url);
 const { resolveModeChoice } = require('../scripts/bridge-launcher-modes.cjs');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const launcher = fs.readFileSync(
+const launcher = readFileSync(
   path.join(__dirname, '..', 'scripts', 'bridge-launcher.cjs'),
   'utf8'
 );
