@@ -135,6 +135,8 @@ jobs:
         run: |
           & build\PortableBridge\DesktopCommanderBridge.exe bridge --help
           if ($LASTEXITCODE -ne 0) { throw "Bridge executable help command failed." }
+          & build\PortableBridge\DesktopCommanderBridge.exe remote --help
+          if ($LASTEXITCODE -ne 0) { throw "Remote MCP executable help command failed." }
           & build\PortableBridge\DesktopCommanderBridge.exe local-api --help
           if ($LASTEXITCODE -ne 0) { throw "Local API executable help command failed." }
 
