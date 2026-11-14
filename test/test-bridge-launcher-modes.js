@@ -1,19 +1,27 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { createRequire } from 'node:module';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
-const require = createRequire(import.meta.url);
-const { resolveModeChoice } = require('../scripts/bridge-launcher-modes.cjs');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 const launcher = readFileSync(
   path.join(__dirname, '..', 'scripts', 'bridge-launcher.cjs'),
   'utf8'
 );
 
-assert.match(launcher, /require\(['"]\.\/bridge-launcher-modes\.cjs['"]\)/);
+// Execute the exact mode resolver embedded in the launcher's SEA entry script.
+// Node's single-executable application embedder cannot require local JS files.
+const resolverSource = launcher.match(/function resolveModeChoice\(choice\) \{[\s\S]*?\n\}/)?.[0];
+assert.ok(resolverSource, 'The launcher must contain an embedded resolveModeChoice function');
+
+const sandbox = {};
+vm.runInNewContext(
+  `${resolverSource}\nglobalThis.resolveModeChoice = resolveModeChoice;`,
+  sandbox
+);
+const resolveModeChoice = (choice) => [...sandbox.resolveModeChoice(choice)];
+
 assert.match(launcher, /return resolveModeChoice\(choice\)/);
 assert.match(launcher, /if \(!process\.stdin\.isTTY \|\| !process\.stdout\.isTTY\) return \[\]/);
 
@@ -35,5 +43,6 @@ for (const invalid of ['0', '6', 'remote', '1x']) {
 
 assert.match(launcher, /Remote MCP device \(ChatGPT \/ Claude web\)/);
 assert.match(launcher, /Local MCP server \(stdio; launched by an MCP host\)/);
+assert.match(launcher, /Select 1, 2, 3, 4, or 5 \[default 1\]/);
 
-console.log('PASS portable launcher modes: Remote MCP default, explicit stdio mode, and bridge modes');
+console.log('PASS portable launcher modes: embedded Remote MCP default, explicit stdio mode, and bridge modes');
