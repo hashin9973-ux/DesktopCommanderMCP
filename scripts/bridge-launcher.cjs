@@ -4,6 +4,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const { createInterface } = require('node:readline/promises');
+const { resolveModeChoice } = require('./bridge-launcher-modes.cjs');
 
 const distributionRoot = path.dirname(process.execPath);
 const runtimePath = path.join(distributionRoot, 'runtime', 'node.exe');
@@ -23,16 +24,13 @@ async function selectMode() {
   const readline = createInterface({ input: process.stdin, output: process.stdout });
   try {
     process.stdout.write('\nDesktop Commander — choose a mode\n');
-    process.stdout.write('  1. MCP server (standard MCP stdio)\n');
-    process.stdout.write('  2. Cloud-folder bridge\n');
-    process.stdout.write('  3. GitHub repository bridge\n');
-    process.stdout.write('  4. Local OpenAI-compatible API (KoboldCpp)\n\n');
-    const choice = (await readline.question('Select 1, 2, 3, or 4 [default 1]: ')).trim();
-    if (!choice || choice === '1') return [];
-    if (choice === '2') return ['bridge', '--provider', 'cloud'];
-    if (choice === '3') return ['bridge', '--provider', 'github'];
-    if (choice === '4') return ['local-api'];
-    throw new Error('Invalid mode selection. Choose 1, 2, 3, or 4.');
+    process.stdout.write('  1. Remote MCP device (ChatGPT / Claude web) [recommended]\n');
+    process.stdout.write('  2. Local MCP server (stdio; launched by an MCP host)\n');
+    process.stdout.write('  3. Cloud-folder bridge\n');
+    process.stdout.write('  4. GitHub repository bridge\n');
+    process.stdout.write('  5. Local OpenAI-compatible API (KoboldCpp)\n\n');
+    const choice = (await readline.question('Select 1, 2, 3, 4, or 5 [default 1]: ')).trim();
+    return resolveModeChoice(choice);
   } finally {
     readline.close();
   }
