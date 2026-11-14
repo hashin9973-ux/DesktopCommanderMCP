@@ -4,3 +4,4 @@
 # Triggered for the 2026-11-10 portable Windows x64 release.
 # Release request: agent-scoped folders, per-agent IDs, legacy migration, and refreshed README.
 # Release request: root-level per-conversation agent folders and ledger-preserving migration.
+# Release request: make Remote MCP the portable launcher's default interactive mode.
