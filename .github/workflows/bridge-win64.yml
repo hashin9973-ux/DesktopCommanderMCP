@@ -8,6 +8,8 @@ on:
       - 'src/local-api/**'
       - 'src/index.ts'
       - 'scripts/bridge-launcher.cjs'
+      - 'scripts/bridge-launcher-modes.cjs'
+      - 'test/test-bridge-launcher-modes.js'
       - 'test/test-bridge-*.js'
       - 'test/test-local-api.js'
       - 'docs/GITHUB_REPOSITORY_BRIDGE.md'
@@ -47,6 +49,7 @@ jobs:
       - name: Build and run bridge and security regression tests
         run: >-
           npm test --
+          test-bridge-launcher-modes.js
           test-bridge-protocol.js
           test-bridge-agents.js
           test-bridge-guide.js
