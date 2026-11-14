@@ -55,6 +55,14 @@ The local process must be running for remote tool calls to reach your computer.
 - Start the same `remote` command again to reconnect.
 - Stopping the process does not remove saved credentials or revoke the device.
 
+### Windows portable launcher
+
+For the Windows x64 portable build, start `DesktopCommanderBridge.exe` and choose **1. Remote MCP device** (it is also the default when you press Enter). The launcher starts the bundled Remote Device and local MCP server. On first use, a browser opens with a device-verification code; confirm that it matches the code shown in the terminal, then keep the terminal process running until it reports **Device ready**.
+
+Choose **2. Local MCP server** only when an MCP host is launching the executable over standard input/output. That mode is not a desktop window or Remote MCP connection, so it normally shows no interactive interface when opened directly.
+
+Pairing the computer and connecting ChatGPT are separate steps. The running Remote Device pairs this computer with your Desktop Commander account. Then start the connection from ChatGPT's **Settings → Apps → Remote Desktop Commander** and complete the sign-in requested by ChatGPT. Signing into the dashboard website by itself does not launch the portable executable or connect ChatGPT; the Remote Device must already be running.
+
 ## How it works
 
 The request path is:
