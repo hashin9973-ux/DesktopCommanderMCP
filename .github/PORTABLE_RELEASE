@@ -5,3 +5,4 @@
 # Release request: agent-scoped folders, per-agent IDs, legacy migration, and refreshed README.
 # Release request: root-level per-conversation agent folders and ledger-preserving migration.
 # Release request: make Remote MCP the portable launcher's default interactive mode.
+# Release request: keep portable mode selection embedded in the Node SEA launcher.

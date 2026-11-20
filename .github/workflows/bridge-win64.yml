@@ -8,7 +8,6 @@ on:
       - 'src/local-api/**'
       - 'src/index.ts'
       - 'scripts/bridge-launcher.cjs'
-      - 'scripts/bridge-launcher-modes.cjs'
       - 'test/test-bridge-launcher-modes.js'
       - 'test/test-bridge-*.js'
       - 'test/test-local-api.js'
